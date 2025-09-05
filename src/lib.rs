@@ -1,11 +1,10 @@
-//! A minimal SSA-based intermediate representation.
+pub mod bytecode;
+
+/// A minimal SSA-based intermediate representation.
 use hashbrown::{HashMap, HashSet};
 use smallvec::{smallvec, SmallVec};
 use std::fmt;
 use std::hash::Hash;
-
-pub mod bytecode;
-pub mod vm;
 
 //-////////////////////////////////////////////////////////////////////
 // Entity References
@@ -146,9 +145,8 @@ pub struct InstructionData {
 
 #[derive(Debug, Clone)]
 pub enum Opcode {
-    IAdd, ISub, IMul,
+    IAdd, ISub, IMul, ILt,
     IConst(i64),
-    Load, Store,
     Jump(Block),
     BranchIf(Value, Block, Block),
     Call(FunctionRef, SmallVec<[Value; 8]>),
@@ -275,6 +273,12 @@ impl<'a, 'b> InstBuilder<'a, 'b> {
         self.make_inst_result(inst, ty, 0)
     }
 
+    pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::ILt, args: smallvec![lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData { opcode: Opcode::ISub, args: smallvec![lhs, rhs] });
@@ -396,319 +400,5 @@ impl fmt::Display for Function {
             }
         }
         Ok(())
-    }
-}
-
-//-////////////////////////////////////////////////////////////////////
-// Lowering to Bytecode
-//
-
-use bytecode::{BytecodeChunk, Register};
-use std::collections::BTreeMap;
-
-const NUM_REGISTERS: u8 = 16;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct LiveInterval { start: u32, end: u32 }
-
-struct LoweringContext<'a> {
-    func: &'a Function,
-    live_intervals: HashMap<Value, LiveInterval>,
-    value_locations: HashMap<Value, ValueLocation>,
-    block_order: Vec<Block>,
-    inst_positions: HashMap<Inst, u32>,
-    block_offsets: HashMap<Block, u32>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ValueLocation {
-    Reg(Register),
-    Stack(StackSlot),
-}
-
-impl Function {
-    pub fn lower_to_bytecode(&self) -> BytecodeChunk {
-        fn opcode_name(b: u8) -> &'static str {
-            use bytecode::Opcode::*;
-            match b {
-                x if x == Nop as u8 => "Nop",
-                x if x == Mov as u8 => "Mov",
-                x if x == LoadConst as u8 => "LoadConst",
-                x if x == IAdd as u8 => "IAdd",
-                x if x == ISub as u8 => "ISub",
-                x if x == LoadStack as u8 => "LoadStack",
-                x if x == StoreStack as u8 => "StoreStack",
-                x if x == Jmp as u8 => "Jmp",
-                x if x == JmpIfZero as u8 => "JmpIfZero",
-                x if x == Call as u8 => "Call",
-                x if x == Ret as u8 => "Ret",
-                _ => "Unknown",
-            }
-        }
-
-        fn dump_region(code: &[u8], center: usize, radius: usize) -> String {
-            let start = center.saturating_sub(radius);
-            let end = (center + radius).min(code.len());
-            let mut s = String::new();
-            for i in start..end {
-                if i == center {
-                    s.push_str(&format!("-> {:04} {:02X} ({})\n", i, code[i], opcode_name(code[i])));
-                } else {
-                    s.push_str(&format!("   {:04} {:02X} ({})\n", i, code[i], opcode_name(code[i])));
-                }
-            }
-            s
-        }
-
-        let mut ctx = self.build_lowering_context();
-        ctx.linear_scan_register_alloc();
-        let mut chunk = BytecodeChunk::default();
-        let mut backpatch_info = Vec::new();
-
-        for &block in &ctx.block_order {
-            ctx.block_offsets.insert(block, chunk.code.len() as u32);
-            for &inst in &self.cfg.blocks[block.index()].insts {
-                let opcode = &self.dfg.insts[inst.index()].opcode;
-                match opcode {
-                    Opcode::IConst(val) => {
-                        let res = self.dfg.inst_results[&inst][0];
-                        if let Some(ValueLocation::Reg(dst)) = ctx.value_locations.get(&res) {
-                            chunk.write_u8(bytecode::Opcode::LoadConst as u8);
-                            chunk.write_u8(dst.0);
-                            let const_idx = chunk.constants.len() as u16;
-                            chunk.constants.push(*val);
-                            chunk.write_u16(const_idx);
-                        }
-                    }
-                    Opcode::IAdd => {
-                        let r_dst = ctx.get_reg(self.dfg.inst_results[&inst][0]);
-                        let r_lhs = ctx.get_reg(self.dfg.insts[inst.index()].args[0]);
-                        let r_rhs = ctx.get_reg(self.dfg.insts[inst.index()].args[1]);
-                        chunk.write_u8(bytecode::Opcode::IAdd as u8);
-                        chunk.write_u8(r_dst.0);
-                        chunk.write_u8(r_lhs.0);
-                        chunk.write_u8(r_rhs.0);
-                    }
-                    Opcode::ISub => {
-                        let r_dst = ctx.get_reg(self.dfg.inst_results[&inst][0]);
-                        let r_lhs = ctx.get_reg(self.dfg.insts[inst.index()].args[0]);
-                        let r_rhs = ctx.get_reg(self.dfg.insts[inst.index()].args[1]);
-                        chunk.write_u8(bytecode::Opcode::ISub as u8);
-                        chunk.write_u8(r_dst.0);
-                        chunk.write_u8(r_lhs.0);
-                        chunk.write_u8(r_rhs.0);
-                    }
-                    Opcode::Jump(target) => {
-                        chunk.write_u8(bytecode::Opcode::Jmp as u8);
-                        let pos = chunk.code.len(); // index of first offset byte to be written
-                        chunk.write_i16(0); // Placeholder
-                        backpatch_info.push((pos, *target));
-                        eprintln!(
-                            "[lower] wrote Jmp at pos={} (after opcode), block={:?}, code_len(before)={}",
-                            pos,
-                            block,
-                            chunk.code.len()
-                        );
-                    }
-                    Opcode::BranchIf(cond, true_dest, _false_dest) => {
-                        let r_cond = ctx.get_reg(*cond);
-                        chunk.write_u8(bytecode::Opcode::JmpIfZero as u8);
-                        chunk.write_u8(r_cond.0);
-                        let pos = chunk.code.len(); // index of first offset byte
-                        chunk.write_i16(0); // Placeholder
-                        backpatch_info.push((pos, *true_dest));
-                        eprintln!(
-                            "[lower] wrote JmpIfZero at pos={} (after cond), block={:?}, cond_reg={}, code_len(before)={}",
-                            pos,
-                            block,
-                            r_cond.0,
-                            chunk.code.len()
-                        );
-                    }
-                    Opcode::Return(vals) => {
-                        chunk.write_u8(bytecode::Opcode::Ret as u8);
-                        chunk.write_u8(ctx.get_reg(vals[0]).0);
-                    }
-                    Opcode::Call(_func_ref, args) => {
-                        let r_dst = ctx.get_reg(self.dfg.inst_results[&inst][0]);
-                        let mut r_args = [Register(0); 4];
-                        for (i, arg) in args.iter().enumerate() {
-                            r_args[i] = ctx.get_reg(*arg);
-                        }
-                        chunk.write_u8(bytecode::Opcode::Call as u8);
-                        chunk.write_u8(r_dst.0);
-                        chunk.write_u16(0); // func_id placeholder
-                        for r_arg in &r_args {
-                            chunk.write_u8(r_arg.0);
-                        }
-                    }
-
-                    _ => panic!("Unsupported opcode during lowering: {:?}", opcode),
-                }
-            }
-        }
-
-        // Summary before patching
-        eprintln!("=== Lowering complete ===");
-        eprintln!("code length: {}", chunk.code.len());
-        eprintln!("constants len: {}", chunk.constants.len());
-        eprintln!("block offsets:");
-        for (b, off) in ctx.block_offsets.iter() {
-            eprintln!("  {:?} -> {}", b, off);
-        }
-        eprintln!("backpatch entries (inst_pos -> target_block):");
-        for (pos, tb) in &backpatch_info {
-            eprintln!("  pos={} target={:?}", pos, tb);
-        }
-        // Show first 128 bytes disassembly for quick view
-        let show_len = chunk.code.len().min(128);
-        if show_len > 0 {
-            eprintln!("code[0..{}] hex/ops:", show_len);
-            for i in 0..show_len {
-                eprint!("{:02X} ", chunk.code[i]);
-                if (i + 1) % 16 == 0 {
-                    eprintln!();
-                }
-            }
-            eprintln!("\n---");
-        }
-
-        // Backpatch loop with logging
-        for (inst_pos, target_block) in backpatch_info {
-            let target_offset = ctx.block_offsets[&target_block] as i32;
-            let inst_offset = inst_pos as i32;
-            // keep existing behavior but log everything
-            let rel = target_offset - (inst_offset + 2);
-            eprintln!("--- backpatching at pos={} ---", inst_pos);
-            eprintln!(" target_block={:?}", target_block);
-            eprintln!(" target_offset={} (absolute)", target_offset);
-            eprintln!(" inst_offset={} (offset index of first i16 byte)", inst_offset);
-            eprintln!(" computed relative (target - (inst + 2)) = {}", rel);
-
-            // sanity checks
-            if target_offset < 0 || target_offset as usize > chunk.code.len() {
-                eprintln!(
-                    "!! warning: target_offset {} outside code bounds (code_len={})",
-                    target_offset,
-                    chunk.code.len()
-                );
-            }
-
-            // show surrounding bytes where jump src lives
-            let src_center = (inst_pos.saturating_sub(4)).min(chunk.code.len().saturating_sub(1));
-            eprintln!(" bytes near source (inst_pos={}):\n{}", inst_pos, dump_region(&chunk.code, src_center, 12));
-
-            // show surrounding bytes where we expect to land
-            let tgt_center = (target_offset as usize).saturating_sub(4).min(chunk.code.len().saturating_sub(1));
-            eprintln!(" bytes near target (target_offset={}):\n{}", target_offset, dump_region(&chunk.code, tgt_center, 12));
-
-            // apply patch
-            chunk.patch_i16(inst_pos, rel as i16);
-
-            // print patched bytes
-            let b0 = chunk.code.get(inst_pos).cloned().unwrap_or(0);
-            let b1 = chunk.code.get(inst_pos + 1).cloned().unwrap_or(0);
-            eprintln!(
-                " patched bytes at {}: {:02X} {:02X} -> interpreted i16 = {}",
-                inst_pos,
-                b0,
-                b1,
-                i16::from_le_bytes([b0, b1])
-            );
-        }
-
-        eprintln!("=== Backpatching complete. final code length={} ===", chunk.code.len());
-        chunk
-    }
-
-    fn build_lowering_context(&self) -> LoweringContext {
-        let mut block_order = Vec::new();
-        let mut visited = HashSet::new();
-        let mut worklist = vec![self.layout.block_entry.unwrap()];
-        while let Some(block) = worklist.pop() {
-            if visited.insert(block) {
-                block_order.push(block);
-                let term = self.dfg.insts[self.cfg.blocks[block.index()].insts.last().unwrap().index()].opcode.clone();
-                match term {
-                    Opcode::Jump(dest) => worklist.push(dest),
-                    Opcode::BranchIf(_, t, f) => { worklist.push(f); worklist.push(t); },
-                    _ => {}
-                }
-            }
-        }
-
-        let mut inst_positions = HashMap::new();
-        let mut current_pos = 0;
-        for &block in &block_order {
-            for &inst in &self.cfg.blocks[block.index()].insts {
-                inst_positions.insert(inst, current_pos);
-                current_pos += 1;
-            }
-        }
-
-        let mut live_intervals = HashMap::new();
-        for (inst, &pos) in &inst_positions {
-            for &arg in &self.dfg.insts[inst.index()].args {
-                let interval = live_intervals.entry(arg).or_insert(LiveInterval { start: pos, end: pos });
-                interval.end = interval.end.max(pos);
-            }
-            if let Some(results) = self.dfg.inst_results.get(inst) {
-                for &res in results {
-                    let interval = live_intervals.entry(res).or_insert(LiveInterval { start: pos, end: pos });
-                    interval.start = pos;
-                }
-            }
-        }
-
-        LoweringContext {
-            func: self,
-            live_intervals,
-            value_locations: HashMap::new(),
-            block_order,
-            inst_positions,
-            block_offsets: HashMap::new(),
-        }
-    }
-}
-
-impl<'a> LoweringContext<'a> {
-    fn get_reg(&self, val: Value) -> Register {
-        match self.value_locations.get(&val) {
-            Some(ValueLocation::Reg(r)) => *r,
-            _ => panic!("Value {:?} not in a register", val),
-        }
-    }
-
-    fn linear_scan_register_alloc(&mut self) {
-        let mut intervals: Vec<_> = self.live_intervals.iter().collect();
-        intervals.sort_by_key(|(_, int)| int.start);
-        let mut active: BTreeMap<u32, Value> = BTreeMap::new();
-        let mut free_registers: Vec<_> = (1..NUM_REGISTERS).map(Register).collect();
-
-        // Pre-assign the first argument to r0
-        if let Some(arg0) = self.func.signature.params.get(0).map(|_| self.func.dfg.values.iter().position(|v| matches!(v.def, ValueDef::Param { block, param_idx: 0 } if block.index() == 0)).map(|i| Value::new(i))).flatten() {
-            self.value_locations.insert(arg0, ValueLocation::Reg(Register(0)));
-            active.insert(self.live_intervals[&arg0].end, arg0);
-        }
-
-        for (&value, interval) in intervals {
-            let mut expired = vec![];
-            for (&end, &val) in &active {
-                if end >= interval.start { break; }
-                expired.push(end);
-                if let Some(ValueLocation::Reg(reg)) = self.value_locations.get(&val) {
-                    free_registers.push(*reg);
-                }
-            }
-            for end in expired { active.remove(&end); }
-
-            if let Some(reg) = free_registers.pop() {
-                self.value_locations.insert(value, ValueLocation::Reg(reg));
-                active.insert(interval.end, value);
-            } else {
-                let slot = self.func.stack_slots.iter().enumerate().find(|(_, _)| true).map(|(i, _)| StackSlot::new(i)).unwrap();
-                self.value_locations.insert(value, ValueLocation::Stack(slot));
-            }
-        }
     }
 }
