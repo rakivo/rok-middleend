@@ -1,0 +1,12 @@
+[package]
+name = "bytecode-cl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+smallvec = "1.13.2"
+hashbrown = "0.14.5"
+
+[[example]]
+name = "fibonacci_demo"
+path = "examples/fibonacci_demo.rs"
