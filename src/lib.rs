@@ -48,10 +48,7 @@ entity_ref!(StackSlot);
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
-    I32,
-    I64,
-    F32,
-    F64,
+    I32, I64, F32, F64, Ptr
 }
 
 /// Represents a function signature.
@@ -146,7 +143,10 @@ pub struct InstructionData {
 #[derive(Debug, Clone)]
 pub enum Opcode {
     IAdd, ISub, IMul, ILt,
+    FAdd, FSub, FMul, FDiv,
     IConst(i64),
+    FConst(f64),
+    Load, Store,
     Jump(Block),
     BranchIf(Value, Block, Block),
     Call(FunctionRef, SmallVec<[Value; 8]>),
@@ -285,6 +285,44 @@ impl<'a, 'b> InstBuilder<'a, 'b> {
         self.make_inst_result(inst, ty, 0)
     }
 
+    pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::FAdd, args: smallvec![lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::FSub, args: smallvec![lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::FMul, args: smallvec![lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::FDiv, args: smallvec![lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn fconst(&mut self, ty: Type, val: f64) -> Value {
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::FConst(val), args: smallvec![] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn load(&mut self, ty: Type, addr: Value) -> Value {
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::Load, args: smallvec![addr] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn store(&mut self, addr: Value, val: Value) {
+        self.insert_inst(InstructionData { opcode: Opcode::Store, args: smallvec![addr, val] });
+    }
+
     pub fn jump(&mut self, dest: Block) {
         self.insert_inst(InstructionData { opcode: Opcode::Jump(dest), args: smallvec![] });
         let from = self.position.current_block;
@@ -359,8 +397,17 @@ impl Function {
         }
         match &inst.opcode {
             Opcode::IConst(val) => write!(f, "iconst {}", val)?,
+            Opcode::FConst(val) => write!(f, "fconst {}", val)?,
             Opcode::IAdd => write!(f, "iadd {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
             Opcode::ISub => write!(f, "isub {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::IMul => write!(f, "imul {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::ILt => write!(f, "ilt {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::FAdd => write!(f, "fadd {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::FSub => write!(f, "fsub {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::FMul => write!(f, "fmul {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::FDiv => write!(f, "fdiv {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
+            Opcode::Load => write!(f, "load {}", self.fmt_value(inst.args[0]))?,
+            Opcode::Store => write!(f, "store {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
             Opcode::Jump(dest) => write!(f, "jump {}", dest)?,
             Opcode::BranchIf(cond, t, fa) => write!(f, "brif {}, {}, {}", self.fmt_value(*cond), t, fa)?,
             Opcode::Call(name, args) => write!(f, "call {:?}, ({})", name, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))?,
@@ -372,7 +419,7 @@ impl Function {
 
     fn fmt_value(&self, val: Value) -> String {
         let data = &self.dfg.values[val.index()];
-        format!("{}:{:?}", val, data.ty)
+        format!("v{}:{:?}", val.index(), data.ty)
     }
 }
 

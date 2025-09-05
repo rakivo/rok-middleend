@@ -11,9 +11,11 @@ use hashbrown::HashMap;
 pub enum Opcode {
     // Constants
     IConst8, IConst16, IConst32, IConst64,
+    FConst32, FConst64,
 
     // Arithmetic
     Add, Sub, Mul, Lt,
+    FAdd, FSub, FMul, FDiv,
 
     // Control Flow
     Jump16, Jump32,
@@ -130,6 +132,13 @@ impl<'a> LoweringContext<'a> {
                 chunk.code.extend_from_slice(&dst.to_le_bytes());
                 chunk.code.extend_from_slice(&(*val as u64).to_le_bytes());
             }
+            IrOpcode::FConst(val) => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                // Simplified: using FConst64 for all constants
+                chunk.code.push(Opcode::FConst64 as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&val.to_le_bytes());
+            }
             IrOpcode::IAdd => {
                 let dst = self.ssa_to_slot[&results.unwrap()[0]];
                 let a = self.ssa_to_slot[&inst.args[0]];
@@ -156,6 +165,56 @@ impl<'a> LoweringContext<'a> {
                 chunk.code.extend_from_slice(&dst.to_le_bytes());
                 chunk.code.extend_from_slice(&a.to_le_bytes());
                 chunk.code.extend_from_slice(&b.to_le_bytes());
+            }
+            IrOpcode::FAdd => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                let a = self.ssa_to_slot[&inst.args[0]];
+                let b = self.ssa_to_slot[&inst.args[1]];
+                chunk.code.push(Opcode::FAdd as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&a.to_le_bytes());
+                chunk.code.extend_from_slice(&b.to_le_bytes());
+            }
+            IrOpcode::FSub => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                let a = self.ssa_to_slot[&inst.args[0]];
+                let b = self.ssa_to_slot[&inst.args[1]];
+                chunk.code.push(Opcode::FSub as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&a.to_le_bytes());
+                chunk.code.extend_from_slice(&b.to_le_bytes());
+            }
+            IrOpcode::FMul => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                let a = self.ssa_to_slot[&inst.args[0]];
+                let b = self.ssa_to_slot[&inst.args[1]];
+                chunk.code.push(Opcode::FMul as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&a.to_le_bytes());
+                chunk.code.extend_from_slice(&b.to_le_bytes());
+            }
+            IrOpcode::FDiv => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                let a = self.ssa_to_slot[&inst.args[0]];
+                let b = self.ssa_to_slot[&inst.args[1]];
+                chunk.code.push(Opcode::FDiv as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&a.to_le_bytes());
+                chunk.code.extend_from_slice(&b.to_le_bytes());
+            }
+            IrOpcode::Load => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                let addr = self.ssa_to_slot[&inst.args[0]];
+                chunk.code.push(Opcode::Load64 as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&addr.to_le_bytes());
+            }
+            IrOpcode::Store => {
+                let addr = self.ssa_to_slot[&inst.args[0]];
+                let val = self.ssa_to_slot[&inst.args[1]];
+                chunk.code.push(Opcode::Store64 as u8);
+                chunk.code.extend_from_slice(&addr.to_le_bytes());
+                chunk.code.extend_from_slice(&val.to_le_bytes());
             }
             IrOpcode::Jump(dest) => {
                 chunk.code.push(Opcode::Jump16 as u8);
@@ -237,6 +296,12 @@ pub fn disassemble_instruction(lowered_func: &LoweredFunction, offset: usize) ->
             println!("ICONST64  v{}, #{}", dst, val);
             offset + 13
         }
+        Opcode::FConst64 => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val = f64::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 13].try_into().unwrap());
+            println!("FCONST64  v{}, #{}", dst, val);
+            offset + 13
+        }
         Opcode::Add => {
             let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
             let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
@@ -251,12 +316,59 @@ pub fn disassemble_instruction(lowered_func: &LoweredFunction, offset: usize) ->
             println!("SUB       v{}, v{}, v{}", dst, a, b);
             offset + 13
         }
+        Opcode::Mul => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered_func.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("MUL       v{}, v{}, v{}", dst, a, b);
+            offset + 13
+        }
         Opcode::Lt => {
             let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
             let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
             let b = u32::from_le_bytes(lowered_func.chunk.code[offset + 9..offset + 13].try_into().unwrap());
             println!("LT        v{}, v{}, v{}", dst, a, b);
             offset + 13
+        }
+        Opcode::FAdd => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered_func.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("FADD      v{}, v{}, v{}", dst, a, b);
+            offset + 13
+        }
+        Opcode::FSub => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered_func.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("FSUB      v{}, v{}, v{}", dst, a, b);
+            offset + 13
+        }
+        Opcode::FMul => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered_func.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("FMUL      v{}, v{}, v{}", dst, a, b);
+            offset + 13
+        }
+        Opcode::FDiv => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered_func.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("FDIV      v{}, v{}, v{}", dst, a, b);
+            offset + 13
+        }
+        Opcode::Load64 => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let addr = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("LOAD64    v{}, v{}", dst, addr);
+            offset + 9
+        }
+        Opcode::Store64 => {
+            let addr = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("STORE64   v{}, v{}", addr, val);
+            offset + 9
         }
         Opcode::Jump16 => {
             let jmp = i16::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 3].try_into().unwrap());
