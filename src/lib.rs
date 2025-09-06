@@ -28,8 +28,15 @@ macro_rules! entity_ref {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl std::ops::Deref for $name {
+            type Target = u32;
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}({})", stringify!($name).to_lowercase(), self.0)
             }
         }
@@ -99,6 +106,7 @@ impl ControlFlowGraph {
 pub struct BasicBlockData {
     pub insts: SmallVec<[Inst; 16]>,
     pub params: SmallVec<[Value; 4]>,
+    pub is_sealed: bool,
 }
 
 /// The top-level structure for a single function's IR.
@@ -121,6 +129,12 @@ impl Function {
             ..Default::default()
         }
     }
+
+    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
+        let id = StackSlot::new(self.stack_slots.len());
+        self.stack_slots.push(StackSlotData { ty, size });
+        id
+    }
 }
 
 /// Maps logical entities (Inst, Block) to their container.
@@ -139,7 +153,9 @@ pub struct StackSlotData {
 
 /// Metadata for the function.
 #[derive(Debug, Clone, Default)]
-pub struct FunctionMetadata {}
+pub struct FunctionMetadata {
+    pub is_external: bool,
+}
 
 //-////////////////////////////////////////////////////////////////////
 // Instructions & Values
@@ -155,6 +171,7 @@ pub enum InstructionData {
     Call { func_id: FunctionId, args: SmallVec<[Value; 8]> },
     Return { args: SmallVec<[Value; 2]> },
     StackLoad { slot: StackSlot },
+    StackAddr { slot: StackSlot },
     StackStore { slot: StackSlot, arg: Value },
     Nop,
 }
@@ -205,13 +222,19 @@ impl Module {
         self.functions.push(Function{
             name: name.to_string(),
             signature,
+            metadata: FunctionMetadata {
+                is_external: true,
+            },
             ..Default::default()
         });
         id
     }
 
-    pub fn define_function(&mut self, id: FunctionId, func: Function) {
-        self.functions[id.index()] = func;
+    pub fn define_function(&mut self, _id: FunctionId) {
+    }
+
+    pub fn get_func_mut(&mut self, id: FunctionId) -> &mut Function {
+        &mut self.functions[id.index()]
     }
 }
 
@@ -270,15 +293,24 @@ impl<'a> FunctionBuilder<'a> {
         &block_data.params[param_idx_start..]
     }
 
+    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
+        self.func.create_stack_slot(ty, size)
+    }
+
     pub fn ins<'b>(&'b mut self) -> InstBuilder<'a, 'b> {
         let position = self.cursor;
         InstBuilder { builder: self, position }
     }
 
-    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
-        let id = StackSlot::new(self.func.stack_slots.len());
-        self.func.stack_slots.push(StackSlotData { ty, size });
-        id
+    pub fn seal_block(&mut self, block: Block) {
+        self.func.cfg.blocks[block.index()].is_sealed = true;
+    }
+
+    pub fn finalize(&mut self) {
+        for i in 0..self.func.cfg.blocks.len() {
+            let block = Block::new(i);
+            self.seal_block(block);
+        }
     }
 }
 
@@ -401,23 +433,6 @@ impl<'a, 'b> InstBuilder<'a, 'b> {
 //
 
 impl Function {
-    pub fn map_ssa_to_stack(&mut self) -> HashMap<Value, StackSlot> {
-        let mut mapping = HashMap::new();
-        for i in 0..self.dfg.values.len() {
-            let value = Value::new(i);
-            let value_data = &self.dfg.values[value.index()];
-            let slot = self.create_stack_slot(value_data.ty, 8);
-            mapping.insert(value, slot);
-        }
-        mapping
-    }
-
-    fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
-        let id = StackSlot::new(self.stack_slots.len());
-        self.stack_slots.push(StackSlotData { ty, size });
-        id
-    }
-
     fn fmt_block(&self, f: &mut fmt::Formatter<'_>, block_id: Block) -> fmt::Result {
         let block_data = &self.cfg.blocks[block_id.index()];
         write!(f, "{}:", block_id)?;
@@ -451,6 +466,7 @@ impl Function {
             InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])?,
             InstructionData::Call { func_id, args } => write!(f, "call F{}, ({})", func_id.index(), args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))?,
             InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?,
+            InstructionData::StackAddr { slot } => write!(f, "stack_addr {}", slot)?,
             InstructionData::StackLoad { slot } => write!(f, "stack_load {}", slot)?,
             InstructionData::StackStore { slot, arg } => write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg))?,
             InstructionData::Nop => write!(f, "nop")?,

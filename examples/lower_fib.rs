@@ -1,4 +1,4 @@
-use bytecode_cl::{Function, FunctionBuilder, Type, Signature, Module};
+use bytecode_cl::{FunctionBuilder, Type, Signature, Module};
 use bytecode_cl::bytecode::{LoweringContext, disassemble_chunk};
 
 fn main() {
@@ -10,14 +10,7 @@ fn main() {
     };
     let fib_id = module.declare_function("fib", sig);
 
-    let mut fib_func = Function::new(
-        "fib".to_string(),
-        Signature {
-            params: vec![Type::I64],
-            returns: vec![Type::I64],
-        },
-    );
-
+    let mut fib_func = module.get_func_mut(fib_id);
     let mut builder = FunctionBuilder::new(&mut fib_func);
     let result_slot = builder.create_stack_slot(Type::I64, 8);
 
@@ -51,17 +44,19 @@ fn main() {
     let res = builder.ins().stack_load(Type::I64, result_slot);
     builder.ins().ret(&[res]);
 
-    module.define_function(fib_id, fib_func);
+    builder.finalize();
+    module.define_function(fib_id);
 
     println!("Original SSA IR:");
     for func in &module.functions {
         println!("{}", func);
     }
 
-    let fib_func = &module.functions[fib_id.index()];
+    let fib_func = &mut module.functions[fib_id.index()];
+    let fib_func_name = fib_func.name.clone();
     let lowerer = LoweringContext::new(fib_func);
     let lowered_func = lowerer.lower();
 
     println!("\nLowered Bytecode:");
-    disassemble_chunk(&lowered_func, &fib_func.name);
+    disassemble_chunk(&lowered_func, &fib_func_name);
 }
