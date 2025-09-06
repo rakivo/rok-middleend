@@ -122,8 +122,18 @@ pub struct Layout {
 /// Data associated with a stack slot.
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
+    pub kind: StackSlotKind,
     pub ty: Type,
     pub size: u32,
+}
+
+/// The kind of a stack slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackSlotKind {
+    /// An explicit stack slot, created by `create_sized_stack_slot`.
+    Explicit,
+    /// An implicit stack slot, created for spilling.
+    Implicit,
 }
 
 /// Metadata for the function.
@@ -151,6 +161,9 @@ pub enum Opcode {
     BranchIf(Value, Block, Block),
     Call(FunctionRef, SmallVec<[Value; 8]>),
     Return(SmallVec<[Value; 2]>),
+    StackAddr(StackSlot),
+    StackLoad(StackSlot),
+    StackStore(StackSlot, Value),
     Nop,
 }
 
@@ -232,9 +245,9 @@ impl<'a> FunctionBuilder<'a> {
         InstBuilder { builder: self, position }
     }
 
-    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
+    pub fn create_sized_stack_slot(&mut self, kind: StackSlotKind, ty: Type, size: u32) -> StackSlot {
         let id = StackSlot::new(self.func.stack_slots.len());
-        self.func.stack_slots.push(StackSlotData { ty, size });
+        self.func.stack_slots.push(StackSlotData { kind, ty, size });
         id
     }
 }
@@ -346,6 +359,20 @@ impl<'a, 'b> InstBuilder<'a, 'b> {
     pub fn ret(&mut self, vals: &[Value]) {
         self.insert_inst(InstructionData { opcode: Opcode::Return(vals.into()), args: vals.into() });
     }
+
+    pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::StackAddr(slot), args: smallvec![] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn stack_load(&mut self, ty: Type, slot: StackSlot) -> Value {
+        let inst = self.insert_inst(InstructionData { opcode: Opcode::StackLoad(slot), args: smallvec![] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
+        self.insert_inst(InstructionData { opcode: Opcode::StackStore(slot, val), args: smallvec![val] });
+    }
 }
 
 //-////////////////////////////////////////////////////////////////////
@@ -358,15 +385,15 @@ impl Function {
         for i in 0..self.dfg.values.len() {
             let value = Value::new(i);
             let value_data = &self.dfg.values[value.index()];
-            let slot = self.create_stack_slot(value_data.ty, 8);
+            let slot = self.create_stack_slot(value_data.ty, 8, StackSlotKind::Implicit);
             mapping.insert(value, slot);
         }
         mapping
     }
 
-    fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
+    fn create_stack_slot(&mut self, ty: Type, size: u32, kind: StackSlotKind) -> StackSlot {
         let id = StackSlot::new(self.stack_slots.len());
-        self.stack_slots.push(StackSlotData { ty, size });
+        self.stack_slots.push(StackSlotData { ty, size, kind });
         id
     }
 
@@ -412,6 +439,9 @@ impl Function {
             Opcode::BranchIf(cond, t, fa) => write!(f, "brif {}, {}, {}", self.fmt_value(*cond), t, fa)?,
             Opcode::Call(name, args) => write!(f, "call {:?}, ({})", name, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))?,
             Opcode::Return(vals) => write!(f, "return {}", vals.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?,
+            Opcode::StackAddr(slot) => write!(f, "stack_addr {}", slot)?,
+            Opcode::StackLoad(slot) => write!(f, "stack_load {}", slot)?,
+            Opcode::StackStore(slot, val) => write!(f, "stack_store {}, {}", slot, self.fmt_value(*val))?,
             _ => write!(f, "{:?}", inst.opcode)?,
         }
         writeln!(f)
