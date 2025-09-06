@@ -1,4 +1,4 @@
-use crate::{Function, Value, Block, Inst, Opcode as IrOpcode};
+use crate::{Block, Function, Inst, InstructionData, Value};
 use hashbrown::HashMap;
 
 //-////////////////////////////////////////////////////////////////////
@@ -30,6 +30,23 @@ pub enum Opcode {
 
     // Stack
     Mov, // Move value from one stack slot to another
+    StackAddr,
+    StackLoad,
+    StackStore,
+}
+
+fn convert_opcode(opcode: crate::Opcode) -> Opcode {
+    match opcode {
+        crate::Opcode::IAdd => Opcode::Add,
+        crate::Opcode::ISub => Opcode::Sub,
+        crate::Opcode::IMul => Opcode::Mul,
+        crate::Opcode::ILt => Opcode::Lt,
+        crate::Opcode::FAdd => Opcode::FAdd,
+        crate::Opcode::FSub => Opcode::FSub,
+        crate::Opcode::FMul => Opcode::FMul,
+        crate::Opcode::FDiv => Opcode::FDiv,
+        _ => panic!("Unsupported opcode {:?}", opcode),
+    }
 }
 
 /// A chunk of bytecode for a single function.
@@ -108,12 +125,12 @@ impl<'a> LoweringContext<'a> {
 
             if let Some(last_inst_id) = block_data.insts.last() {
                 let inst_data = &self.func.dfg.insts[last_inst_id.index()];
-                match &inst_data.opcode {
-                    IrOpcode::Jump(dest) => worklist.push(*dest),
-                    IrOpcode::BranchIf(_, t, f) => {
-                        worklist.push(*f);
-                        worklist.push(*t);
-                    }
+                match inst_data {
+                    InstructionData::Jump { destination, .. } => worklist.push(*destination),
+                    InstructionData::Branch { destinations, .. } => {
+                        worklist.push(destinations[1]);
+                        worklist.push(destinations[0]);
+                    },
                     _ => {}
                 }
             }
@@ -124,129 +141,63 @@ impl<'a> LoweringContext<'a> {
         let inst = &self.func.dfg.insts[inst_id.index()];
         let results = self.func.dfg.inst_results.get(&inst_id);
 
-        match &inst.opcode {
-            IrOpcode::IConst(val) => {
+        match inst {
+            InstructionData::Const { value, .. } => {
                 let dst = self.ssa_to_slot[&results.unwrap()[0]];
                 // Simplified: using IConst64 for all constants
                 chunk.code.push(Opcode::IConst64 as u8);
                 chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&(*val as u64).to_le_bytes());
+                chunk.code.extend_from_slice(&(*value as u64).to_le_bytes());
             }
-            IrOpcode::FConst(val) => {
+            InstructionData::FConst { value, .. } => {
                 let dst = self.ssa_to_slot[&results.unwrap()[0]];
                 // Simplified: using FConst64 for all constants
                 chunk.code.push(Opcode::FConst64 as u8);
                 chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&val.to_le_bytes());
+                chunk.code.extend_from_slice(&value.to_le_bytes());
             }
-            IrOpcode::IAdd => {
+            InstructionData::Binary { opcode, args } => {
+                chunk.code.push(convert_opcode(*opcode) as u8);
                 let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::Add as u8);
+                let a = self.ssa_to_slot[&args[0]];
+                let b = self.ssa_to_slot[&args[1]];
                 chunk.code.extend_from_slice(&dst.to_le_bytes());
                 chunk.code.extend_from_slice(&a.to_le_bytes());
                 chunk.code.extend_from_slice(&b.to_le_bytes());
             }
-            IrOpcode::ISub => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::Sub as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IrOpcode::ILt => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::Lt as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IrOpcode::FAdd => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::FAdd as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IrOpcode::FSub => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::FSub as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IrOpcode::FMul => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::FMul as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IrOpcode::FDiv => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let a = self.ssa_to_slot[&inst.args[0]];
-                let b = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::FDiv as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IrOpcode::Load => {
-                let dst = self.ssa_to_slot[&results.unwrap()[0]];
-                let addr = self.ssa_to_slot[&inst.args[0]];
-                chunk.code.push(Opcode::Load64 as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&addr.to_le_bytes());
-            }
-            IrOpcode::Store => {
-                let addr = self.ssa_to_slot[&inst.args[0]];
-                let val = self.ssa_to_slot[&inst.args[1]];
-                chunk.code.push(Opcode::Store64 as u8);
-                chunk.code.extend_from_slice(&addr.to_le_bytes());
-                chunk.code.extend_from_slice(&val.to_le_bytes());
-            }
-            IrOpcode::Jump(dest) => {
+            InstructionData::Jump { destination, .. } => {
                 chunk.code.push(Opcode::Jump16 as u8);
                 let pos = chunk.code.len();
                 chunk.code.extend_from_slice(&[0, 0]); // Placeholder
-                self.jump_placeholders.push((pos, *dest));
+                self.jump_placeholders.push((pos, *destination));
             }
-            IrOpcode::BranchIf(cond, true_dest, false_dest) => {
-                let cond_slot = self.ssa_to_slot[cond];
+            InstructionData::Branch { arg, destinations, .. } => {
+                let cond_slot = self.ssa_to_slot[arg];
                 chunk.code.push(Opcode::BranchIf16 as u8);
                 chunk.code.extend_from_slice(&cond_slot.to_le_bytes());
                 let pos = chunk.code.len();
                 chunk.code.extend_from_slice(&[0, 0]); // Placeholder for true branch
-                self.jump_placeholders.push((pos, *true_dest));
+                self.jump_placeholders.push((pos, destinations[0]));
 
                 // Unconditional jump for the false branch
                 chunk.code.push(Opcode::Jump16 as u8);
                 let pos = chunk.code.len();
                 chunk.code.extend_from_slice(&[0, 0]); // Placeholder for false branch
-                self.jump_placeholders.push((pos, *false_dest));
+                self.jump_placeholders.push((pos, destinations[1]));
             }
-            IrOpcode::Call(_func_ref, _args) => {
-                // For now, assume the function ID is 0
-                let func_id = 0u32;
+            InstructionData::Call { func_id, args, .. } => {
                 chunk.code.push(Opcode::Call as u8);
-                chunk.code.extend_from_slice(&func_id.to_le_bytes());
+                chunk.code.extend_from_slice(&(func_id.index() as u32).to_le_bytes());
+                chunk.code.push(args.len() as u8);
 
-                // In a real implementation, we would also handle arguments here
+                for &arg in args.iter() {
+                    let arg_slot = self.ssa_to_slot[&arg];
+                    chunk.code.extend_from_slice(&arg_slot.to_le_bytes());
+                }
             }
-            IrOpcode::Return(vals) => {
-                if !vals.is_empty() {
-                    let return_val_slot = self.ssa_to_slot[&vals[0]];
+            InstructionData::Return { args, .. } => {
+                if !args.is_empty() {
+                    let return_val_slot = self.ssa_to_slot[&args[0]];
                     if return_val_slot != 0 {
                         // Move the return value to the first slot (v0)
                         chunk.code.push(Opcode::Mov as u8);
@@ -255,6 +206,18 @@ impl<'a> LoweringContext<'a> {
                     }
                 }
                 chunk.code.push(Opcode::Return as u8);
+            }
+            InstructionData::StackLoad { slot, .. } => {
+                let dst = self.ssa_to_slot[&results.unwrap()[0]];
+                chunk.code.push(Opcode::StackLoad as u8);
+                chunk.code.extend_from_slice(&dst.to_le_bytes());
+                chunk.code.extend_from_slice(&(slot.index() as u32).to_le_bytes());
+            }
+            InstructionData::StackStore { slot, arg, .. } => {
+                let src = self.ssa_to_slot[arg];
+                chunk.code.push(Opcode::StackStore as u8);
+                chunk.code.extend_from_slice(&(slot.index() as u32).to_le_bytes());
+                chunk.code.extend_from_slice(&src.to_le_bytes());
             }
             _ => { /* Unimplemented */ }
         }
@@ -288,8 +251,10 @@ pub fn disassemble_chunk(lowered_func: &LoweredFunction, name: &str) {
 pub fn disassemble_instruction(lowered_func: &LoweredFunction, offset: usize) -> usize {
     print!("{:04} ", offset);
 
-    let opcode = lowered_func.chunk.code[offset];
-    match unsafe { std::mem::transmute::<u8, Opcode>(opcode) } {
+    let opcode_byte = lowered_func.chunk.code[offset];
+    let opcode: Opcode = unsafe { std::mem::transmute(opcode_byte) };
+
+    match opcode {
         Opcode::IConst64 => {
             let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
             let val = u64::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 13].try_into().unwrap());
@@ -385,8 +350,16 @@ pub fn disassemble_instruction(lowered_func: &LoweredFunction, offset: usize) ->
         }
         Opcode::Call => {
             let func_id = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            println!("CALL      fib #{}", func_id);
-            offset + 5
+            let num_args = lowered_func.chunk.code[offset + 5] as usize;
+            print!("CALL      F{}, {} args", func_id, num_args);
+            let mut new_offset = offset + 6;
+            for _ in 0..num_args {
+                let arg = u32::from_le_bytes(lowered_func.chunk.code[new_offset..new_offset + 4].try_into().unwrap());
+                print!(", v{}", arg);
+                new_offset += 4;
+            }
+            println!();
+            new_offset
         }
         Opcode::Mov => {
             let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
@@ -398,8 +371,26 @@ pub fn disassemble_instruction(lowered_func: &LoweredFunction, offset: usize) ->
             println!("RETURN");
             offset + 1
         }
+        Opcode::StackAddr => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let slot = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("STACK_ADDR v{}, s{}", dst, slot);
+            offset + 9
+        }
+        Opcode::StackLoad => {
+            let dst = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let slot = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("STACK_LOAD v{}, s{}", dst, slot);
+            offset + 9
+        }
+        Opcode::StackStore => {
+            let slot = u32::from_le_bytes(lowered_func.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = u32::from_le_bytes(lowered_func.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("STACK_STORE s{}, v{}", slot, src);
+            offset + 9
+        }
         _ => {
-            println!("Unknown opcode: {}", opcode);
+            println!("Unknown opcode: {}", opcode_byte);
             offset + 1
         }
     }

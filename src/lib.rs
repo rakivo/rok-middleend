@@ -40,6 +40,7 @@ entity_ref!(Value);
 entity_ref!(Inst);
 entity_ref!(Block);
 entity_ref!(StackSlot);
+entity_ref!(FunctionId);
 
 //-////////////////////////////////////////////////////////////////////
 // Core Data Structures
@@ -112,6 +113,16 @@ pub struct Function {
     pub metadata: FunctionMetadata,
 }
 
+impl Function {
+    pub fn new(name: String, signature: Signature) -> Self {
+        Self {
+            name,
+            signature,
+            ..Default::default()
+        }
+    }
+}
+
 /// Maps logical entities (Inst, Block) to their container.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
@@ -122,18 +133,8 @@ pub struct Layout {
 /// Data associated with a stack slot.
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
-    pub kind: StackSlotKind,
     pub ty: Type,
     pub size: u32,
-}
-
-/// The kind of a stack slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StackSlotKind {
-    /// An explicit stack slot, created by `create_sized_stack_slot`.
-    Explicit,
-    /// An implicit stack slot, created for spilling.
-    Implicit,
 }
 
 /// Metadata for the function.
@@ -145,32 +146,36 @@ pub struct FunctionMetadata {}
 //
 
 #[derive(Debug, Clone)]
-pub struct InstructionData {
-    pub opcode: Opcode,
-    pub args: SmallVec<[Value; 4]>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Opcode {
-    IAdd, ISub, IMul, ILt,
-    FAdd, FSub, FMul, FDiv,
-    IConst(i64),
-    FConst(f64),
-    Load, Store,
-    Jump(Block),
-    BranchIf(Value, Block, Block),
-    Call(FunctionRef, SmallVec<[Value; 8]>),
-    Return(SmallVec<[Value; 2]>),
-    StackAddr(StackSlot),
-    StackLoad(StackSlot),
-    StackStore(StackSlot, Value),
+pub enum InstructionData {
+    Binary { opcode: Opcode, args: [Value; 2] },
+    Const { value: i64 },
+    FConst { value: f64 },
+    Jump { destination: Block },
+    Branch { destinations: [Block; 2], arg: Value },
+    Call { func_id: FunctionId, args: SmallVec<[Value; 8]> },
+    Return { args: SmallVec<[Value; 2]> },
+    StackLoad { slot: StackSlot },
+    StackStore { slot: StackSlot, arg: Value },
     Nop,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum FunctionRef {
-    Name(String),
+
+#[derive(Debug, Clone, Copy)]
+pub enum Opcode {
+    IAdd, ISub, IMul, ILt,
+    FAdd, FSub, FMul, FDiv,
+    IConst,
+    FConst,
+    Load, Store,
+    StackAddr,
+    StackLoad,
+    StackStore,
+    Jump,
+    BranchIf,
+    Call,
+    Return,
 }
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct ValueData {
@@ -183,6 +188,31 @@ pub enum ValueDef {
     Inst { inst: Inst, result_idx: u8 },
     Param { block: Block, param_idx: u8 },
     Const(i64),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Module {
+    pub functions: Vec<Function>,
+}
+
+impl Module {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn declare_function(&mut self, name: &str, signature: Signature) -> FunctionId {
+        let id = FunctionId::new(self.functions.len());
+        self.functions.push(Function{
+            name: name.to_string(),
+            signature,
+            ..Default::default()
+        });
+        id
+    }
+
+    pub fn define_function(&mut self, id: FunctionId, func: Function) {
+        self.functions[id.index()] = func;
+    }
 }
 
 //-////////////////////////////////////////////////////////////////////
@@ -245,9 +275,9 @@ impl<'a> FunctionBuilder<'a> {
         InstBuilder { builder: self, position }
     }
 
-    pub fn create_sized_stack_slot(&mut self, kind: StackSlotKind, ty: Type, size: u32) -> StackSlot {
+    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
         let id = StackSlot::new(self.func.stack_slots.len());
-        self.func.stack_slots.push(StackSlotData { kind, ty, size });
+        self.func.stack_slots.push(StackSlotData { ty, size });
         id
     }
 }
@@ -276,102 +306,93 @@ impl<'a, 'b> InstBuilder<'a, 'b> {
     }
 
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::IConst(val), args: smallvec![] });
+        let inst = self.insert_inst(InstructionData::Const { value: val });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::IAdd, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::IAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::ILt, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::ILt, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::ISub, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::ISub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::FAdd, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::FAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::FSub, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::FSub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::FMul, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::FMul, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::FDiv, args: smallvec![lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: Opcode::FDiv, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fconst(&mut self, ty: Type, val: f64) -> Value {
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::FConst(val), args: smallvec![] });
+        let inst = self.insert_inst(InstructionData::FConst { value: val });
         self.make_inst_result(inst, ty, 0)
     }
 
-    pub fn load(&mut self, ty: Type, addr: Value) -> Value {
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::Load, args: smallvec![addr] });
+    pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
+        let inst = self.insert_inst(InstructionData::StackLoad { slot });
         self.make_inst_result(inst, ty, 0)
     }
 
-    pub fn store(&mut self, addr: Value, val: Value) {
-        self.insert_inst(InstructionData { opcode: Opcode::Store, args: smallvec![addr, val] });
+    pub fn stack_load(&mut self, ty: Type, slot: StackSlot) -> Value {
+        let inst = self.insert_inst(InstructionData::StackLoad { slot });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
+        self.insert_inst(InstructionData::StackStore { slot, arg: val });
     }
 
     pub fn jump(&mut self, dest: Block) {
-        self.insert_inst(InstructionData { opcode: Opcode::Jump(dest), args: smallvec![] });
+        self.insert_inst(InstructionData::Jump { destination: dest });
         let from = self.position.current_block;
         self.builder.func.cfg.add_pred(from, dest);
     }
 
     pub fn brif(&mut self, cond: Value, true_dest: Block, false_dest: Block) {
-        self.insert_inst(InstructionData { opcode: Opcode::BranchIf(cond, true_dest, false_dest), args: smallvec![cond] });
+        self.insert_inst(InstructionData::Branch { destinations: [true_dest, false_dest], arg: cond });
         let from = self.position.current_block;
         self.builder.func.cfg.add_pred(from, true_dest);
         self.builder.func.cfg.add_pred(from, false_dest);
     }
 
-    pub fn call(&mut self, func_ref: FunctionRef, args: &[Value]) -> SmallVec<[Value; 2]> {
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::Call(func_ref, args.into()), args: args.into() });
-        let result_ty = Type::I64;
+    pub fn call(&mut self, func_id: FunctionId, args: &[Value]) -> SmallVec<[Value; 2]> {
+        let inst = self.insert_inst(InstructionData::Call { func_id, args: args.into() });
+        let result_ty = Type::I64; // TODO: Get from function signature
         let result = self.make_inst_result(inst, result_ty, 0);
         smallvec![result]
     }
 
     pub fn ret(&mut self, vals: &[Value]) {
-        self.insert_inst(InstructionData { opcode: Opcode::Return(vals.into()), args: vals.into() });
-    }
-
-    pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::StackAddr(slot), args: smallvec![] });
-        self.make_inst_result(inst, ty, 0)
-    }
-
-    pub fn stack_load(&mut self, ty: Type, slot: StackSlot) -> Value {
-        let inst = self.insert_inst(InstructionData { opcode: Opcode::StackLoad(slot), args: smallvec![] });
-        self.make_inst_result(inst, ty, 0)
-    }
-
-    pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
-        self.insert_inst(InstructionData { opcode: Opcode::StackStore(slot, val), args: smallvec![val] });
+        self.insert_inst(InstructionData::Return { args: vals.into() });
     }
 }
 
@@ -385,15 +406,15 @@ impl Function {
         for i in 0..self.dfg.values.len() {
             let value = Value::new(i);
             let value_data = &self.dfg.values[value.index()];
-            let slot = self.create_stack_slot(value_data.ty, 8, StackSlotKind::Implicit);
+            let slot = self.create_stack_slot(value_data.ty, 8);
             mapping.insert(value, slot);
         }
         mapping
     }
 
-    fn create_stack_slot(&mut self, ty: Type, size: u32, kind: StackSlotKind) -> StackSlot {
+    fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
         let id = StackSlot::new(self.stack_slots.len());
-        self.stack_slots.push(StackSlotData { ty, size, kind });
+        self.stack_slots.push(StackSlotData { ty, size });
         id
     }
 
@@ -422,27 +443,17 @@ impl Function {
                 write!(f, " = ")?;
             }
         }
-        match &inst.opcode {
-            Opcode::IConst(val) => write!(f, "iconst {}", val)?,
-            Opcode::FConst(val) => write!(f, "fconst {}", val)?,
-            Opcode::IAdd => write!(f, "iadd {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::ISub => write!(f, "isub {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::IMul => write!(f, "imul {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::ILt => write!(f, "ilt {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::FAdd => write!(f, "fadd {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::FSub => write!(f, "fsub {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::FMul => write!(f, "fmul {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::FDiv => write!(f, "fdiv {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::Load => write!(f, "load {}", self.fmt_value(inst.args[0]))?,
-            Opcode::Store => write!(f, "store {}, {}", self.fmt_value(inst.args[0]), self.fmt_value(inst.args[1]))?,
-            Opcode::Jump(dest) => write!(f, "jump {}", dest)?,
-            Opcode::BranchIf(cond, t, fa) => write!(f, "brif {}, {}, {}", self.fmt_value(*cond), t, fa)?,
-            Opcode::Call(name, args) => write!(f, "call {:?}, ({})", name, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))?,
-            Opcode::Return(vals) => write!(f, "return {}", vals.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?,
-            Opcode::StackAddr(slot) => write!(f, "stack_addr {}", slot)?,
-            Opcode::StackLoad(slot) => write!(f, "stack_load {}", slot)?,
-            Opcode::StackStore(slot, val) => write!(f, "stack_store {}, {}", slot, self.fmt_value(*val))?,
-            _ => write!(f, "{:?}", inst.opcode)?,
+        match inst {
+            InstructionData::Binary { opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))?,
+            InstructionData::Const { value } => write!(f, "iconst {}", value)?,
+            InstructionData::FConst { value } => write!(f, "fconst {}", value)?,
+            InstructionData::Jump { destination } => write!(f, "jump {}", destination)?,
+            InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])?,
+            InstructionData::Call { func_id, args } => write!(f, "call F{}, ({})", func_id.index(), args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))?,
+            InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?,
+            InstructionData::StackLoad { slot } => write!(f, "stack_load {}", slot)?,
+            InstructionData::StackStore { slot, arg } => write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg))?,
+            InstructionData::Nop => write!(f, "nop")?,
         }
         writeln!(f)
     }
@@ -468,9 +479,12 @@ impl fmt::Display for Function {
                 let block_data = &self.cfg.blocks[block_id.index()];
                 if let Some(last_inst_id) = block_data.insts.last() {
                     let inst_data = &self.dfg.insts[last_inst_id.index()];
-                    match &inst_data.opcode {
-                        Opcode::Jump(dest) => worklist.push(*dest),
-                        Opcode::BranchIf(_, t, fa) => { worklist.push(*fa); worklist.push(*t); },
+                    match inst_data {
+                        InstructionData::Jump { destination, .. } => worklist.push(*destination),
+                        InstructionData::Branch { destinations, .. } => {
+                            worklist.push(destinations[1]);
+                            worklist.push(destinations[0]);
+                        },
                         _ => {}
                     }
                 }

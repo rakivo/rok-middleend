@@ -1,23 +1,32 @@
-use bytecode_cl::{Function, FunctionBuilder, Type, Signature, FunctionRef};
-use bytecode_cl::bytecode::{LoweringContext};
+use bytecode_cl::{Function, FunctionBuilder, Type, Signature, Module};
+use bytecode_cl::bytecode::{LoweringContext, disassemble_chunk};
 
 fn main() {
-    let mut func = Function {
-        name: "fib".to_string(),
-        signature: Signature {
+    let mut module = Module::new();
+
+    let sig = Signature {
+        params: vec![Type::I64],
+        returns: vec![Type::I64],
+    };
+    let fib_id = module.declare_function("fib", sig);
+
+    let mut fib_func = Function::new(
+        "fib".to_string(),
+        Signature {
             params: vec![Type::I64],
             returns: vec![Type::I64],
         },
-        ..Default::default()
-    };
+    );
 
-    let mut builder = FunctionBuilder::new(&mut func);
+    let mut builder = FunctionBuilder::new(&mut fib_func);
+    let result_slot = builder.create_stack_slot(Type::I64, 8);
 
     let _entry_block = builder.current_block();
     let arg_n = builder.add_block_params(&[Type::I64])[0];
 
     let recur_block = builder.create_block();
     let ret_n_block = builder.create_block();
+    let exit_block = builder.create_block();
 
     let v1 = builder.ins().iconst(Type::I64, 2);
     let v2 = builder.ins().ilt(arg_n, v1);
@@ -26,22 +35,33 @@ fn main() {
     builder.switch_to_block(recur_block);
     let v1_minus = builder.ins().iconst(Type::I64, 1);
     let v3 = builder.ins().isub(arg_n, v1_minus);
-    let v4 = builder.ins().call(FunctionRef::Name("fib".to_string()), &[v3])[0];
+    let v4 = builder.ins().call(fib_id, &[v3])[0];
     let v5 = builder.ins().iconst(Type::I64, 2);
     let v6 = builder.ins().isub(arg_n, v5);
-    let v7 = builder.ins().call(FunctionRef::Name("fib".to_string()), &[v6])[0];
+    let v7 = builder.ins().call(fib_id, &[v6])[0];
     let v8 = builder.ins().iadd(v4, v7);
-    builder.ins().ret(&[v8]);
+    builder.ins().stack_store(result_slot, v8);
+    builder.ins().jump(exit_block);
 
     builder.switch_to_block(ret_n_block);
-    builder.ins().ret(&[arg_n]);
+    builder.ins().stack_store(result_slot, arg_n);
+    builder.ins().jump(exit_block);
+
+    builder.switch_to_block(exit_block);
+    let res = builder.ins().stack_load(Type::I64, result_slot);
+    builder.ins().ret(&[res]);
+
+    module.define_function(fib_id, fib_func);
 
     println!("Original SSA IR:");
-    println!("{}", func);
+    for func in &module.functions {
+        println!("{}", func);
+    }
 
-    let lowerer = LoweringContext::new(&func);
+    let fib_func = &module.functions[fib_id.index()];
+    let lowerer = LoweringContext::new(fib_func);
     let lowered_func = lowerer.lower();
 
     println!("\nLowered Bytecode:");
-    bytecode_cl::bytecode::disassemble_chunk(&lowered_func, &func.name);
+    disassemble_chunk(&lowered_func, &fib_func.name);
 }
