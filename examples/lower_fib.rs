@@ -1,4 +1,4 @@
-use bytecode_cl::{FunctionBuilder, Type, Signature, Module};
+use bytecode_cl::ssa::{FunctionBuilder, Type, Signature, Module};
 use bytecode_cl::bytecode::{LoweringContext, disassemble_chunk};
 
 fn main() {
@@ -10,8 +10,8 @@ fn main() {
     };
     let fib_id = module.declare_function("fib", sig);
 
-    let mut fib_func = module.get_func_mut(fib_id);
-    let mut builder = FunctionBuilder::new(&mut fib_func);
+    let fib_func = module.get_func_mut(fib_id);
+    let mut builder = FunctionBuilder::new(fib_func);
     let result_slot = builder.create_stack_slot(Type::I64, 8);
 
     let _entry_block = builder.current_block();
