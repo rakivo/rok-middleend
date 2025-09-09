@@ -140,7 +140,7 @@ pub struct BasicBlockData {
 /// The top-level structure for a single function's IR.
 #[derive(Debug, Clone, Default)]
 pub struct SsaFunc {
-    pub name: String,
+    pub name: Box<str>,
     pub signature: Signature,
     pub dfg: DataFlowGraph,
     pub cfg: ControlFlowGraph,
@@ -151,9 +151,9 @@ pub struct SsaFunc {
 
 impl SsaFunc {
     #[must_use]
-    pub fn new(name: String, signature: Signature) -> Self {
+    pub fn new(name: impl AsRef<str>, signature: Signature) -> Self {
         Self {
-            name,
+            name: name.as_ref().into(),
             signature,
             ..Default::default()
         }
@@ -199,7 +199,7 @@ pub struct FunctionMetadata {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    Binary { opcode: SsaOp, args: [Value; 2] },
+    Binary { opcode: BinaryOp, args: [Value; 2] },
     Const { value: i64 },
     FConst { value: f64 },
     Jump { destination: Block },
@@ -213,19 +213,9 @@ pub enum InstructionData {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum SsaOp {
+pub enum BinaryOp {
     IAdd, ISub, IMul, ILt,
     FAdd, FSub, FMul, FDiv,
-    IConst,
-    FConst,
-    Load, Store,
-    StackAddr,
-    StackLoad,
-    StackStore,
-    Jump,
-    BranchIf,
-    Call,
-    Return,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -252,10 +242,10 @@ impl Module {
         Self::default()
     }
 
-    pub fn declare_function(&mut self, name: &str, signature: Signature) -> FunctionId {
+    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FunctionId {
         let id = FunctionId::new(self.functions.len());
-        self.functions.push(SsaFunc{
-            name: name.to_string(),
+        self.functions.push(SsaFunc {
+            name: name.as_ref().into(),
             signature,
             metadata: FunctionMetadata {
                 is_external: true,
@@ -266,6 +256,7 @@ impl Module {
     }
 
     pub fn define_function(&mut self, _id: FunctionId) {
+        // ...
     }
 
     pub fn get_func_mut(&mut self, id: FunctionId) -> &mut SsaFunc {
@@ -379,43 +370,43 @@ impl InstBuilder<'_, '_> {
 
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::IAdd, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::IAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::ILt, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::ILt, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::ISub, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::ISub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::FAdd, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::FSub, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FSub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::FMul, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FMul, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: SsaOp::FDiv, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FDiv, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
@@ -475,7 +466,7 @@ impl SsaFunc {
             write!(f, "({})", block_data.params.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?;
         }
         if let Some(preds) = self.cfg.predecessors.get(&block_id) {
-            write!(f, "  ; preds: {}", preds.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join(", "))?;
+            write!(f, "  ; preds: {}", preds.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))?;
         }
         writeln!(f)?;
         for &inst_id in &block_data.insts {

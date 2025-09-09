@@ -7,6 +7,7 @@ edition = "2024"
 smallvec = "1.13.2"
 hashbrown = "0.14.5"
 cfg-if = "1.0.3"
+indexmap = "2.11.1"
 
 [[example]]
 name = "lower_fib"

@@ -1,4 +1,5 @@
 use std::{fmt, ptr};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use cfg_if::cfg_if;
 
@@ -22,6 +23,7 @@ pub enum VMError {
     UnalignedAccess(u64),
     InvalidInstruction(String),
     ExecutionHalted,
+    InterpreterPanic(String)
 }
 
 impl fmt::Display for VMError {
@@ -37,6 +39,7 @@ impl fmt::Display for VMError {
             VMError::UnalignedAccess(addr) => write!(f, "Unaligned memory access at 0x{addr:x}"),
             VMError::InvalidInstruction(msg) => write!(f, "Invalid instruction: {msg}"),
             VMError::ExecutionHalted => write!(f, "Execution halted"),
+            VMError::InterpreterPanic(msg) => write!(f, "Execution panicked: {msg}"),
         }
     }
 }
@@ -271,19 +274,34 @@ impl VirtualMachine {
     }
 
     pub fn execute(&mut self) -> Result<(), VMError> {
-        let mut frame = *self.current_frame();
+        Self::install_debug_panic_hook();
 
-        let regs_ptr = self.registers.as_mut_ptr();
-        let funcs_ptr = self.functions.as_ptr();
+        let run_result = catch_unwind(AssertUnwindSafe(|| {
+            self.execute_()
+        }));
+
+        match run_result {
+            Ok(_) => Ok(()),
+            Err(panic_payload) => {
+                // Convert panic payload into string
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "non-string panic".to_string()
+                };
+                Err(VMError::InterpreterPanic(panic_msg))
+            }
+        }
+    }
+
+    fn execute_(&mut self) -> Result<(), VMError> {
+        let mut frame = *self.current_frame();
 
         while !self.halted && !self.call_stack.is_empty() {
             let function_id = frame.function_id;
-            let chunk = unsafe {
-                &(*ptr::from_ref(self))
-                    .functions
-                    .get_unchecked(function_id as usize)
-            };
-
+            let chunk = unsafe { &*(self.get_chunk(function_id) as *const BytecodeChunk) };
             let mut decoder = InstructionDecoder::new(&chunk.code);
             decoder.set_pos(self.pc, chunk.code.as_ptr());
 
@@ -299,120 +317,117 @@ impl VirtualMachine {
                 }
             };
 
-            // load function bytecode
-            let chunk = unsafe { &*funcs_ptr.add(frame.function_id as usize) };
-
             match opcode {
                 Opcode::IConst8 => {
                     let reg = decoder.read_u32();
                     let value = i64::from(decoder.read_u8() as i8) as u64;
-                    unsafe { *self.registers.get_unchecked_mut(reg as usize) = value };
+                    self.reg_write(reg as _, value);
                 }
 
                 Opcode::IConst16 => {
                     let reg = decoder.read_u32();
                     let value = i64::from(decoder.read_u16() as i16) as u64;
-                    unsafe { *self.registers.get_unchecked_mut(reg as usize) = value };
+                    self.reg_write(reg as _, value);
                 }
 
                 Opcode::IConst32 => {
                     let reg = decoder.read_u32();
                     let value = i64::from(decoder.read_i32()) as u64;
-                    unsafe { *self.registers.get_unchecked_mut(reg as usize) = value };
+                    self.reg_write(reg as _, value);
                 }
 
                 Opcode::IConst64 => {
                     let reg = decoder.read_u32();
                     let value = decoder.read_i64() as u64;
-                    unsafe { *self.registers.get_unchecked_mut(reg as usize) = value };
+                    self.reg_write(reg as _, value);
                 }
 
                 Opcode::FConst32 => {
                     let reg = decoder.read_u32();
                     let value = u64::from(decoder.read_f32().to_bits());
-                    unsafe { *self.registers.get_unchecked_mut(reg as usize) = value };
+                    self.reg_write(reg as _, value);
                 }
 
                 Opcode::FConst64 => {
                     let reg = decoder.read_u32();
                     let value = decoder.read_f64().to_bits();
-                    unsafe { *self.registers.get_unchecked_mut(reg as usize) = value };
+                    self.reg_write(reg as _, value);
                 }
 
                 Opcode::Add => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { *self.registers.get_unchecked(src1 as usize) as i64 };
-                    let val2 = unsafe { *self.registers.get_unchecked(src2 as usize) as i64 };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = val1.wrapping_add(val2) as u64 };
+                    let val1 = self.reg_read(src1 as _) as i64;
+                    let val2 = self.reg_read(src2 as _) as i64;
+                    self.reg_write(dst as _, val1.wrapping_add(val2) as u64);
                 }
 
                 Opcode::Sub => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { *self.registers.get_unchecked(src1 as usize) as i64 };
-                    let val2 = unsafe { *self.registers.get_unchecked(src2 as usize) as i64 };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = val1.wrapping_sub(val2) as u64 };
+                    let val1 = self.reg_read(src1 as _) as i64;
+                    let val2 = self.reg_read(src2 as _) as i64;
+                    self.reg_write(dst as _, val1.wrapping_sub(val2) as u64);
                 }
 
                 Opcode::Mul => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { *self.registers.get_unchecked(src1 as usize) as i64 };
-                    let val2 = unsafe { *self.registers.get_unchecked(src2 as usize) as i64 };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = val1.wrapping_mul(val2) as u64 };
+                    let val1 = self.reg_read(src1 as _) as i64;
+                    let val2 = self.reg_read(src2 as _) as i64;
+                    self.reg_write(dst as _, val1.wrapping_mul(val2) as u64);
                 }
 
                 Opcode::Lt => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { *self.registers.get_unchecked(src1 as usize) as i64 };
-                    let val2 = unsafe { *self.registers.get_unchecked(src2 as usize) as i64 };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = u64::from(val1 < val2) };
+                    let val1 = self.reg_read(src1 as _) as i64;
+                    let val2 = self.reg_read(src2 as _) as i64;
+                    self.reg_write(dst as _, u64::from(val1 < val2));
                 }
 
                 Opcode::FAdd => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { f64::from_bits(*self.registers.get_unchecked(src1 as usize)) };
-                    let val2 = unsafe { f64::from_bits(*self.registers.get_unchecked(src2 as usize)) };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = (val1 + val2).to_bits() };
+                    let val1 = f64::from_bits(self.reg_read(src1 as _));
+                    let val2 = f64::from_bits(self.reg_read(src2 as _));
+                    self.reg_write(dst as _, (val1 + val2).to_bits());
                 }
 
                 Opcode::FSub => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { f64::from_bits(*self.registers.get_unchecked(src1 as usize)) };
-                    let val2 = unsafe { f64::from_bits(*self.registers.get_unchecked(src2 as usize)) };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = (val1 - val2).to_bits() };
+                    let val1 = f64::from_bits(self.reg_read(src1 as _));
+                    let val2 = f64::from_bits(self.reg_read(src2 as _));
+                    self.reg_write(dst as _, (val1 - val2).to_bits());
                 }
 
                 Opcode::FMul => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { f64::from_bits(*self.registers.get_unchecked(src1 as usize)) };
-                    let val2 = unsafe { f64::from_bits(*self.registers.get_unchecked(src2 as usize)) };
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = (val1 * val2).to_bits() };
+                    let val1 = f64::from_bits(self.reg_read(src1 as _));
+                    let val2 = f64::from_bits(self.reg_read(src2 as _));
+                    self.reg_write(dst as _, (val1 * val2).to_bits());
                 }
 
                 Opcode::FDiv => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = unsafe { f64::from_bits(*self.registers.get_unchecked(src1 as usize)) };
-                    let val2 = unsafe { f64::from_bits(*self.registers.get_unchecked(src2 as usize)) };
+                    let val1 = f64::from_bits(self.reg_read(src1 as _));
+                    let val2 = f64::from_bits(self.reg_read(src2 as _));
                     #[cfg(debug_assertions)]
                     if val2 == 0.0 {
                         return Err(VMError::DivisionByZero);
                     }
-                    unsafe { *self.registers.get_unchecked_mut(dst as usize) = (val1 / val2).to_bits() };
+                    self.reg_write(dst as _, (val1 / val2).to_bits());
                 }
 
                 Opcode::Jump16 => {
@@ -432,7 +447,7 @@ impl VirtualMachine {
                 Opcode::BranchIf16 => {
                     let cond_reg = decoder.read_u32();
                     let offset = i32::from(decoder.read_u16() as i16);
-                    let cond = unsafe { *self.registers.get_unchecked(cond_reg as usize) };
+                    let cond = self.reg_read(cond_reg as _);
                     if cond != 0 {
                         let new_pc = (decoder.get_pos(chunk.code.as_ptr()) as i32 + offset) as usize;
                         self.pc = new_pc;
@@ -443,7 +458,7 @@ impl VirtualMachine {
                 Opcode::BranchIf32 => {
                     let cond_reg = decoder.read_u32();
                     let offset = decoder.read_i32();
-                    let cond = unsafe { *self.registers.get_unchecked(cond_reg as usize) };
+                    let cond = self.reg_read(cond_reg as _);
                     if cond != 0 {
                         let new_pc = (decoder.get_pos(chunk.code.as_ptr()) as i32 + offset) as usize;
                         self.pc = new_pc;
@@ -472,8 +487,7 @@ impl VirtualMachine {
                     // Save return PC
                     let return_pc = decoder.get_pos(chunk.code.as_ptr());
 
-                    // Set up new frame
-                    let new_chunk = unsafe { &*funcs_ptr.add(function_id as usize) };
+                    let new_chunk = self.get_chunk(function_id);
                     let frame_size = new_chunk.frame_info.total_size as usize;
                     let new_fp = save_start + save_size; // Frame starts after saved registers
                     let new_sp = new_fp + frame_size;
@@ -518,7 +532,7 @@ impl VirtualMachine {
                 Opcode::Mov => {
                     let dst = decoder.read_u32();
                     let src = decoder.read_u32();
-                    unsafe { *regs_ptr.add(dst as _) = *regs_ptr.add(src as _) };
+                    self.reg_write(dst as _, self.reg_read(src as _));
                 }
 
                 Opcode::FrameSetup => {
@@ -547,78 +561,78 @@ impl VirtualMachine {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
                     let addr = (frame.frame_pointer as i32 + offset) as usize;
-                    let v = unsafe { ptr::read(self.stack_memory.as_ptr().add(addr).cast::<u64>()) };
-                    unsafe { *regs_ptr.add(reg as _) = v };
+                    let v = self.stack_read_u32(addr);
+                    self.reg_write(reg as _, v as u64);
                 }
 
                 Opcode::FpLoad64 => {
                     let reg = decoder.read_u32();
                     let offset = -decoder.read_i32();
                     let addr = (frame.frame_pointer as i32 + offset) as usize;
-                    let v = unsafe { ptr::read(self.stack_memory.as_ptr().add(addr).cast::<u64>()) };
-                    unsafe { *regs_ptr.add(reg as _) = v };
+                    let v = self.stack_read_u64(addr);
+                    self.reg_write(reg as _, v);
                 }
 
                 Opcode::FpStore32 => {
                     let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.frame_pointer as i32 + offset) as usize;
-                    let v = unsafe { *regs_ptr.add(reg as _) };
-                    unsafe { ptr::write(self.stack_memory.as_mut_ptr().add(addr).cast::<u64>(), v) };
+                    let v = self.reg_read(reg as _);
+                    self.stack_write_u32(addr, v as u32);
                 }
 
                 Opcode::FpStore64 => {
                     let offset = -decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.frame_pointer as i32 + offset) as usize;
-                    let v = unsafe { *regs_ptr.add(reg as _) };
-                    unsafe { ptr::write(self.stack_memory.as_mut_ptr().add(addr).cast::<u64>(), v) };
+                    let v = self.reg_read(reg as _);
+                    self.stack_write_u64(addr, v);
                 }
 
                 Opcode::SpLoad32 => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
                     let addr = (frame.stack_pointer as i32 + offset) as usize;
-                    let v = unsafe { ptr::read(self.stack_memory.as_ptr().add(addr).cast::<u64>()) };
-                    unsafe { *regs_ptr.add(reg as _) = v };
+                    let v = self.stack_read_u32(addr);
+                    self.reg_write(reg as _, v as u64);
                 }
 
                 Opcode::SpLoad64 => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
                     let addr = (frame.stack_pointer as i32 + offset) as usize;
-                    let v = unsafe { ptr::read(self.stack_memory.as_ptr().add(addr).cast::<u64>()) };
-                    unsafe { *regs_ptr.add(reg as _) = v };
+                    let v = self.stack_read_u64(addr);
+                    self.reg_write(reg as _, v);
                 }
 
                 Opcode::SpStore32 => {
                     let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.stack_pointer as i32 + offset) as usize;
-                    let v = unsafe { *regs_ptr.add(reg as _) };
-                    unsafe { ptr::write(self.stack_memory.as_mut_ptr().add(addr).cast::<u64>(), v) };
+                    let v = self.reg_read(reg as _);
+                    self.stack_write_u32(addr, v as u32);
                 }
 
                 Opcode::SpStore64 => {
                     let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.stack_pointer as i32 + offset) as usize;
-                    let v = unsafe { *regs_ptr.add(reg as _) };
-                    unsafe { ptr::write(self.stack_memory.as_mut_ptr().add(addr).cast::<u64>(), v) };
+                    let v = self.reg_read(reg as _);
+                    self.stack_write_u64(addr, v);
                 }
 
                 Opcode::FpAddr => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
                     let addr = (frame.frame_pointer as i32 + offset) as u64;
-                    unsafe { *regs_ptr.add(reg as _) = addr };
+                    self.reg_write(reg as _, addr);
                 }
 
                 Opcode::SpAddr => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
                     let addr = (frame.stack_pointer as i32 + offset) as u64;
-                    unsafe { *regs_ptr.add(reg as _) = addr };
+                    self.reg_write(reg as _, addr);
                 }
 
                 Opcode::Halt => {
@@ -726,5 +740,138 @@ impl BytecodeBuilder {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
+    }
+}
+
+impl VirtualMachine {
+    /// install once during VM construction in debug to get nicer panic hook output
+    pub fn install_debug_panic_hook() {
+        #[cfg(debug_assertions)]
+        {
+            std::panic::set_hook(Box::new(|info| {
+                // print a helpful header so you can find the VM panic in logs
+                eprintln!("===== VM PANIC =====");
+                eprintln!("{}", info);
+                eprintln!("====================");
+            }));
+        }
+    }
+
+    // ---- tiny accessor helpers ----
+    #[inline(always)]
+    fn reg_read(&self, index: usize) -> u64 {
+        #[cfg(debug_assertions)]
+        {
+            if index >= self.registers.len() {
+                panic!(
+                    "reg_read out-of-bounds: idx={} len={} (pc={} frame={:?})",
+                    index, self.registers.len(), self.pc, self.current_frame()
+                );
+            }
+            self.registers[index]
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { *self.registers.get_unchecked(index) }
+        }
+    }
+
+    #[inline(always)]
+    fn reg_write(&mut self, index: usize, v: u64) {
+        #[cfg(debug_assertions)]
+        {
+            if index >= self.registers.len() {
+                panic!(
+                    "reg_write out-of-bounds: idx={} len={} (pc={} frame={:?})",
+                    index, self.registers.len(), self.pc, self.current_frame()
+                );
+            }
+            self.registers[index] = v;
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { *self.registers.get_unchecked_mut(index) = v }
+        }
+    }
+
+    #[inline(always)]
+    fn stack_read_u64(&self, addr: usize) -> u64 {
+        #[cfg(debug_assertions)]
+        {
+            if addr + 8 > self.stack_memory.len() {
+                panic!("stack_read_u64 OOB: addr={} len={}", addr, self.stack_memory.len());
+            }
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&self.stack_memory[addr..addr + 8]);
+            u64::from_le_bytes(b)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { ptr::read_unaligned(self.stack_memory.as_ptr().add(addr).cast::<u64>()) }
+        }
+    }
+
+    #[inline(always)]
+    fn stack_write_u64(&mut self, addr: usize, v: u64) {
+        #[cfg(debug_assertions)]
+        {
+            if addr + 8 > self.stack_memory.len() {
+                panic!("stack_write_u64 OOB: addr={} len={}", addr, self.stack_memory.len());
+            }
+            let b = v.to_le_bytes();
+            self.stack_memory[addr..addr + 8].copy_from_slice(&b);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { ptr::write_unaligned(self.stack_memory.as_mut_ptr().add(addr).cast::<u64>(), v) }
+        }
+    }
+
+    #[inline(always)]
+    fn stack_read_u32(&self, addr: usize) -> u32 {
+        #[cfg(debug_assertions)]
+        {
+            if addr + 4 > self.stack_memory.len() {
+                panic!("stack_read_u32 OOB: addr={} len={}", addr, self.stack_memory.len());
+            }
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&self.stack_memory[addr..addr + 4]);
+            u32::from_le_bytes(b)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { ptr::read_unaligned(self.stack_memory.as_ptr().add(addr).cast::<u32>()) }
+        }
+    }
+
+    #[inline(always)]
+    fn stack_write_u32(&mut self, addr: usize, v: u32) {
+        #[cfg(debug_assertions)]
+        {
+            if addr + 4 > self.stack_memory.len() {
+                panic!("stack_write_u32 OOB: addr={} len={}", addr, self.stack_memory.len());
+            }
+            let b = v.to_le_bytes();
+            self.stack_memory[addr..addr + 4].copy_from_slice(&b);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { ptr::write_unaligned(self.stack_memory.as_mut_ptr().add(addr).cast::<u32>(), v) }
+        }
+    }
+
+    // helper to get chunk pointer in a single place (safer to centralize)
+    #[inline(always)]
+    fn get_chunk(&self, function_id: u32) -> &BytecodeChunk {
+        #[cfg(debug_assertions)]
+        {
+            self.functions
+                .get(function_id as usize)
+                .expect("invalid function id")
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { &*self.functions.as_ptr().add(function_id as usize) }
+        }
     }
 }
