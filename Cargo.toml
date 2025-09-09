@@ -6,7 +6,33 @@ edition = "2024"
 [dependencies]
 smallvec = "1.13.2"
 hashbrown = "0.14.5"
+cfg-if = "1.0.3"
 
 [[example]]
 name = "lower_fib"
 path = "examples/lower_fib.rs"
+
+[[example]]
+name = "vm"
+path = "examples/vm.rs"
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+codegen-units = 1
+lto = "fat"
+debug = false
+strip = true
+overflow-checks = false
+
+# also: set RUSTFLAGS="-C force-frame-pointers=yes"
+[profile.profiling]
+inherits = "release"
+debug = true                      # keep DWARF symbols
+split-debuginfo = "packed"        # so perf can find them easily (Linux)
+strip = "none"                    # don’t strip symbols
+lto = false
+codegen-units = 16
+overflow-checks = false
+panic = "abort"                   # optional: less noise, smaller code
+

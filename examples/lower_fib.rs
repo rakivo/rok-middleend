@@ -1,3 +1,4 @@
+use bytecode_cl::vm::VirtualMachine;
 use bytecode_cl::ssa::{FunctionBuilder, Type, Signature, Module};
 use bytecode_cl::bytecode::{LoweringContext, disassemble_chunk};
 
@@ -59,4 +60,9 @@ fn main() {
 
     println!("\nLowered Bytecode:");
     disassemble_chunk(&lowered_func, &fib_func_name);
+
+    let mut vm = VirtualMachine::new();
+    let id = vm.add_function(lowered_func.chunk);
+    let ret = vm.call_function(id, &[40]);
+    println!("{ret:#?}");
 }
