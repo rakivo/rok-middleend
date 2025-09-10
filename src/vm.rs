@@ -138,34 +138,21 @@ impl InstructionDecoder {
     }
 }
 
-// ============================================================================
-// STACK FRAME (OPTIMIZED)
-// ============================================================================
-
 #[derive(Copy, Debug, Clone)]
 pub struct StackFrame {
-    pub function_id: u32,
-    pub return_pc: usize,
-    pub frame_pointer: usize,
-    pub stack_pointer: usize,
+    pub func_id: u32,
+    pub ret_pc: usize,
+    pub fp: usize,
+    pub sp: usize,
 }
 
 impl StackFrame {
     #[inline]
     #[must_use]
-    pub fn new(function_id: u32, return_pc: usize, fp: usize, sp: usize) -> Self {
-        StackFrame {
-            function_id,
-            return_pc,
-            frame_pointer: fp,
-            stack_pointer: sp,
-        }
+    pub const fn new(func_id: u32, ret_pc: usize, fp: usize, sp: usize) -> Self {
+        StackFrame { func_id, ret_pc, fp, sp }
     }
 }
-
-// ============================================================================
-// VIRTUAL MACHINE (OPTIMIZED)
-// ============================================================================
 
 pub struct VirtualMachine {
     // Function management
@@ -224,13 +211,7 @@ impl VirtualMachine {
     #[inline]
     pub fn call_function(&mut self, function_id: u32, args: &[u64]) -> Result<[u64; 8], VMError> {
         if function_id as usize >= self.functions.len() {
-            cfg_if! {
-                if #[cfg(debug_assertions)] {
-                    return Err(VMError::InvalidFunctionId(function_id));
-                } else {
-                    unsafe { core::hint::unreachable_unchecked() }
-                }
-            }
+            return Err(VMError::InvalidFunctionId(function_id));
         }
 
         unsafe {
@@ -264,7 +245,7 @@ impl VirtualMachine {
         self.execute()?;
 
         // Return values are in r0-r7
-        let result: [u64; 8] = self.registers[0..8].try_into().unwrap();
+        let result = self.registers[0..8].try_into().unwrap();
         Ok(result)
     }
 
@@ -282,12 +263,12 @@ impl VirtualMachine {
 
         match run_result {
             Ok(_) => Ok(()),
-            Err(panic_payload) => {
+            Err(payload) => {
                 // Convert panic payload into string
-                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+                let panic_msg = if let Some(s) = payload.downcast_ref::<&str>() {
                     s.to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.to_owned()
                 } else {
                     "non-string panic".to_string()
                 };
@@ -300,7 +281,7 @@ impl VirtualMachine {
         let mut frame = *self.current_frame();
 
         while !self.halted && !self.call_stack.is_empty() {
-            let function_id = frame.function_id;
+            let function_id = frame.func_id;
             let chunk = unsafe { &*(self.get_chunk(function_id) as *const BytecodeChunk) };
             let mut decoder = InstructionDecoder::new(&chunk.code);
             decoder.set_pos(self.pc, chunk.code.as_ptr());
@@ -467,15 +448,13 @@ impl VirtualMachine {
                 }
 
                 Opcode::Call => {
-                    let function_id = decoder.read_u32();
+                    let func_id = decoder.read_u32();
 
                     #[cfg(debug_assertions)]
-                    if function_id as usize >= self.functions.len() {
-                        return Err(VMError::InvalidFunctionId(function_id));
+                    if func_id as usize >= self.functions.len() {
+                        return Err(VMError::InvalidFunctionId(func_id));
                     }
 
-                    // Save current register state on stack (caller-saved registers)
-                    // For now, let's save all non-return registers (r8+) to stack
                     let save_start = self.stack_top;
                     let save_size = (256 - 8) * 8; // 248 registers * 8 bytes each
 
@@ -484,10 +463,9 @@ impl VirtualMachine {
                         return Err(VMError::StackOverflow);
                     }
 
-                    // Save return PC
-                    let return_pc = decoder.get_pos(chunk.code.as_ptr());
+                    let ret_pc = decoder.get_pos(chunk.code.as_ptr());
 
-                    let new_chunk = self.get_chunk(function_id);
+                    let new_chunk = self.get_chunk(func_id);
                     let frame_size = new_chunk.frame_info.total_size as usize;
                     let new_fp = save_start + save_size; // Frame starts after saved registers
                     let new_sp = new_fp + frame_size;
@@ -497,7 +475,7 @@ impl VirtualMachine {
                         return Err(VMError::StackOverflow);
                     }
 
-                    let new_frame = StackFrame::new(function_id, return_pc, new_fp, new_sp);
+                    let new_frame = StackFrame::new(func_id, ret_pc, new_fp, new_sp);
                     self.call_stack.push(new_frame);
                     frame = new_frame;
                     self.stack_top = new_sp;
@@ -521,10 +499,10 @@ impl VirtualMachine {
                     }
 
                     let save_size = (256 - 8) * 8;
-                    let save_start = old_frame.frame_pointer - save_size;
+                    let save_start = old_frame.fp - save_size;
 
                     self.stack_top = save_start;
-                    self.pc = old_frame.return_pc;
+                    self.pc = old_frame.ret_pc;
                     frame = *self.current_frame();
                     continue;
                 }
@@ -537,30 +515,30 @@ impl VirtualMachine {
 
                 Opcode::FrameSetup => {
                     let frame_size = decoder.read_u32();
-                    frame.stack_pointer += frame_size as usize;
-                    if frame.stack_pointer >= self.stack_memory.len() {
+                    frame.sp += frame_size as usize;
+                    if frame.sp >= self.stack_memory.len() {
                         return Err(VMError::StackOverflow);
                     }
                 }
 
                 Opcode::FrameTeardown => {
-                    frame.stack_pointer = frame.frame_pointer;
+                    frame.sp = frame.fp;
                 }
 
                 Opcode::SpAdd => {
                     let offset = decoder.read_i32();
-                    frame.stack_pointer = (frame.stack_pointer as i32 + offset) as usize;
+                    frame.sp = (frame.sp as i32 + offset) as usize;
                 }
 
                 Opcode::SpSub => {
                     let offset = decoder.read_i32();
-                    frame.stack_pointer = (frame.stack_pointer as i32 - offset) as usize;
+                    frame.sp = (frame.sp as i32 - offset) as usize;
                 }
 
                 Opcode::FpLoad32 => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
-                    let addr = (frame.frame_pointer as i32 + offset) as usize;
+                    let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
                     self.reg_write(reg as _, v as u64);
                 }
@@ -568,7 +546,7 @@ impl VirtualMachine {
                 Opcode::FpLoad64 => {
                     let reg = decoder.read_u32();
                     let offset = -decoder.read_i32();
-                    let addr = (frame.frame_pointer as i32 + offset) as usize;
+                    let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
                     self.reg_write(reg as _, v);
                 }
@@ -576,7 +554,7 @@ impl VirtualMachine {
                 Opcode::FpStore32 => {
                     let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
-                    let addr = (frame.frame_pointer as i32 + offset) as usize;
+                    let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u32(addr, v as u32);
                 }
@@ -584,7 +562,7 @@ impl VirtualMachine {
                 Opcode::FpStore64 => {
                     let offset = -decoder.read_i32();
                     let reg = decoder.read_u32();
-                    let addr = (frame.frame_pointer as i32 + offset) as usize;
+                    let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u64(addr, v);
                 }
@@ -592,7 +570,7 @@ impl VirtualMachine {
                 Opcode::SpLoad32 => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
-                    let addr = (frame.stack_pointer as i32 + offset) as usize;
+                    let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
                     self.reg_write(reg as _, v as u64);
                 }
@@ -600,7 +578,7 @@ impl VirtualMachine {
                 Opcode::SpLoad64 => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
-                    let addr = (frame.stack_pointer as i32 + offset) as usize;
+                    let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
                     self.reg_write(reg as _, v);
                 }
@@ -608,7 +586,7 @@ impl VirtualMachine {
                 Opcode::SpStore32 => {
                     let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
-                    let addr = (frame.stack_pointer as i32 + offset) as usize;
+                    let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u32(addr, v as u32);
                 }
@@ -616,7 +594,7 @@ impl VirtualMachine {
                 Opcode::SpStore64 => {
                     let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
-                    let addr = (frame.stack_pointer as i32 + offset) as usize;
+                    let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u64(addr, v);
                 }
@@ -624,14 +602,14 @@ impl VirtualMachine {
                 Opcode::FpAddr => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
-                    let addr = (frame.frame_pointer as i32 + offset) as u64;
+                    let addr = (frame.fp as i32 + offset) as u64;
                     self.reg_write(reg as _, addr);
                 }
 
                 Opcode::SpAddr => {
                     let reg = decoder.read_u32();
                     let offset = decoder.read_i32();
-                    let addr = (frame.stack_pointer as i32 + offset) as u64;
+                    let addr = (frame.sp as i32 + offset) as u64;
                     self.reg_write(reg as _, addr);
                 }
 
