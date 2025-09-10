@@ -171,6 +171,18 @@ impl SsaFunc {
         // adjust field name if your ValueData uses a different name
         self.dfg.values[v.index()].ty
     }
+
+    #[inline]
+    pub fn instruction_data(&self, inst: Inst) -> &InstructionData {
+        &self.dfg.insts[inst.index()]
+    }
+
+    #[inline]
+    pub fn pretty_print_inst(&self, inst: Inst) -> String {
+        let mut inst_string = String::with_capacity(128);
+        self.fmt_inst(&mut inst_string, inst).unwrap();
+        inst_string
+    }
 }
 
 /// Maps logical entities (Inst, Block) to their container.
@@ -484,7 +496,7 @@ impl InstBuilder<'_, '_> {
 //
 
 impl SsaFunc {
-    fn fmt_block(&self, f: &mut fmt::Formatter<'_>, block_id: Block) -> fmt::Result {
+    pub fn fmt_block(&self, f: &mut dyn fmt::Write, block_id: Block) -> fmt::Result {
         let block_data = &self.cfg.blocks[block_id.index()];
         write!(f, "{block_id}:")?;
         if !block_data.params.is_empty() {
@@ -496,11 +508,12 @@ impl SsaFunc {
         writeln!(f)?;
         for &inst_id in &block_data.insts {
             self.fmt_inst(f, inst_id)?;
+            writeln!(f)?;
         }
         Ok(())
     }
 
-    fn fmt_inst(&self, f: &mut fmt::Formatter<'_>, inst_id: Inst) -> fmt::Result {
+    pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
         let inst = &self.dfg.insts[inst_id.index()];
         write!(f, "  ")?;
         if let Some(results) = self.dfg.inst_results.get(&inst_id) {
@@ -510,22 +523,21 @@ impl SsaFunc {
             }
         }
         match inst {
-            InstructionData::Binary { opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))?,
-            InstructionData::IConst { value } => write!(f, "iconst {value}")?,
-            InstructionData::FConst { value } => write!(f, "fconst {value}")?,
-            InstructionData::Jump { destination } => write!(f, "jump {destination}")?,
-            InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])?,
-            InstructionData::Call { func_id, args } => write!(f, "call F{}, ({})", func_id.index(), args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))?,
-            InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?,
-            InstructionData::StackAddr { slot } => write!(f, "stack_addr {slot}")?,
-            InstructionData::StackLoad { slot } => write!(f, "stack_load {slot}")?,
-            InstructionData::StackStore { slot, arg } => write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg))?,
-            InstructionData::Nop => write!(f, "nop")?,
+            InstructionData::Binary { opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1])),
+            InstructionData::IConst { value } => write!(f, "iconst {value}"),
+            InstructionData::FConst { value } => write!(f, "fconst {value}"),
+            InstructionData::Jump { destination } => write!(f, "jump {destination}"),
+            InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1]),
+            InstructionData::Call { func_id, args } => write!(f, "call F{}, ({})", func_id.index(), args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
+            InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", ")),
+            InstructionData::StackAddr { slot } => write!(f, "stack_addr {slot}"),
+            InstructionData::StackLoad { slot } => write!(f, "stack_load {slot}"),
+            InstructionData::StackStore { slot, arg } => write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg)),
+            InstructionData::Nop => write!(f, "nop"),
         }
-        writeln!(f)
     }
 
-    fn fmt_value(&self, val: Value) -> String {
+    pub fn fmt_value(&self, val: Value) -> String {
         let data = &self.dfg.values[val.index()];
         format!("v{}:{:?}", val.index(), data.ty)
     }
