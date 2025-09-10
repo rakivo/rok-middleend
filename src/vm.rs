@@ -1,8 +1,6 @@
 use std::{fmt, ptr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use cfg_if::cfg_if;
-
 use crate::bytecode::Opcode;
 use crate::bytecode::BytecodeChunk;
 
@@ -262,7 +260,7 @@ impl VirtualMachine {
         }));
 
         match run_result {
-            Ok(_) => Ok(()),
+            Ok(ok) => ok,
             Err(payload) => {
                 // Convert panic payload into string
                 let panic_msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -281,22 +279,14 @@ impl VirtualMachine {
         let mut frame = *self.current_frame();
 
         while !self.halted && !self.call_stack.is_empty() {
-            let function_id = frame.func_id;
-            let chunk = unsafe { &*(self.get_chunk(function_id) as *const BytecodeChunk) };
+            let func_id = frame.func_id;
+            let chunk = self.get_chunk(func_id);
             let mut decoder = InstructionDecoder::new(&chunk.code);
             decoder.set_pos(self.pc, chunk.code.as_ptr());
 
             // Fetch opcode
             let opcode_byte = decoder.read_u8();
-            let opcode;
-            cfg_if::cfg_if! {
-                if #[cfg(debug_assertions)] {
-                    opcode = Opcode::from_u8(opcode_byte)
-                        .ok_or(VMError::InvalidOpcode(opcode_byte))?
-                } else {
-                    opcode = unsafe { core::mem::transmute(opcode_byte) }
-                }
-            };
+            let opcode: Opcode = unsafe { std::mem::transmute(opcode_byte) };
 
             match opcode {
                 Opcode::IConst8 => {
@@ -418,27 +408,9 @@ impl VirtualMachine {
                     continue;
                 }
 
-                Opcode::Jump32 => {
-                    let offset = decoder.read_i32();
-                    let new_pc = (decoder.get_pos(chunk.code.as_ptr()) as i32 + offset) as usize;
-                    self.pc = new_pc;
-                    continue;
-                }
-
                 Opcode::BranchIf16 => {
                     let cond_reg = decoder.read_u32();
                     let offset = i32::from(decoder.read_u16() as i16);
-                    let cond = self.reg_read(cond_reg as _);
-                    if cond != 0 {
-                        let new_pc = (decoder.get_pos(chunk.code.as_ptr()) as i32 + offset) as usize;
-                        self.pc = new_pc;
-                        continue;
-                    }
-                }
-
-                Opcode::BranchIf32 => {
-                    let cond_reg = decoder.read_u32();
-                    let offset = decoder.read_i32();
                     let cond = self.reg_read(cond_reg as _);
                     if cond != 0 {
                         let new_pc = (decoder.get_pos(chunk.code.as_ptr()) as i32 + offset) as usize;
@@ -619,17 +591,11 @@ impl VirtualMachine {
                 }
 
                 _ => {
-                    cfg_if! {
-                        if #[cfg(debug_assertions)] {
-                            return Err(VMError::InvalidOpcode(opcode_byte));
-                        } else {
-                            unsafe { core::hint::unreachable_unchecked() }
-                        }
-                    }
+                    return Err(VMError::InvalidOpcode(opcode_byte));
                 }
             }
 
-            // Advance PC to next instruction
+            let chunk = self.get_chunk(func_id);
             self.pc = decoder.get_pos(chunk.code.as_ptr());
         }
 

@@ -21,6 +21,9 @@
     clippy::missing_panics_doc,
 )]
 
+#[macro_use]
+mod macros;
+
 pub mod vm;
 pub mod ssa;
 pub mod util;

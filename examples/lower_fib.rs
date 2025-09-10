@@ -63,6 +63,6 @@ fn main() {
 
     let mut vm = VirtualMachine::new();
     let id = vm.add_function(lowered_func.chunk);
-    let ret = vm.call_function(id, &[40]);
+    let ret = vm.call_function(id, &[30]);
     println!("{ret:#?}");
 }

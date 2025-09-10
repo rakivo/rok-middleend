@@ -200,7 +200,7 @@ pub struct FunctionMetadata {
 #[derive(Debug, Clone)]
 pub enum InstructionData {
     Binary { opcode: BinaryOp, args: [Value; 2] },
-    Const { value: i64 },
+    IConst { value: i64 },
     FConst { value: f64 },
     Jump { destination: Block },
     Branch { destinations: [Block; 2], arg: Value },
@@ -210,6 +210,31 @@ pub enum InstructionData {
     StackAddr { slot: StackSlot },
     StackStore { slot: StackSlot, arg: Value },
     Nop,
+}
+
+impl InstructionData {
+    pub fn bits(&self, inst_id: Inst, context: &SsaFunc) -> u32 {
+        let vbits = |v: &Value|  context.dfg.values[v.index()].ty.bits();
+        let rbits = |idx: usize| {
+            let r = &context.dfg.inst_results[&inst_id];
+            context.dfg.values[r[idx].index()].ty.bits()
+        };
+
+        match self {
+            Self::Binary { args, .. } => vbits(&args[0]),
+            Self::IConst { .. } => rbits(0),
+            Self::FConst { .. } => rbits(0),
+            Self::StackLoad { .. } => rbits(0),
+            Self::StackAddr { .. } => rbits(0),
+            Self::StackStore { arg, .. } => vbits(arg),
+
+            Self::Jump { .. } => 32,
+            Self::Branch { .. } => 32,
+            Self::Call { .. } => 32,
+            Self::Return { .. } => 32,
+            Self::Nop => 32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -364,7 +389,7 @@ impl InstBuilder<'_, '_> {
     }
 
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        let inst = self.insert_inst(InstructionData::Const { value: val });
+        let inst = self.insert_inst(InstructionData::IConst { value: val });
         self.make_inst_result(inst, ty, 0)
     }
 
@@ -486,7 +511,7 @@ impl SsaFunc {
         }
         match inst {
             InstructionData::Binary { opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))?,
-            InstructionData::Const { value } => write!(f, "iconst {value}")?,
+            InstructionData::IConst { value } => write!(f, "iconst {value}")?,
             InstructionData::FConst { value } => write!(f, "fconst {value}")?,
             InstructionData::Jump { destination } => write!(f, "jump {destination}")?,
             InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])?,

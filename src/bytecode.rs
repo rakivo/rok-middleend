@@ -2,16 +2,18 @@ use crate::{ssa::{
     Block, DataFlowGraph, Inst, InstructionData as IData, SsaFunc, BinaryOp, StackSlot, Type, Value
 }, util::IntoBytes};
 
-use std::{ptr, mem};
+use std::mem;
 
 use indexmap::IndexMap;
 use hashbrown::{HashMap, HashSet};
 
-fn align_up(value: u32, alignment: u32) -> u32 {
+type ValueSet = HashSet<Value>;
+
+const fn align_up(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
 }
 
-fn align_down(value: i32, alignment: i32) -> i32 {
+const fn align_down(value: i32, alignment: i32) -> i32 {
     value & !(alignment - 1)
 }
 
@@ -19,148 +21,432 @@ fn align_down(value: i32, alignment: i32) -> i32 {
 // Bytecode Data Structures
 //
 
-/// Opcodes for the VM.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Opcode {
+define_opcodes! {
+    self,
+
     // Constants
-    IConst8       = 0,
-    IConst16      = 1,
-    IConst32      = 2,
-    IConst64      = 3,
-    FConst32      = 4,
-    FConst64      = 5,
+    IConst8(dst: u32, val: i8)       = 0,
+    @ IData::IConst { value, .. } if bits == 8 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let val = *value as i8;
+        chunk.append(Opcode::IConst8);
+        chunk.append(dst);
+        chunk.append(val);
+    },
+
+    IConst16(dst: u32, val: i16)      = 1,
+    @ IData::IConst { value, .. } if bits == 16 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let val = *value as i16;
+        chunk.append(Opcode::IConst16);
+        chunk.append(dst);
+        chunk.append(val);
+    },
+
+    IConst32(dst: u32, val: i32)      = 2,
+    @ IData::IConst { value, .. } if bits == 32 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let val = *value as i32;
+        chunk.append(Opcode::IConst32);
+        chunk.append(dst);
+        chunk.append(val);
+    },
+
+    IConst64(dst: u32, val: i64)      = 3,
+    @ IData::IConst { value, .. } if bits == 64 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let val = *value as i64;
+        chunk.append(Opcode::IConst64);
+        chunk.append(dst);
+        chunk.append((val as u64));
+    },
+
+    FConst32(dst: u32, val: f32)      = 4,
+    @ IData::FConst { value, .. } if bits == 32 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let val = *value as f32;
+        chunk.append(Opcode::FConst32);
+        chunk.append(dst);
+        chunk.append(val);
+    },
+
+    FConst64(dst: u32, val: f64)      = 5,
+    @ IData::FConst { value, .. } if bits == 64 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        chunk.append(Opcode::FConst64);
+        chunk.append(dst);
+        chunk.append(*value);
+    },
 
     // Arithmetic
-    Add           = 10,
-    Sub           = 11,
-    Mul           = 12,
-    Lt            = 13,
-    FAdd          = 14,
-    FSub          = 15,
-    FMul          = 16,
-    FDiv          = 17,
+    Add(dst: u32, a: u32, b: u32)           = 10,
+    @ IData::Binary { opcode: BinaryOp::IAdd, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Add);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    Sub(dst: u32, a: u32, b: u32)           = 11,
+    @ IData::Binary { opcode: BinaryOp::ISub, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Sub);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    Mul(dst: u32, a: u32, b: u32)           = 12,
+    @ IData::Binary { opcode: BinaryOp::IMul, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Mul);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    Lt(dst: u32, a: u32, b: u32)            = 13,
+    @ IData::Binary { opcode: BinaryOp::ILt, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Lt);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    FAdd(dst: u32, a: u32, b: u32)          = 14,
+    @ IData::Binary { opcode: BinaryOp::FAdd, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::FAdd);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    FSub(dst: u32, a: u32, b: u32)          = 15,
+    @ IData::Binary { opcode: BinaryOp::FSub, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::FSub);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    FMul(dst: u32, a: u32, b: u32)          = 16,
+    @ IData::Binary { opcode: BinaryOp::FMul, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::FMul);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+    FDiv(dst: u32, a: u32, b: u32)          = 17,
+    @ IData::Binary { opcode: BinaryOp::FDiv, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::FDiv);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
 
-    // Control Flow
-    Jump16        = 20,
-    Jump32        = 21,
-    BranchIf16    = 22,
-    BranchIf32    = 23,
-    Return        = 24,
-    Call          = 25,
+    Jump16(offset: i32)        = 21,
+    @ IData::Jump { destination, .. } => |_results, chunk| {
+        chunk.append(Opcode::Jump16);
+        self.append_jump_placeholder::<i16>(chunk, *destination);
+    },
+    BranchIf16(cond: u32, offset: i32)    = 23,
+    @ IData::Branch { arg, destinations, .. } => |_results, chunk| {
+        let [t, e] = *destinations;
+
+        let cond_slot = self.ssa_to_reg[arg];
+        chunk.append(Opcode::BranchIf16);
+        chunk.append(cond_slot);
+        self.append_jump_placeholder::<i16>(chunk, t);
+
+        // Unconditional jump for the false branch
+        chunk.append(Opcode::Jump16);
+        self.append_jump_placeholder::<i16>(chunk, e);
+    },
+
+    Return()        = 24,
+    @ IData::Return { args, .. } => |_results, chunk| {
+        // Move return values to the first N registers (r0, r1, ...).
+        for (i, &arg) in args.iter().enumerate() {
+            let arg_slot = self.ssa_to_reg[&arg];
+            if arg_slot != i as u32 {
+                chunk.append(Opcode::Mov);
+                chunk.append(i as u32); // dst
+                chunk.append(arg_slot);      // src
+            }
+        }
+
+        // Emit frame teardown before return
+        self.emit_frame_teardown(chunk);
+        chunk.append(Opcode::Return);
+    },
+
+    Call(func_id: u32)          = 25,
+    @ IData::Call { func_id, args, .. } => |results, chunk, inst_id| {
+        // 0) Emit stores for spilled values live across this call
+        let l = self.liveness();
+        if let Some(vals) = l.live_across_call.get(&inst_id) {
+            for &v in vals {
+                if let Some(&spill_slot) = self.spill_slots.get(&v) {
+                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
+                    let src_reg = self.ssa_to_reg[&v];
+                    let opcode = Opcode::fp_store(allocation.ty.bits()).unwrap();
+                    chunk.append(opcode);
+                    chunk.append(allocation.offset as u32);
+                    chunk.append(src_reg);
+                }
+            }
+        }
+
+        // 1) Move arguments to registers starting from r8.
+        for (i, &arg) in args.iter().enumerate() {
+            let arg_slot = self.ssa_to_reg[&arg];
+            chunk.append(Opcode::Mov);
+            chunk.append((i + 8) as u32); // dst
+            chunk.append(arg_slot);         // src
+        }
+
+        // 2) Emit call
+        chunk.append(Opcode::Call);
+        chunk.append(func_id.index() as u32);
+
+        // 3) Move result(s) from r0 to destination register(s) BEFORE reloading spills.
+        let mut result_vals: Vec<Value> = Vec::new();
+        if let Some(results) = results {
+            if !results.is_empty() {
+                result_vals.push(results[0]);
+                let result_slot = self.ssa_to_reg[&results[0]];
+                if result_slot != 0 {
+                    chunk.append(Opcode::Mov);
+                    chunk.append(result_slot); // dst
+                    chunk.append(0u32);       // src (r0)
+                }
+            }
+        }
+
+        // 4) Reload spilled values, but skip values that are call results (we just wrote them).
+        let l = self.liveness();
+        if let Some(vals) = l.live_across_call.get(&inst_id) {
+            for &v in vals {
+                if result_vals.contains(&v) { continue; }
+                if let Some(&spill_slot) = self.spill_slots.get(&v) {
+                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
+                    let dst_reg = self.ssa_to_reg[&v];
+                    let opcode = Opcode::fp_load(allocation.ty.bits()).unwrap();
+                    chunk.append(opcode);
+                    chunk.append(dst_reg);
+                    chunk.append(allocation.offset as u32);
+                }
+            }
+        }
+    },
 
     // Memory
-    Load8         = 40,
-    Load16        = 41,
-    Load32        = 42,
-    Load64        = 43,
-    Store8        = 44,
-    Store16       = 45,
-    Store32       = 46,
-    Store64       = 47,
+    Load8(dst: u32, addr: u32)         = 40,
+    @ IData::StackLoad { slot, .. } if bits == 8 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad8;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    Load16(dst: u32, addr: u32)        = 41,
+    @ IData::StackLoad { slot, .. } if bits == 16 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad16;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    Load32(dst: u32, addr: u32)        = 42,
+    @ IData::StackLoad { slot, .. } if bits == 32 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad32;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    Load64(dst: u32, addr: u32)        = 43,
+    @ IData::StackLoad { slot, .. } if bits == 64 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad64;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    Store8(addr: u32, val: u32)        = 44,
+    @ IData::StackStore { slot, arg, .. } if bits == 8 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore8;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
+    Store16(addr: u32, val: u32)       = 45,
+    @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore16;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
+    Store32(addr: u32, val: u32)       = 46,
+    @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore32;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
+    Store64(addr: u32, val: u32)       = 47,
+    @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore64;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
 
     // Stack operations
-    Mov           = 50,
+    Mov(dst: u32, src: u32)           = 50,
 
     // Stack frame management
-    FrameSetup    = 60,
-    FrameTeardown = 61,
+    FrameSetup()    = 60,
+    FrameTeardown() = 61,
 
     // Direct stack pointer operations
-    SpAdd         = 62,
-    SpSub         = 63,
+    SpAdd(offset: u32)         = 62,
+    SpSub(offset: u32)         = 63,
 
     // Frame pointer relative operations
-    FpLoad8       = 70,
-    FpLoad16      = 71,
-    FpLoad32      = 72,
-    FpLoad64      = 73,
-    FpStore8      = 74,
-    FpStore16     = 75,
-    FpStore32     = 76,
-    FpStore64     = 77,
+    FpLoad8(dst: u32, offset: i32)       = 70,
+    @ IData::StackLoad { slot, .. } if bits == 8 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad8;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    FpLoad16(dst: u32, offset: i32)      = 71,
+    @ IData::StackLoad { slot, .. } if bits == 16 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad16;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    FpLoad32(dst: u32, offset: i32)      = 72,
+    @ IData::StackLoad { slot, .. } if bits == 32 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad32;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    FpLoad64(dst: u32, offset: i32)      = 73,
+    @ IData::StackLoad { slot, .. } if bits == 64 => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpLoad64;
+        chunk.append(opcode);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    FpStore8(offset: i32, src: u32)      = 74,
+    @ IData::StackStore { slot, arg, .. } if bits == 8 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore8;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
+    FpStore16(offset: i32, src: u32)     = 75,
+    @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore16;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
+    FpStore32(offset: i32, src: u32)     = 76,
+    @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore32;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
+    FpStore64(offset: i32, src: u32)     = 77,
+    @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
+        let src = self.ssa_to_reg[arg];
+        let allocation = &self.frame_info.slot_allocations[slot];
+        let opcode = Opcode::FpStore64;
+        chunk.append(opcode);
+        chunk.append(allocation.offset);
+        chunk.append(src);
+    },
 
     // Stack pointer relative operations
-    SpLoad8       = 80,
-    SpLoad16      = 81,
-    SpLoad32      = 82,
-    SpLoad64      = 83,
-    SpStore8      = 84,
-    SpStore16     = 85,
-    SpStore32     = 86,
-    SpStore64     = 87,
+    SpLoad8(dst: u32, offset: i32)       = 80,
+    SpLoad16(dst: u32, offset: i32)      = 81,
+    SpLoad32(dst: u32, offset: i32)      = 82,
+    SpLoad64(dst: u32, offset: i32)      = 83,
+    SpStore8(offset: i32, src: u32)      = 84,
+    SpStore16(offset: i32, src: u32)     = 85,
+    SpStore32(offset: i32, src: u32)     = 86,
+    SpStore64(offset: i32, src: u32)     = 87,
 
     // Address calculation
-    FpAddr        = 90,
-    SpAddr        = 91,
+    FpAddr(dst: u32, offset: i32)        = 90,
+    @ IData::StackAddr { slot, .. } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let allocation = &self.frame_info.slot_allocations[slot];
+
+        chunk.append(Opcode::FpAddr);
+        chunk.append(dst);
+        chunk.append(allocation.offset);
+    },
+    SpAddr(dst: u32, offset: i32)        = 91,
+
+    Nop() = 128,
+    @ IData::Nop => |results, chunk| {
+        chunk.append(Opcode::Nop);
+    },
 
     // VM control
-    Halt          = 255,
+    Halt()          = 255
 }
 
-const OPCODE_LOOKUP: [Option<Opcode>; 256] = {
-    let mut table: [Option<Opcode>; 256] = [None; 256];
-    table[Opcode::IConst8 as usize] = Some(Opcode::IConst8);
-    table[Opcode::IConst16 as usize] = Some(Opcode::IConst16);
-    table[Opcode::IConst32 as usize] = Some(Opcode::IConst32);
-    table[Opcode::IConst64 as usize] = Some(Opcode::IConst64);
-    table[Opcode::FConst32 as usize] = Some(Opcode::FConst32);
-    table[Opcode::FConst64 as usize] = Some(Opcode::FConst64);
-    table[Opcode::Add as usize] = Some(Opcode::Add);
-    table[Opcode::Sub as usize] = Some(Opcode::Sub);
-    table[Opcode::Mul as usize] = Some(Opcode::Mul);
-    table[Opcode::Lt as usize] = Some(Opcode::Lt);
-    table[Opcode::FAdd as usize] = Some(Opcode::FAdd);
-    table[Opcode::FSub as usize] = Some(Opcode::FSub);
-    table[Opcode::FMul as usize] = Some(Opcode::FMul);
-    table[Opcode::FDiv as usize] = Some(Opcode::FDiv);
-    table[Opcode::Jump16 as usize] = Some(Opcode::Jump16);
-    table[Opcode::Jump32 as usize] = Some(Opcode::Jump32);
-    table[Opcode::BranchIf16 as usize] = Some(Opcode::BranchIf16);
-    table[Opcode::BranchIf32 as usize] = Some(Opcode::BranchIf32);
-    table[Opcode::Call as usize] = Some(Opcode::Call);
-    table[Opcode::Return as usize] = Some(Opcode::Return);
-    table[Opcode::Load8 as usize] = Some(Opcode::Load8);
-    table[Opcode::Load16 as usize] = Some(Opcode::Load16);
-    table[Opcode::Load32 as usize] = Some(Opcode::Load32);
-    table[Opcode::Load64 as usize] = Some(Opcode::Load64);
-    table[Opcode::Store8 as usize] = Some(Opcode::Store8);
-    table[Opcode::Store16 as usize] = Some(Opcode::Store16);
-    table[Opcode::Store32 as usize] = Some(Opcode::Store32);
-    table[Opcode::Store64 as usize] = Some(Opcode::Store64);
-    table[Opcode::Mov as usize] = Some(Opcode::Mov);
-    table[Opcode::FrameSetup as usize] = Some(Opcode::FrameSetup);
-    table[Opcode::FrameTeardown as usize] = Some(Opcode::FrameTeardown);
-    table[Opcode::SpAdd as usize] = Some(Opcode::SpAdd);
-    table[Opcode::SpSub as usize] = Some(Opcode::SpSub);
-    table[Opcode::FpLoad8 as usize] = Some(Opcode::FpLoad8);
-    table[Opcode::FpLoad16 as usize] = Some(Opcode::FpLoad16);
-    table[Opcode::FpLoad32 as usize] = Some(Opcode::FpLoad32);
-    table[Opcode::FpLoad64 as usize] = Some(Opcode::FpLoad64);
-    table[Opcode::FpStore8 as usize] = Some(Opcode::FpStore8);
-    table[Opcode::FpStore16 as usize] = Some(Opcode::FpStore16);
-    table[Opcode::FpStore32 as usize] = Some(Opcode::FpStore32);
-    table[Opcode::FpStore64 as usize] = Some(Opcode::FpStore64);
-    table[Opcode::SpLoad8 as usize] = Some(Opcode::SpLoad8);
-    table[Opcode::SpLoad16 as usize] = Some(Opcode::SpLoad16);
-    table[Opcode::SpLoad32 as usize] = Some(Opcode::SpLoad32);
-    table[Opcode::SpLoad64 as usize] = Some(Opcode::SpLoad64);
-    table[Opcode::SpStore8 as usize] = Some(Opcode::SpStore8);
-    table[Opcode::SpStore16 as usize] = Some(Opcode::SpStore16);
-    table[Opcode::SpStore32 as usize] = Some(Opcode::SpStore32);
-    table[Opcode::SpStore64 as usize] = Some(Opcode::SpStore64);
-    table[Opcode::FpAddr as usize] = Some(Opcode::FpAddr);
-    table[Opcode::SpAddr as usize] = Some(Opcode::SpAddr);
-    table[Opcode::Halt as usize] = Some(Opcode::Halt);
-    table
-};
-
 impl Opcode {
-    #[must_use]
-    pub const fn from_u8(val: u8) -> Option<Self> {
-        OPCODE_LOOKUP[val as usize]
-    }
-
     #[must_use]
     pub const fn fp_load(bits: u32) -> Option<Self> {
         Some(match bits {
@@ -181,19 +467,6 @@ impl Opcode {
             64 => Opcode::FpStore64,
             _ => return None
         })
-    }
-}
-
-fn convert_opcode(opcode: BinaryOp) -> Opcode {
-    match opcode {
-        BinaryOp::IAdd => Opcode::Add,
-        BinaryOp::ISub => Opcode::Sub,
-        BinaryOp::IMul => Opcode::Mul,
-        BinaryOp::ILt  => Opcode::Lt,
-        BinaryOp::FAdd => Opcode::FAdd,
-        BinaryOp::FSub => Opcode::FSub,
-        BinaryOp::FMul => Opcode::FMul,
-        BinaryOp::FDiv => Opcode::FDiv,
     }
 }
 
@@ -249,13 +522,20 @@ pub struct BytecodeChunk {
 }
 
 impl BytecodeChunk {
+    #[inline(always)]
     pub fn append<'a>(&mut self, x: impl IntoBytes<'a>) {
         self.code.extend_from_slice(&x.into_bytes());
     }
 
-    pub fn append_placeholder<T: Sized>(&mut self, _: T) {
+    #[inline(always)]
+    pub fn append_placeholder_bytes(&mut self, n: usize) {
         let len = self.code.len();
-        self.code.resize(len + mem::size_of::<T>(), 0);
+        self.code.resize(len + n, 0);
+    }
+
+    #[inline(always)]
+    pub fn append_placeholder<T>(&mut self) {
+        self.append_placeholder_bytes(mem::size_of::<T>());
     }
 }
 
@@ -331,8 +611,14 @@ impl<'a> LoweringContext<'a> {
         LoweredSsaFunc { context: self, chunk }
     }
 
+    #[inline(always)]
+    fn liveness(&self) -> &Liveness {
+        self.liveness.as_ref().expect("set .liveness first")
+    }
+
     fn preallocate_spill_slots(&mut self) {
-        let liv = unsafe { (*ptr::from_ref(self)).liveness() };
+        // SAFETY: we don't mutate self.liveness here
+        let liv = reborrow!(self.liveness() => Liveness);
 
         for values in liv.live_across_call.values() {
             for &v in values {
@@ -353,18 +639,14 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    fn liveness(&self) -> &Liveness {
-        self.liveness.as_ref().expect("set .liveness first")
-    }
-
-    fn append_placeholder(
+    #[inline(always)]
+    fn append_jump_placeholder<T>(
         &mut self,
         chunk: &mut BytecodeChunk,
-        x: impl Sized,
         dst: Block
     ) {
         let pos = chunk.code.len();
-        chunk.append_placeholder(mem::size_of_val(&x));
+        chunk.append_placeholder::<T>();
         self.jump_placeholders.push((pos, dst));
     }
 
@@ -374,9 +656,7 @@ impl<'a> LoweringContext<'a> {
         // iterate blocks & instructions looking for StackStore that stores `v`
         for block in 0..self.func.cfg.blocks.len() {
             let block_id = Block::new(block);
-            let block_data = unsafe {
-                &(*ptr::from_ref::<Self>(self)).func.cfg.blocks[block_id.index()]
-            };
+            let block_data = &self.func.cfg.blocks[block_id.index()];
             for &inst_id in &block_data.insts {
                 match &self.func.dfg.insts[inst_id.index()] {
                     IData::StackStore { slot, arg } if *arg == v => {
@@ -418,6 +698,7 @@ impl<'a> LoweringContext<'a> {
         slot
     }
 
+    #[inline(always)]
     fn assign_ssa_slots(&mut self) {
         for i in 0..self.func.dfg.values.len() {
             let value = Value::new(i);
@@ -428,6 +709,7 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
+    #[inline(always)]
     fn emit_frame_setup(&mut self, chunk: &mut BytecodeChunk) {
         if self.frame_info.total_size > 0 {
             chunk.append(Opcode::FrameSetup);
@@ -435,6 +717,7 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
+    #[inline(always)]
     fn emit_frame_teardown(&mut self, chunk: &mut BytecodeChunk) {
         if self.frame_info.total_size > 0 {
             chunk.append(Opcode::FrameTeardown);
@@ -442,6 +725,7 @@ impl<'a> LoweringContext<'a> {
     }
 
     #[must_use]
+    #[inline(always)]
     pub fn num_regs(&self) -> usize {
         self.ssa_to_reg.len()
     }
@@ -457,11 +741,13 @@ impl<'a> LoweringContext<'a> {
 
             self.block_offsets.insert(block_id, chunk.code.len() as u32);
 
-            let block_data = unsafe { &(*ptr::from_ref::<Self>(self)).func.cfg.blocks[block_id.index()] };
-            for &inst_id in &block_data.insts {
-                self.emit_inst(inst_id, chunk);
+            let n = self.func.cfg.blocks[block_id.index()].insts.len();
+            for i in 0..n {
+                let inst_id = self.func.cfg.blocks[block_id.index()].insts[i];
+                self.generated_emit_inst(inst_id, chunk);
             }
 
+            let block_data = &self.func.cfg.blocks[block_id.index()];
             if let Some(last_inst_id) = block_data.insts.last() {
                 let inst_data = &self.func.dfg.insts[last_inst_id.index()];
                 match inst_data {
@@ -476,165 +762,6 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    fn emit_inst(&mut self, inst_id: Inst, chunk: &mut BytecodeChunk) {
-        let inst = &self.func.dfg.insts[inst_id.index()];
-        let results = self.func.dfg.inst_results.get(&inst_id);
-
-        match inst {
-            IData::Const { value, .. } => {
-                let dst = self.ssa_to_reg[&results.unwrap()[0]];
-                chunk.code.push(Opcode::IConst64 as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&(*value as u64).to_le_bytes());
-            }
-            IData::FConst { value, .. } => {
-                let dst = self.ssa_to_reg[&results.unwrap()[0]];
-                chunk.code.push(Opcode::FConst64 as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&value.to_le_bytes());
-            }
-            IData::Binary { opcode, args } => {
-                chunk.code.push(convert_opcode(*opcode) as u8);
-                let dst = self.ssa_to_reg[&results.unwrap()[0]];
-                let a = self.ssa_to_reg[&args[0]];
-                let b = self.ssa_to_reg[&args[1]];
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&a.to_le_bytes());
-                chunk.code.extend_from_slice(&b.to_le_bytes());
-            }
-            IData::Jump { destination, .. } => {
-                chunk.code.push(Opcode::Jump16 as u8);
-                let pos = chunk.code.len();
-                chunk.code.extend_from_slice(&[0, 0]); // Placeholder
-                self.jump_placeholders.push((pos, *destination));
-            }
-            IData::Branch { arg, destinations, .. } => {
-                let cond_slot = self.ssa_to_reg[arg];
-                chunk.code.push(Opcode::BranchIf16 as u8);
-                chunk.code.extend_from_slice(&cond_slot.to_le_bytes());
-                let pos = chunk.code.len();
-                chunk.code.extend_from_slice(&[0, 0]); // Placeholder for true branch
-                self.jump_placeholders.push((pos, destinations[0]));
-
-                // Unconditional jump for the false branch
-                chunk.code.push(Opcode::Jump16 as u8);
-                let pos = chunk.code.len();
-                chunk.code.extend_from_slice(&[0, 0]); // Placeholder for false branch
-                self.jump_placeholders.push((pos, destinations[1]));
-            }
-            IData::Call { func_id, args, .. } => {
-                // 0) Emit stores for spilled values live across this call
-                let l = self.liveness();
-                if let Some(vals) = l.live_across_call.get(&inst_id) {
-                    for &v in vals {
-                        if let Some(&spill_slot) = self.spill_slots.get(&v) {
-                            let allocation = &self.frame_info.slot_allocations[&spill_slot];
-                            let src_reg = self.ssa_to_reg[&v];
-                            let opcode = Opcode::fp_store(allocation.ty.bits()).unwrap();
-                            chunk.append(opcode);
-                            chunk.append(allocation.offset as u32);
-                            chunk.append(src_reg);
-                        }
-                    }
-                }
-
-                // 1) Move arguments to registers starting from r8.
-                for (i, &arg) in args.iter().enumerate() {
-                    let arg_slot = self.ssa_to_reg[&arg];
-                    chunk.append(Opcode::Mov);
-                    chunk.append((i + 8) as u32); // dst
-                    chunk.append(arg_slot);         // src
-                }
-
-                // 2) Emit call
-                chunk.append(Opcode::Call);
-                chunk.append(func_id.index() as u32);
-
-                // 3) Move result(s) from r0 to destination register(s) BEFORE reloading spills.
-                let mut result_vals: Vec<Value> = Vec::new();
-                if let Some(results) = results {
-                    if !results.is_empty() {
-                        result_vals.push(results[0]);
-                        let result_slot = self.ssa_to_reg[&results[0]];
-                        if result_slot != 0 {
-                            chunk.append(Opcode::Mov);
-                            chunk.append(result_slot); // dst
-                            chunk.append(0u32);       // src (r0)
-                        }
-                    }
-                }
-
-                // 4) Reload spilled values, but skip values that are call results (we just wrote them).
-                let l = self.liveness();
-                if let Some(vals) = l.live_across_call.get(&inst_id) {
-                    for &v in vals {
-                        if result_vals.contains(&v) { continue; }
-                        if let Some(&spill_slot) = self.spill_slots.get(&v) {
-                            let allocation = &self.frame_info.slot_allocations[&spill_slot];
-                            let dst_reg = self.ssa_to_reg[&v];
-                            let opcode = Opcode::fp_load(allocation.ty.bits()).unwrap();
-                            chunk.append(opcode);
-                            chunk.append(dst_reg);
-                            chunk.append(allocation.offset as u32);
-                        }
-                    }
-                }
-            }
-            IData::Return { args, .. } => {
-                // Move return values to the first N registers (r0, r1, ...).
-                for (i, &arg) in args.iter().enumerate() {
-                    let arg_slot = self.ssa_to_reg[&arg];
-                    if arg_slot != i as u32 {
-                        chunk.append(Opcode::Mov);
-                        chunk.append(i as u32); // dst
-                        chunk.append(arg_slot);      // src
-                    }
-                }
-
-                // Emit frame teardown before return
-                self.emit_frame_teardown(chunk);
-                chunk.append(Opcode::Return);
-            }
-            IData::StackLoad { slot, .. } => {
-                let dst = self.ssa_to_reg[&results.unwrap()[0]];
-                let allocation = &self.frame_info.slot_allocations[slot];
-
-                // Choose appropriate load instruction based on type
-                let opcode = match allocation.ty {
-                    Type::I32 | Type::F32 => Opcode::FpLoad32,
-                    Type::I64 | Type::F64 | Type::Ptr => Opcode::FpLoad64,
-                };
-
-                chunk.code.push(opcode as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&allocation.offset.to_le_bytes());
-            }
-            IData::StackStore { slot, arg, .. } => {
-                let src = self.ssa_to_reg[arg];
-                let allocation = &self.frame_info.slot_allocations[slot];
-
-                // Choose appropriate store instruction based on type
-                let opcode = match allocation.ty {
-                    Type::I32 | Type::F32 => Opcode::FpStore32,
-                    Type::I64 | Type::F64 | Type::Ptr => Opcode::FpStore64,
-                };
-
-                chunk.code.push(opcode as u8);
-                chunk.code.extend_from_slice(&allocation.offset.to_le_bytes());
-                chunk.code.extend_from_slice(&src.to_le_bytes());
-            }
-            IData::StackAddr { slot, .. } => {
-                let dst = self.ssa_to_reg[&results.unwrap()[0]];
-                let allocation = &self.frame_info.slot_allocations[slot];
-
-                chunk.code.push(Opcode::FpAddr as u8);
-                chunk.code.extend_from_slice(&dst.to_le_bytes());
-                chunk.code.extend_from_slice(&allocation.offset.to_le_bytes());
-            }
-            IData::Nop => {}
-        }
-    }
-
     fn patch_jumps(&mut self, chunk: &mut BytecodeChunk) {
         for (pos, target_block) in &self.jump_placeholders {
             let target_offset = self.block_offsets[target_block];
@@ -643,6 +770,173 @@ impl<'a> LoweringContext<'a> {
             let bytes = jump_offset.to_le_bytes();
             chunk.code[*pos] = bytes[0];
             chunk.code[*pos + 1] = bytes[1];
+        }
+    }
+}
+
+/// Liveness results for the function
+#[derive(Debug, Default)]
+pub struct Liveness {
+    pub uses: HashMap<Block, ValueSet>,
+    pub defs: HashMap<Block, ValueSet>,
+    pub live_in: HashMap<Block, ValueSet>,
+    pub live_out: HashMap<Block, ValueSet>,
+    /// per-value interval: (`start_pos`, `end_pos`) where positions are instruction-order indices
+    pub intervals: HashMap<Value, (usize, usize)>,
+    /// for each Call instruction, which values are live *across* the call
+    pub live_across_call: HashMap<Inst, Vec<Value>>,
+}
+
+impl LoweringContext<'_> {
+    /// Compute uses/defs per block and then live-in/live-out via standard backward dataflow.
+    /// After that compute per-value intervals (start..end) and detect values live across call insts.
+    pub fn compute_liveness(&mut self) -> Liveness {
+        let mut out = Liveness::default();
+
+        // collect all blocks by index
+        let all_blocks: Vec<Block> = (0..self.func.cfg.blocks.len()).map(Block::new).collect();
+
+        // 1) compute uses/defs per block
+        for &bb in &all_blocks {
+            let mut uses = ValueSet::default();
+            let mut defs = ValueSet::default();
+
+            let block_data = &self.func.cfg.blocks[bb.index()];
+            for &inst_id in &block_data.insts {
+                let (srcs, dsts) = Self::inst_uses_defs(inst_id, &self.func.dfg, &self.func.dfg.insts[inst_id.index()]);
+                for v in srcs {
+                    if !defs.contains(&v) {
+                        uses.insert(v);
+                    }
+                }
+                for v in dsts {
+                    defs.insert(v);
+                }
+            }
+
+            out.uses.insert(bb, uses);
+            out.defs.insert(bb, defs);
+        }
+
+        // 2) block-level dataflow fixpoint (live_in / live_out)
+        for &bb in &all_blocks {
+            out.live_in.insert(bb, ValueSet::default());
+            out.live_out.insert(bb, ValueSet::default());
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &bb in all_blocks.iter().rev() {
+                // compute liveOut by looking at successors via terminator
+                let mut live_out = HashSet::<Value>::default();
+                let block_data = &self.func.cfg.blocks[bb.index()];
+                if let Some(&last_inst) = block_data.insts.last() {
+                    match &self.func.dfg.insts[last_inst.index()] {
+                        IData::Jump { destination } => {
+                            if let Some(s_in) = out.live_in.get(destination) {
+                                live_out.extend(s_in.iter().copied());
+                            }
+                        }
+                        IData::Branch { destinations, .. } => {
+                            for &succ in destinations {
+                                if let Some(s_in) = out.live_in.get(&succ) {
+                                    live_out.extend(s_in.iter().copied());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // liveIn = uses U (liveOut - defs)
+                let mut live_in = out.uses.get(&bb).cloned().unwrap_or_default();
+                let defs = out.defs.get(&bb).cloned().unwrap_or_default();
+                for v in &live_out {
+                    if !defs.contains(v) {
+                        live_in.insert(*v);
+                    }
+                }
+
+                if &live_in != out.live_in.get(&bb).unwrap() {
+                    out.live_in.insert(bb, live_in.clone());
+                    changed = true;
+                }
+                if &live_out != out.live_out.get(&bb).unwrap() {
+                    out.live_out.insert(bb, live_out.clone());
+                    changed = true;
+                }
+            }
+        }
+
+        // 3) Instruction-level backward scan per block: compute live-after per instruction
+        // and record live_across_call = live_after for Call instructions.
+        for &bb in &all_blocks {
+            // start from live_out[bb]
+            let mut live_after: ValueSet = out.live_out.get(&bb).cloned().unwrap_or_default();
+
+            // iterate instructions in reverse
+            let block_data = &self.func.cfg.blocks[bb.index()];
+            for &inst_id in block_data.insts.iter().rev() {
+                // if this inst is a Call, the values live AFTER the call are exactly those that
+                // must be preserved across the call (they are needed later).
+                if let IData::Call { .. } = &self.func.dfg.insts[inst_id.index()] {
+                    out.live_across_call.insert(inst_id, live_after.iter().copied().collect());
+                }
+
+                // compute live_before = uses(inst) U (live_after - defs(inst))
+                let (srcs, dsts) = Self::inst_uses_defs(inst_id, &self.func.dfg, &self.func.dfg.insts[inst_id.index()]);
+
+                // live_after - defs
+                for d in &dsts {
+                    live_after.remove(d);
+                }
+                // add uses
+                for s in &srcs {
+                    live_after.insert(*s);
+                }
+
+                // continue: live_after now represents the liveness before the previous instruction
+            }
+        }
+
+        out
+    }
+
+    /// Helper: return (sources, dests) for an instruction.
+    /// This version needs inst id because results are stored in `dfg.inst_results`.
+    fn inst_uses_defs(inst_id: Inst, dfg: &DataFlowGraph, inst: &IData) -> (Vec<Value>, Vec<Value>) {
+        match inst {
+            IData::Binary { args, .. } => {
+                let srcs: Vec<Value> = args.to_vec();
+                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                (srcs, dsts)
+            }
+            IData::IConst { .. } | IData::FConst { .. } => {
+                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                (vec![], dsts)
+            }
+            IData::Jump { .. } => (vec![], vec![]),
+            IData::Branch { arg, .. } => (vec![*arg], vec![]),
+            IData::Call { args, .. } => {
+                let srcs: Vec<Value> = args.iter().copied().collect();
+                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                (srcs, dsts)
+            }
+            IData::Return { args } => {
+                let srcs: Vec<Value> = args.iter().copied().collect();
+                (srcs, vec![])
+            }
+            IData::StackLoad { .. } | IData::StackAddr { .. } => {
+                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                (vec![], dsts)
+            }
+            IData::StackStore { arg, .. } => (vec![*arg], vec![]),
+            IData::Nop => (vec![], vec![]),
         }
     }
 }
@@ -837,175 +1131,6 @@ pub fn disassemble_instruction(lowered_func: &LoweredSsaFunc, offset: usize) -> 
         _ => {
             println!("Unknown opcode: {opcode_byte}");
             offset + 1
-        }
-    }
-}
-
-type ValueSet = HashSet<Value>;
-
-/// Liveness results for the function
-#[derive(Debug, Default)]
-pub struct Liveness {
-    pub uses: HashMap<Block, ValueSet>,
-    pub defs: HashMap<Block, ValueSet>,
-    pub live_in: HashMap<Block, ValueSet>,
-    pub live_out: HashMap<Block, ValueSet>,
-    /// per-value interval: (`start_pos`, `end_pos`) where positions are instruction-order indices
-    pub intervals: HashMap<Value, (usize, usize)>,
-    /// for each Call instruction, which values are live *across* the call
-    pub live_across_call: HashMap<Inst, Vec<Value>>,
-}
-
-impl LoweringContext<'_> {
-    /// Compute uses/defs per block and then live-in/live-out via standard backward dataflow.
-    /// After that compute per-value intervals (start..end) and detect values live across call insts.
-    pub fn compute_liveness(&mut self) -> Liveness {
-        let mut out = Liveness::default();
-
-        // collect all blocks by index
-        let all_blocks: Vec<Block> = (0..self.func.cfg.blocks.len()).map(Block::new).collect();
-
-        // 1) compute uses/defs per block
-        for &bb in &all_blocks {
-            let mut uses = ValueSet::default();
-            let mut defs = ValueSet::default();
-
-            let block_data = unsafe { &(*ptr::from_ref::<Self>(self)).func.cfg.blocks[bb.index()] };
-            for &inst_id in &block_data.insts {
-                let (srcs, dsts) = Self::inst_uses_defs(inst_id, &self.func.dfg, &self.func.dfg.insts[inst_id.index()]);
-                for v in srcs {
-                    if !defs.contains(&v) {
-                        uses.insert(v);
-                    }
-                }
-                for v in dsts {
-                    defs.insert(v);
-                }
-            }
-
-            out.uses.insert(bb, uses);
-            out.defs.insert(bb, defs);
-        }
-
-        // 2) block-level dataflow fixpoint (live_in / live_out)
-        for &bb in &all_blocks {
-            out.live_in.insert(bb, ValueSet::default());
-            out.live_out.insert(bb, ValueSet::default());
-        }
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for &bb in all_blocks.iter().rev() {
-                // compute liveOut by looking at successors via terminator
-                let mut live_out = HashSet::<Value>::default();
-                let block_data = unsafe { &(*ptr::from_ref::<Self>(self)).func.cfg.blocks[bb.index()] };
-                if let Some(&last_inst) = block_data.insts.last() {
-                    match &self.func.dfg.insts[last_inst.index()] {
-                        IData::Jump { destination } => {
-                            if let Some(s_in) = out.live_in.get(destination) {
-                                live_out.extend(s_in.iter().copied());
-                            }
-                        }
-                        IData::Branch { destinations, .. } => {
-                            for &succ in destinations {
-                                if let Some(s_in) = out.live_in.get(&succ) {
-                                    live_out.extend(s_in.iter().copied());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // liveIn = uses U (liveOut - defs)
-                let mut live_in = out.uses.get(&bb).cloned().unwrap_or_default();
-                let defs = out.defs.get(&bb).cloned().unwrap_or_default();
-                for v in &live_out {
-                    if !defs.contains(v) {
-                        live_in.insert(*v);
-                    }
-                }
-
-                if &live_in != out.live_in.get(&bb).unwrap() {
-                    out.live_in.insert(bb, live_in.clone());
-                    changed = true;
-                }
-                if &live_out != out.live_out.get(&bb).unwrap() {
-                    out.live_out.insert(bb, live_out.clone());
-                    changed = true;
-                }
-            }
-        }
-
-        // 3) Instruction-level backward scan per block: compute live-after per instruction
-        // and record live_across_call = live_after for Call instructions.
-        for &bb in &all_blocks {
-            // start from live_out[bb]
-            let mut live_after: ValueSet = out.live_out.get(&bb).cloned().unwrap_or_default();
-
-            // iterate instructions in reverse
-            let block_data = unsafe { &(*ptr::from_ref::<Self>(self)).func.cfg.blocks[bb.index()] };
-            for &inst_id in block_data.insts.iter().rev() {
-                // if this inst is a Call, the values live AFTER the call are exactly those that
-                // must be preserved across the call (they are needed later).
-                if let IData::Call { .. } = &self.func.dfg.insts[inst_id.index()] {
-                    out.live_across_call.insert(inst_id, live_after.iter().copied().collect());
-                }
-
-                // compute live_before = uses(inst) U (live_after - defs(inst))
-                let (srcs, dsts) = Self::inst_uses_defs(inst_id, &self.func.dfg, &self.func.dfg.insts[inst_id.index()]);
-
-                // live_after - defs
-                for d in &dsts {
-                    live_after.remove(d);
-                }
-                // add uses
-                for s in &srcs {
-                    live_after.insert(*s);
-                }
-
-                // continue: live_after now represents the liveness before the previous instruction
-            }
-        }
-
-        out
-    }
-
-    /// Helper: return (sources, dests) for an instruction.
-    /// This version needs inst id because results are stored in `dfg.inst_results`.
-    fn inst_uses_defs(inst_id: Inst, dfg: &DataFlowGraph, inst: &IData) -> (Vec<Value>, Vec<Value>) {
-        match inst {
-            IData::Binary { args, .. } => {
-                let srcs: Vec<Value> = args.to_vec();
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (srcs, dsts)
-            }
-            IData::Const { .. } | IData::FConst { .. } => {
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (vec![], dsts)
-            }
-            IData::Jump { .. } => (vec![], vec![]),
-            IData::Branch { arg, .. } => (vec![*arg], vec![]),
-            IData::Call { args, .. } => {
-                let srcs: Vec<Value> = args.iter().copied().collect();
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (srcs, dsts)
-            }
-            IData::Return { args } => {
-                let srcs: Vec<Value> = args.iter().copied().collect();
-                (srcs, vec![])
-            }
-            IData::StackLoad { .. } | IData::StackAddr { .. } => {
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (vec![], dsts)
-            }
-            IData::StackStore { arg, .. } => (vec![*arg], vec![]),
-            IData::Nop => (vec![], vec![]),
         }
     }
 }

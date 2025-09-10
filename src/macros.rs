@@ -1,0 +1,69 @@
+
+#[macro_export]
+macro_rules! define_opcodes {
+    (
+        $context:ident,
+        $(
+            $opcode:ident($($arg_name:ident: $arg_type:ty),*) = $val:expr
+            $(
+                ,
+                @
+                $idata_pattern:pat
+                $(if bits == $size_guard:expr)?
+                => |$results:ident, $chunk:ident $(,$inst_id:ident)?|
+                $emitter_body:block
+            )?
+        ),*
+    ) => {
+        /// Opcodes for the VM.
+        #[repr(u8)]
+        #[non_exhaustive]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Opcode {
+            $(
+                $opcode,
+            )*
+        }
+
+        impl<'a> LoweringContext<'a> {
+            pub fn generated_emit_inst(&mut $context, inst_id: Inst, chunk: &mut BytecodeChunk) {
+                let inst = &$context.func.dfg.insts[inst_id.index()];
+                let results = $context.func.dfg.inst_results.get(&inst_id);
+
+                #[allow(unused, dead_code)]
+                #[warn(unreachable_patterns)]
+                match inst {
+                    $(
+                        $(
+                            $idata_pattern $(if {
+                                $size_guard == inst.bits(inst_id, &$context.func)
+                            })? => {
+                                let $results = results;
+                                let $chunk = chunk;
+                                $( let $inst_id = inst_id; )?
+                                $emitter_body
+                            }
+                        )?
+                    )*
+
+                    IData::IConst { .. }     => unreachable!("invalid bitwidth"),
+                    IData::FConst { .. }     => unreachable!("invalid bitwidth"),
+                    IData::StackLoad { .. }  => unreachable!("invalid bitwidth"),
+                    IData::StackStore { .. } => unreachable!("invalid bitwidth"),
+                }
+            }
+        }
+
+        #[must_use]
+        pub fn generated_disassemble_instruction(_lowered_func: &LoweredSsaFunc, _offset: usize) -> usize {
+            unimplemented!()
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! reborrow {
+    ($expr:expr => $ty: ty) => {
+        unsafe { &*($expr as *const $ty) }
+    };
+}
