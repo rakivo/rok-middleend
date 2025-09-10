@@ -25,7 +25,7 @@ macro_rules! define_opcodes {
             )*
         }
 
-        impl<'a> LoweringContext<'a> {
+        impl<'a> $crate::lower::LoweringContext<'a> {
             pub fn generated_emit_inst(&mut $context, inst_id: Inst, chunk: &mut BytecodeChunk) {
                 let inst = &$context.func.dfg.insts[inst_id.index()];
                 let results = $context.func.dfg.inst_results.get(&inst_id);
@@ -55,7 +55,10 @@ macro_rules! define_opcodes {
         }
 
         #[must_use]
-        pub fn generated_disassemble_instruction(_lowered_func: &LoweredSsaFunc, _offset: usize) -> usize {
+        pub fn generated_disassemble_instruction(
+            _lowered_func: &$crate::lower::LoweredSsaFunc,
+            _offset: usize
+        ) -> usize {
             unimplemented!()
         }
     };

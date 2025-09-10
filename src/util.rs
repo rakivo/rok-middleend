@@ -5,7 +5,18 @@ use std::borrow::Cow;
 
 use smallvec::SmallVec;
 
+#[inline(always)]
+pub const fn align_up(value: u32, alignment: u32) -> u32 {
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+#[inline(always)]
+pub const fn align_down(value: i32, alignment: i32) -> i32 {
+    value & !(alignment - 1)
+}
+
 /// SAFETY: Caller ensures that this is safe
+#[inline(always)]
 pub const unsafe fn reborrow<'a, T>(t: &T) -> &'a T {
     unsafe { &*(t as *const T) }
 }

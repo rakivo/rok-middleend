@@ -1,8 +1,9 @@
 /// A minimal SSA-based intermediate representation.
-use hashbrown::{HashMap, HashSet};
-use smallvec::{smallvec, SmallVec};
 use std::fmt;
 use std::hash::Hash;
+use std::collections::{HashMap, HashSet};
+
+use smallvec::{smallvec, SmallVec};
 
 //-////////////////////////////////////////////////////////////////////
 // Entity References

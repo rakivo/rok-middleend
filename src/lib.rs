@@ -27,5 +27,6 @@ mod macros;
 pub mod vm;
 pub mod ssa;
 pub mod util;
+pub mod lower;
 pub mod bytecode;
 
