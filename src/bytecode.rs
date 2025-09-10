@@ -1,6 +1,8 @@
+use crate::lower::LoweredSsaFunc;
 use crate::util::{self, IntoBytes};
 use crate::ssa::{
     Inst,
+    Block,
     InstructionData as IData,
     SsaFunc,
     BinaryOp,
@@ -534,3 +536,239 @@ impl BytecodeChunk {
         self.append_placeholder_bytes(mem::size_of::<T>());
     }
 }
+
+//-////////////////////////////////////////////////////////////////////
+// Bytecode Disassembler
+//
+
+pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
+    let print_metadata = false;
+
+    println!("== {name} ==");
+    println!("Frame size: {} bytes", lowered_func.chunk.frame_info.total_size);
+
+    // Print stack slot allocations
+    for (slot, allocation) in &lowered_func.chunk.frame_info.slot_allocations {
+        println!("  s{}: {:?} at FP{:+} (size: {})",
+                slot.index(), allocation.ty, allocation.offset, allocation.size);
+    }
+    println!();
+
+    let mut offset = 0;
+    let mut curr_block: Option<Block> = None;
+    while offset < lowered_func.chunk.code.len() {
+        offset = disassemble_instruction(
+            lowered_func,
+            offset,
+            &mut curr_block,
+            print_metadata
+        );
+    }
+}
+
+#[must_use]
+#[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
+pub fn disassemble_instruction(
+    lowered: &LoweredSsaFunc,
+    offset: usize,
+    current_block: &mut Option<Block>,
+    print_metadata: bool
+) -> usize {
+    let offset_str = format!("{offset:05X} ");
+
+    #[cfg(debug_assertions)]
+    if print_metadata {
+        if let Some(crate::lower::InstMeta {
+            pc, inst, size
+        }) = lowered.context.pc_to_inst_meta.get(&offset) {
+            // look up the block this instruction belongs to
+            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst) {
+                if Some(block) != *current_block {
+                    *current_block = Some(block);
+                    println!();
+                    println!("{offset_str} ; block({})", block.index());
+                }
+            }
+
+            println!();
+            println!("{offset_str};");
+            print!("{offset_str};");
+            println!("{}", lowered.context.func.pretty_print_inst(*inst));
+            println!("{offset_str};");
+            print!("{offset_str};");
+            println!("  pc={pc:?} inst_id={inst:?}, size={size}");
+            println!("{offset_str};");
+        }
+    }
+
+    print!("{offset_str}");
+
+    let opcode_byte = lowered.chunk.code[offset];
+    let opcode: Opcode = unsafe { std::mem::transmute(opcode_byte) };
+
+    match opcode {
+        Opcode::IConst64 => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val = u64::from_le_bytes(lowered.chunk.code[offset + 5..offset + 13].try_into().unwrap());
+            println!("ICONST64    v{dst}, {val}_i64");
+            offset + 13
+        }
+        Opcode::FConst64 => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val = f64::from_le_bytes(lowered.chunk.code[offset + 5..offset + 13].try_into().unwrap());
+            println!("FCONST64    v{dst}, {val}_f64");
+            offset + 13
+        }
+        Opcode::Add => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("ADD         v{dst}, v{a}, v{b}");
+            offset + 13
+        }
+        Opcode::Sub => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("SUB         v{dst}, v{a}, v{b}");
+            offset + 13
+        }
+        Opcode::Mul => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("MUL         v{dst}, v{a}, v{b}");
+            offset + 13
+        }
+        Opcode::Lt => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            println!("LT          v{dst}, v{a}, v{b}");
+            offset + 13
+        }
+        Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            let op_name = match opcode {
+                Opcode::FAdd => "FADD",
+                Opcode::FSub => "FSUB",
+                Opcode::FMul => "FMUL",
+                Opcode::FDiv => "FDIV",
+                _ => unreachable!(),
+            };
+            println!("{op_name}        v{dst}, v{a}, v{b}");
+            offset + 13
+        }
+        Opcode::Load64 => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let addr = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("LOAD64      v{dst}, v{addr}");
+            offset + 9
+        }
+        Opcode::Store64 => {
+            let addr = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("STORE64     v{addr}, v{val}");
+            offset + 9
+        }
+        Opcode::Jump16 => {
+            let jmp = i16::from_le_bytes(lowered.chunk.code[offset + 1..offset + 3].try_into().unwrap());
+            let sign = if jmp < 0 { "-" } else { "+" };
+            let target_addr = offset as i16 + 3 + jmp;
+            println!("JUMP16      {target_addr:04X} ({sign}0x{jmp:X})");
+            offset + 3
+        }
+        Opcode::BranchIf16 => {
+            let cond = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let jmp = i16::from_le_bytes(lowered.chunk.code[offset + 5..offset + 7].try_into().unwrap());
+            let target_addr = offset as i16 + 7 + jmp;
+            let sign = if jmp < 0 { "-" } else { "+" };
+            println!("BRANCH_IF16 v{cond}, {target_addr:04X} ({sign}0x{jmp:X})");
+            offset + 7
+        }
+        Opcode::Call => {
+            let func_id = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            println!("CALL        F{func_id}");
+            offset + 5
+        }
+        Opcode::Mov => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("MOV         v{dst}, v{src}");
+            offset + 9
+        }
+        Opcode::Return => {
+            println!("RETURN");
+            offset + 1
+        }
+
+        // New stack frame operations
+        Opcode::FrameSetup => {
+            let size = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            println!("FRAME_SETUP {size}");
+            offset + 5
+        }
+        Opcode::FrameTeardown => {
+            println!("FRAME_TEARDOWN");
+            offset + 1
+        }
+
+        // Frame pointer relative operations
+        Opcode::FpLoad32 => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("FP_LOAD32   v{dst}, FP{fp_offset:+}");
+            offset + 9
+        }
+        Opcode::FpLoad64 => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("FP_LOAD64   v{dst}, FP{fp_offset:+}");
+            offset + 9
+        }
+        Opcode::FpStore32 => {
+            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("FP_STORE32  FP{fp_offset:+}, v{src}");
+            offset + 9
+        }
+        Opcode::FpStore64 => {
+            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("FP_STORE64  FP{fp_offset:+}, v{src}");
+            offset + 9
+        }
+        Opcode::FpAddr => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("FP_ADDR     v{dst}, FP{fp_offset:+}");
+            offset + 9
+        }
+
+        // Stack pointer operations
+        Opcode::SpAdd => {
+            let sp_offset = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            println!("SP_ADD      {sp_offset}");
+            offset + 5
+        }
+        Opcode::SpSub => {
+            let sp_offset = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            println!("SP_SUB      {sp_offset}");
+            offset + 5
+        }
+        Opcode::SpAddr => {
+            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let sp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            println!("SP_ADDR     v{dst}, SP{sp_offset:+}");
+            offset + 9
+        }
+
+        _ => {
+            println!("Unknown opcode: {opcode_byte}");
+            offset + 1
+        }
+    }
+}
+

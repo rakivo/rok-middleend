@@ -184,6 +184,11 @@ impl SsaFunc {
         self.fmt_inst(&mut inst_string, inst).unwrap();
         inst_string
     }
+
+    #[inline]
+    pub fn inst_to_block(&self, inst: Inst) -> Option<Block> {
+        self.layout.inst_blocks.get(&inst).copied()
+    }
 }
 
 /// Maps logical entities (Inst, Block) to their container.

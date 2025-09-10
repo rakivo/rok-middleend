@@ -1,6 +1,7 @@
 use bytecode_cl::vm::VirtualMachine;
+use bytecode_cl::lower::{LoweringContext};
+use bytecode_cl::bytecode::disassemble_chunk;
 use bytecode_cl::ssa::{FunctionBuilder, Type, Signature, Module};
-use bytecode_cl::bytecode::{LoweringContext, disassemble_chunk};
 
 fn main() {
     let mut module = Module::new();
@@ -63,6 +64,6 @@ fn main() {
 
     let mut vm = VirtualMachine::new();
     let id = vm.add_function(lowered_func.chunk);
-    let ret = vm.call_function(id, &[30]);
+    let ret = vm.call_function(id, &[35]);
     println!("{ret:#?}");
 }

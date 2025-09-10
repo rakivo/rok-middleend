@@ -16,7 +16,8 @@ use crate::ssa::{
     Value
 };
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet, BTreeMap};
 
 type ValueSet = HashSet<Value>;
 
@@ -56,7 +57,7 @@ pub struct LoweringContext<'a> {
     pub spill_slots: HashMap<Value, StackSlot>,
 
     #[cfg(debug_assertions)]
-    pc_to_inst_meta: HashMap<usize, InstMeta>,  // index == inst index in lowered list
+    pub pc_to_inst_meta: HashMap<usize, InstMeta>,  // index == inst index in lowered list
 }
 
 /// The context for lowering a single function.
@@ -81,11 +82,16 @@ impl<'a> LoweringContext<'a> {
     /// Lower the function to a bytecode chunk.
     #[must_use]
     pub fn lower(mut self) -> LoweredSsaFunc<'a> {
-        // 1. Assign stack slots (register numbers) to all SSA values.
-        self.assign_ssa_slots();
-
         let liv = self.compute_liveness();
         self.liveness = Some(liv);
+
+        let config = RegAllocConfig::new(
+            self.func.signature.params.len() as _
+        ); // or customize as needed
+        self.assign_ssa_slots_smart(config);
+
+        // 1. Assign stack slots (register numbers) to all SSA values.
+        // self.assign_ssa_slots();
         self.preallocate_spill_slots();
 
         // After possibly growing the frame with spill slots, copy frame info to chunk
@@ -194,8 +200,9 @@ impl<'a> LoweringContext<'a> {
         slot
     }
 
+    #[allow(unused)]
     #[inline(always)]
-    fn assign_ssa_slots(&mut self) {
+    fn assign_ssa_slots_naive(&mut self) {
         for i in 0..self.func.dfg.values.len() {
             let value = Value::new(i);
             self.ssa_to_reg.insert(
@@ -203,6 +210,75 @@ impl<'a> LoweringContext<'a> {
                 i as u32 + Self::RETURN_VALUES_REGISTERS_COUNT
             );
         }
+    }
+
+    fn assign_ssa_slots_smart(&mut self, config: RegAllocConfig) {
+        // Clear any existing assignments
+        self.ssa_to_reg.clear();
+
+        // First, assign function arguments to their fixed registers
+        // Arguments are typically the first N values that are used but never defined
+        let mut all_defined: HashSet<Value> = HashSet::new();
+        let mut all_used: HashSet<Value> = HashSet::new();
+
+        // Collect all defined and used values
+        for block_idx in 0..self.func.cfg.blocks.len() {
+            let block_id = Block::new(block_idx);
+            let block_data = &self.func.cfg.blocks[block_id.index()];
+
+            for &inst_id in &block_data.insts {
+                let inst_data = &self.func.dfg.insts[inst_id.index()];
+                let (uses, defs) = Self::inst_uses_defs(inst_id, &self.func.dfg, inst_data);
+
+                for val in uses {
+                    all_used.insert(val);
+                }
+                for val in defs {
+                    all_defined.insert(val);
+                }
+            }
+        }
+
+        // Function arguments are values that are used but never defined
+        let mut function_args: Vec<Value> = all_used.difference(&all_defined).copied().collect();
+        function_args.sort_by_key(|v| v.index()); // Sort by value index for deterministic assignment
+
+        // Pre-assign function arguments to r8, r9, r10, etc.
+        for (i, &arg_val) in function_args.iter().enumerate() {
+            let reg = config.return_registers + i as u32;
+            self.ssa_to_reg.insert(arg_val, reg);
+        }
+
+        #[cfg(debug_assertions)]
+        println!("Pre-assigned {} function arguments: {:?}",
+            function_args.len(),
+            function_args.iter().enumerate().map(|(i, v)| (v.index(), config.return_registers + i as u32)).collect::<Vec<_>>()
+        );
+
+        // Update config with actual argument count
+        let mut updated_config = config;
+        updated_config.argument_count = function_args.len() as u32;
+
+        let mut allocator = SmartRegisterAllocator::new(updated_config);
+        allocator.allocate(self.func);
+
+        // Apply register assignments for non-argument values
+        for (&value, &reg) in &allocator.assignments {
+            self.ssa_to_reg.insert(value, reg);
+        }
+
+        // Handle spilled values by ensuring they have spill slots
+        for spilled_value in &allocator.spilled_values {
+            if !self.spill_slots.contains_key(spilled_value) {
+                let ty = self.func.dfg.values[spilled_value.index()].ty;
+                let slot = self.allocate_spill_slot(ty);
+                self.spill_slots.insert(*spilled_value, slot);
+            }
+        }
+
+        let stats = allocator.stats();
+        #[cfg(debug_assertions)]
+        println!("Register allocation stats: {:?}", stats);
     }
 
     #[inline(always)]
@@ -451,230 +527,464 @@ impl LoweringContext<'_> {
     }
 }
 
-//-////////////////////////////////////////////////////////////////////
-// Bytecode Disassembler
-//
+/// Configuration for register allocation
+#[derive(Clone, Debug)]
+pub struct RegAllocConfig {
+    /// Total number of registers available
+    pub total_registers: u32,
+    /// Number of registers reserved for return values (r0-r7)
+    pub return_registers: u32,
+    /// Number of function arguments (reserves r8..r8+arg_count)
+    pub argument_count: u32,
+    /// Enable/disable register coalescing optimizations
+    pub enable_coalescing: bool,
+    /// Spill cost threshold - higher values prefer registers over spilling
+    pub spill_cost_threshold: f32,
+}
 
-pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
-    println!("== {name} ==");
-    println!("Frame size: {} bytes", lowered_func.chunk.frame_info.total_size);
-
-    // Print stack slot allocations
-    for (slot, allocation) in &lowered_func.chunk.frame_info.slot_allocations {
-        println!("  s{}: {:?} at FP{:+} (size: {})",
-                slot.index(), allocation.ty, allocation.offset, allocation.size);
-    }
-    println!();
-
-    let mut offset = 0;
-    let mut curr_block: Option<Block> = None;
-    while offset < lowered_func.chunk.code.len() {
-        offset = disassemble_instruction(lowered_func, offset, &mut curr_block);
+impl RegAllocConfig {
+    fn new(argument_count: u32) -> Self {
+        Self {
+            argument_count,
+            total_registers: 256,
+            return_registers: 8,
+            enable_coalescing: true,
+            spill_cost_threshold: 10.0,
+        }
     }
 }
 
-#[must_use]
-#[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
-pub fn disassemble_instruction(
-    lowered: &LoweredSsaFunc,
-    offset: usize,
-    current_block: &mut Option<Block>,
-) -> usize {
-    let offset_str = format!("{offset:05X} ");
+/// Represents a live interval for a value
+#[derive(Clone, Debug)]
+pub struct LiveInterval {
+    pub value: Value,
+    pub start: u32,
+    pub end: u32,
+    pub spill_cost: f32,
+    pub reg: Option<u32>,
+    pub spilled: bool,
+    /// Positions where this value is used (for spill code placement)
+    pub use_positions: Vec<u32>,
+    /// Positions where this value is defined
+    pub def_positions: Vec<u32>,
+}
 
-    #[cfg(debug_assertions)]
-    {
-        if let Some(InstMeta {
-            pc, inst, size
-        }) = lowered.context.pc_to_inst_meta.get(&offset) {
-            // Look up the block this instruction belongs to
-            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst) {
-                if Some(block) != *current_block {
-                    *current_block = Some(block);
-                    println!();
-                    println!("{offset_str} ; block({})", block.index());
+impl LiveInterval {
+    fn new(value: Value, start: u32, end: u32) -> Self {
+        Self {
+            value,
+            start,
+            end,
+            spill_cost: 0.0,
+            reg: None,
+            spilled: false,
+            use_positions: Vec::new(),
+            def_positions: Vec::new(),
+        }
+    }
+
+    fn overlaps(&self, other: &LiveInterval) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    fn length(&self) -> u32 {
+        self.end - self.start
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum SpillOp {
+    /// Load value from spill slot before use
+    Load { value: Value, before_pos: u32 },
+    /// Store value to spill slot after def
+    Store { value: Value, after_pos: u32 },
+}
+
+/// Smart register allocator using linear scan with improvements
+pub struct SmartRegisterAllocator {
+    pub config: RegAllocConfig,
+    intervals: Vec<LiveInterval>,
+    position_counter: u32,
+
+    /// Final register assignments
+    pub assignments: HashMap<Value, u32>,
+    /// Values that need to be spilled
+    pub spilled_values: HashSet<Value>,
+    /// Spill code insertions: (position, spill_ops)
+    pub spill_insertions: BTreeMap<u32, Vec<SpillOp>>,
+    /// Pre-assigned registers (e.g., function arguments)
+    pub pre_assigned: HashMap<Value, u32>,
+}
+
+impl SmartRegisterAllocator {
+    pub fn new(config: RegAllocConfig) -> Self {
+        Self {
+            config,
+            intervals: Vec::new(),
+            position_counter: 0,
+            assignments: HashMap::new(),
+            spilled_values: HashSet::new(),
+            spill_insertions: BTreeMap::new(),
+            pre_assigned: HashMap::new(),
+        }
+    }
+
+    /// Main entry point: allocate registers for the given liveness information
+    pub fn allocate(&mut self, func: &SsaFunc) {
+        #[cfg(debug_assertions)]
+        println!("Starting register allocation with {} blocks", func.cfg.blocks.len());
+
+        for param in 0..func.signature.params.len() {
+            let value = func.cfg.blocks[0].params[param];
+            self.pre_assigned.insert(value, param as u32 + self.config.return_registers);
+        }
+
+        // 1. Build live intervals from liveness analysis
+        self.build_intervals(func);
+
+        #[cfg(debug_assertions)]
+        println!("Built {} intervals", self.intervals.len());
+
+        // 2. Calculate spill costs
+        self.calculate_spill_costs();
+
+        // 3. Optional: coalesce intervals for move elimination
+        if self.config.enable_coalescing {
+            self.coalesce_intervals(func);
+        }
+
+        println!("PRE ASSIGNED: {:#?}", self.pre_assigned);
+
+        // 4. Sort intervals by start position
+        self.intervals.sort_by_key(|i| i.start);
+
+        #[cfg(debug_assertions)]
+        {
+            println!("Live intervals:");
+            for (i, interval) in self.intervals.iter().enumerate() {
+                println!("  {}: v{} [{}, {}) cost={:.2}",
+                    i, interval.value.index(), interval.start, interval.end, interval.spill_cost);
+            }
+        }
+
+        // 5. Linear scan register allocation
+        self.linear_scan();
+
+        #[cfg(debug_assertions)]
+        {
+            println!("Register assignments:");
+            for (value, reg) in &self.assignments {
+                println!("  v{} -> r{}", value.index(), reg);
+            }
+            println!("Spilled values: {:?}", self.spilled_values.iter().map(|v| v.index()).collect::<Vec<_>>());
+        }
+
+        // 6. Insert spill code where needed
+        self.generate_spill_code();
+    }
+
+    fn build_intervals(&mut self, func: &SsaFunc) {
+        let mut value_ranges: HashMap<Value, (u32, u32)> = HashMap::new();
+        let mut value_uses: HashMap<Value, Vec<u32>> = HashMap::new();
+        let mut value_defs: HashMap<Value, Vec<u32>> = HashMap::new();
+
+        self.position_counter = 0;
+
+        // Walk through all blocks in a consistent order
+        for block_idx in 0..func.cfg.blocks.len() {
+            let block_id = Block::new(block_idx);
+            let block_data = &func.cfg.blocks[block_id.index()];
+
+            for &inst_id in &block_data.insts {
+                let inst_data = &func.dfg.insts[inst_id.index()];
+                let (uses, defs) = LoweringContext::inst_uses_defs(inst_id, &func.dfg, inst_data);
+
+                // Record uses
+                for &val in &uses {
+                    let entry = value_ranges.entry(val).or_insert((u32::MAX, 0));
+                    entry.0 = entry.0.min(self.position_counter);
+                    entry.1 = entry.1.max(self.position_counter);
+                    value_uses.entry(val).or_default().push(self.position_counter);
                 }
+
+                // Record defs
+                for &val in &defs {
+                    let entry = value_ranges.entry(val).or_insert((u32::MAX, 0));
+                    entry.0 = entry.0.min(self.position_counter);
+                    entry.1 = entry.1.max(self.position_counter);
+                    value_defs.entry(val).or_default().push(self.position_counter);
+                }
+
+                self.position_counter += 1;
+            }
+        }
+
+        // Create intervals
+        for (value, (start, end)) in value_ranges {
+            if start == u32::MAX { continue; } // unused value
+
+            let mut interval = LiveInterval::new(value, start, end + 1);
+            interval.use_positions = value_uses.get(&value).cloned().unwrap_or_default();
+            interval.def_positions = value_defs.get(&value).cloned().unwrap_or_default();
+
+            self.intervals.push(interval);
+        }
+    }
+
+    fn calculate_spill_costs(&mut self) {
+        for interval in &mut self.intervals {
+            // Pre-assigned values should never be spilled
+            if self.pre_assigned.contains_key(&interval.value) {
+                interval.spill_cost = f32::INFINITY;
+                continue;
             }
 
-            println!();
-            println!("{offset_str};");
-            print!("{offset_str};");
-            println!("{}", lowered.context.func.pretty_print_inst(*inst));
-            println!("{offset_str};");
-            print!("{offset_str};");
-            println!("  pc={pc:?} inst_id={inst:?}, size={size}");
-            println!("{offset_str};");
+            let mut cost = 0.0;
+
+            // Base cost: number of uses + defs
+            cost += (interval.use_positions.len() + interval.def_positions.len()) as f32;
+
+            // Length penalty: longer intervals are cheaper to spill
+            cost /= (interval.length() as f32).max(1.0);
+
+            // Loop depth bonus (simplified: assume all instructions have same weight)
+            // In a real implementation, you'd analyze loop nesting
+
+            // Call crossing penalty: values live across calls are more expensive to keep in registers
+            // since they need to be preserved anyway
+            cost *= 0.8; // slight preference for spilling call-crossing values
+
+            interval.spill_cost = cost;
         }
     }
 
-    print!("{offset_str}");
-
-    let opcode_byte = lowered.chunk.code[offset];
-    let opcode: Opcode = unsafe { std::mem::transmute(opcode_byte) };
-
-    match opcode {
-        Opcode::IConst64 => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let val = u64::from_le_bytes(lowered.chunk.code[offset + 5..offset + 13].try_into().unwrap());
-            println!("ICONST64    v{dst}, {val}_i64");
-            offset + 13
-        }
-        Opcode::FConst64 => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let val = f64::from_le_bytes(lowered.chunk.code[offset + 5..offset + 13].try_into().unwrap());
-            println!("FCONST64    v{dst}, {val}_f64");
-            offset + 13
-        }
-        Opcode::Add => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
-            println!("ADD         v{dst}, v{a}, v{b}");
-            offset + 13
-        }
-        Opcode::Sub => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
-            println!("SUB         v{dst}, v{a}, v{b}");
-            offset + 13
-        }
-        Opcode::Mul => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
-            println!("MUL         v{dst}, v{a}, v{b}");
-            offset + 13
-        }
-        Opcode::Lt => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
-            println!("LT          v{dst}, v{a}, v{b}");
-            offset + 13
-        }
-        Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let a = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            let b = u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
-            let op_name = match opcode {
-                Opcode::FAdd => "FADD",
-                Opcode::FSub => "FSUB",
-                Opcode::FMul => "FMUL",
-                Opcode::FDiv => "FDIV",
-                _ => unreachable!(),
-            };
-            println!("{op_name}        v{dst}, v{a}, v{b}");
-            offset + 13
-        }
-        Opcode::Load64 => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let addr = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("LOAD64      v{dst}, v{addr}");
-            offset + 9
-        }
-        Opcode::Store64 => {
-            let addr = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let val = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("STORE64     v{addr}, v{val}");
-            offset + 9
-        }
-        Opcode::Jump16 => {
-            let jmp = i16::from_le_bytes(lowered.chunk.code[offset + 1..offset + 3].try_into().unwrap());
-            let sign = if jmp < 0 { "-" } else { "+" };
-            let target_addr = offset as i16 + 3 + jmp;
-            println!("JUMP16      {target_addr:04X} ({sign}0x{jmp:X})");
-            offset + 3
-        }
-        Opcode::BranchIf16 => {
-            let cond = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let jmp = i16::from_le_bytes(lowered.chunk.code[offset + 5..offset + 7].try_into().unwrap());
-            let target_addr = offset as i16 + 7 + jmp;
-            let sign = if jmp < 0 { "-" } else { "+" };
-            println!("BRANCH_IF16 v{cond}, {target_addr:04X} ({sign}0x{jmp:X})");
-            offset + 7
-        }
-        Opcode::Call => {
-            let func_id = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            println!("CALL        F{func_id}");
-            offset + 5
-        }
-        Opcode::Mov => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("MOV         v{dst}, v{src}");
-            offset + 9
-        }
-        Opcode::Return => {
-            println!("RETURN");
-            offset + 1
+    fn coalesce_intervals(&mut self, func: &SsaFunc) {
+        fn is_move(inst_id: Inst, func: &SsaFunc) -> Option<(Value, Value)> {
+            let inst_data = &func.dfg.insts[inst_id.index()];
+            match inst_data {
+                IData::Binary { args, .. } => {
+                    if let Some(results) = func.dfg.inst_results.get(&inst_id) {
+                        if results.len() == 1 {
+                            return Some((args[0], results[0]));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            None
         }
 
-        // New stack frame operations
-        Opcode::FrameSetup => {
-            let size = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            println!("FRAME_SETUP {size}");
-            offset + 5
-        }
-        Opcode::FrameTeardown => {
-            println!("FRAME_TEARDOWN");
-            offset + 1
+        // Look for move-like operations that can be coalesced
+        // This is a simplified version - real coalescing is more complex
+        let mut coalesce_candidates = Vec::new();
+
+        for block_idx in 0..func.cfg.blocks.len() {
+            let block_id = Block::new(block_idx);
+            let block_data = &func.cfg.blocks[block_id.index()];
+
+            for &inst_id in &block_data.insts {
+                if let Some((src, dst)) = is_move(inst_id, func) {
+                    // Don't coalesce with pre-assigned values
+                    if !self.pre_assigned.contains_key(&src) && !self.pre_assigned.contains_key(&dst) {
+                        coalesce_candidates.push((src, dst));
+                    }
+                }
+            }
         }
 
-        // Frame pointer relative operations
-        Opcode::FpLoad32 => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("FP_LOAD32   v{dst}, FP{fp_offset:+}");
-            offset + 9
-        }
-        Opcode::FpLoad64 => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("FP_LOAD64   v{dst}, FP{fp_offset:+}");
-            offset + 9
-        }
-        Opcode::FpStore32 => {
-            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("FP_STORE32  FP{fp_offset:+}, v{src}");
-            offset + 9
-        }
-        Opcode::FpStore64 => {
-            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("FP_STORE64  FP{fp_offset:+}, v{src}");
-            offset + 9
-        }
-        Opcode::FpAddr => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let fp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("FP_ADDR     v{dst}, FP{fp_offset:+}");
-            offset + 9
-        }
+        // Apply coalescing (simplified)
+        for (src, dst) in coalesce_candidates {
+            if let (Some(src_idx), Some(dst_idx)) = (
+                self.intervals.iter().position(|i| i.value == src),
+                self.intervals.iter().position(|i| i.value == dst)
+            ) {
+                if src_idx != dst_idx && !self.intervals[src_idx].overlaps(&self.intervals[dst_idx]) {
+                    // Merge intervals
+                    let src_interval = self.intervals.remove(src_idx.max(dst_idx));
+                    let dst_idx = if src_idx > dst_idx { dst_idx } else { dst_idx - 1 };
 
-        // Stack pointer operations
-        Opcode::SpAdd => {
-            let sp_offset = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            println!("SP_ADD      {sp_offset}");
-            offset + 5
-        }
-        Opcode::SpSub => {
-            let sp_offset = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            println!("SP_SUB      {sp_offset}");
-            offset + 5
-        }
-        Opcode::SpAddr => {
-            let dst = u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let sp_offset = i32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            println!("SP_ADDR     v{dst}, SP{sp_offset:+}");
-            offset + 9
-        }
-
-        _ => {
-            println!("Unknown opcode: {opcode_byte}");
-            offset + 1
+                    self.intervals[dst_idx].start = self.intervals[dst_idx].start.min(src_interval.start);
+                    self.intervals[dst_idx].end = self.intervals[dst_idx].end.max(src_interval.end);
+                    self.intervals[dst_idx].use_positions.extend(src_interval.use_positions);
+                    self.intervals[dst_idx].def_positions.extend(src_interval.def_positions);
+                    self.intervals[dst_idx].spill_cost += src_interval.spill_cost;
+                }
+            }
         }
     }
+
+    fn linear_scan(&mut self) {
+        let mut active = Vec::new(); // indices into self.intervals
+
+        // Track which registers are in use
+        let mut used_regs = HashSet::new();
+
+        // Mark pre-assigned registers as used
+        for &reg in self.pre_assigned.values() {
+            used_regs.insert(reg);
+        }
+
+        // Calculate available register range
+        // Skip return registers (r0-r7) and argument registers (r8..r8+arg_count)
+        let first_available = self.config.return_registers + self.config.argument_count;
+
+        // Build free register pool
+        let mut free_regs = Vec::new();
+        for reg in first_available..self.config.total_registers {
+            if !used_regs.contains(&reg) {
+                free_regs.push(reg);
+            }
+        }
+        free_regs.reverse(); // Use lower register numbers first
+
+        // Process pre-assigned intervals first
+        for i in 0..self.intervals.len() {
+            if let Some(&pre_reg) = self.pre_assigned.get(&self.intervals[i].value) {
+                self.intervals[i].reg = Some(pre_reg);
+                active.push(i);
+            }
+        }
+
+        // Process remaining intervals
+        for i in 0..self.intervals.len() {
+            // Skip if already pre-assigned
+            if self.pre_assigned.contains_key(&self.intervals[i].value) {
+                continue;
+            }
+
+            let current_start = self.intervals[i].start;
+
+            // Expire old intervals (but not pre-assigned ones)
+            active.retain(|&idx| {
+                if self.intervals[idx].end <= current_start {
+                    // Only return the register to the pool if it's not pre-assigned
+                    if !self.pre_assigned.contains_key(&self.intervals[idx].value) {
+                        if let Some(reg) = self.intervals[idx].reg {
+                            // Only add back if it's in the allocatable range
+                            if reg >= first_available {
+                                free_regs.push(reg);
+                                free_regs.sort_unstable();
+                                free_regs.reverse();
+                            }
+                        }
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+
+            // Try to assign a register
+            if let Some(reg) = free_regs.pop() {
+                self.intervals[i].reg = Some(reg);
+                active.push(i);
+            } else {
+                // Need to spill
+                self.spill_at_interval(i, &mut active);
+            }
+        }
+
+        // Build final assignments
+        for interval in &self.intervals {
+            if let Some(reg) = interval.reg {
+                self.assignments.insert(interval.value, reg);
+            } else {
+                self.spilled_values.insert(interval.value);
+            }
+        }
+    }
+
+    fn spill_at_interval(&mut self, current: usize, active: &mut Vec<usize>) {
+        // Find the active interval with the highest spill cost (lowest priority)
+        // BUT never spill pre-assigned values
+        let spill_candidate = active.iter()
+            .filter(|&&idx| !self.pre_assigned.contains_key(&self.intervals[idx].value))
+            .max_by(|&&a, &&b| {
+                // Compare by end position first (spill the one that ends latest)
+                let end_cmp = self.intervals[a].end.cmp(&self.intervals[b].end);
+                if end_cmp != Ordering::Equal {
+                    return end_cmp;
+                }
+                // Then by spill cost (spill the cheapest)
+                self.intervals[a].spill_cost.partial_cmp(&self.intervals[b].spill_cost)
+                    .unwrap_or(Ordering::Equal)
+            }).copied();
+
+        if let Some(spill_idx) = spill_candidate {
+            // Check if it's better to spill the current interval instead
+            if self.intervals[spill_idx].end > self.intervals[current].end &&
+               self.intervals[current].spill_cost < self.config.spill_cost_threshold {
+
+                // Spill the candidate
+                let reg = self.intervals[spill_idx].reg.take().unwrap();
+                self.intervals[spill_idx].spilled = true;
+                self.intervals[current].reg = Some(reg);
+
+                // Replace spilled interval with current in active list
+                let pos = active.iter().position(|&x| x == spill_idx).unwrap();
+                active[pos] = current;
+            } else {
+                // Spill current interval
+                self.intervals[current].spilled = true;
+            }
+        } else {
+            // No active intervals to spill, current must be spilled
+            self.intervals[current].spilled = true;
+        }
+    }
+
+    fn generate_spill_code(&mut self) {
+        for interval in &self.intervals {
+            if interval.spilled {
+                // Generate loads before uses
+                for &use_pos in &interval.use_positions {
+                    self.spill_insertions.entry(use_pos)
+                        .or_default()
+                        .push(SpillOp::Load {
+                            value: interval.value,
+                            before_pos: use_pos
+                        });
+                }
+
+                // Generate stores after defs
+                for &def_pos in &interval.def_positions {
+                    self.spill_insertions.entry(def_pos)
+                        .or_default()
+                        .push(SpillOp::Store {
+                            value: interval.value,
+                            after_pos: def_pos
+                        });
+                }
+            }
+        }
+    }
+
+    /// Get the register assigned to a value, if any
+    pub fn get_register(&self, value: Value) -> Option<u32> {
+        self.assignments.get(&value).copied()
+    }
+
+    /// Check if a value was spilled
+    pub fn is_spilled(&self, value: Value) -> bool {
+        self.spilled_values.contains(&value)
+    }
+
+    /// Get statistics about the allocation
+    pub fn stats(&self) -> RegAllocStats {
+        RegAllocStats {
+            total_intervals: self.intervals.len(),
+            allocated_registers: self.assignments.len(),
+            spilled_values: self.spilled_values.len(),
+            spill_operations: self.spill_insertions.values().map(|v| v.len()).sum(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RegAllocStats {
+    pub total_intervals: usize,
+    pub allocated_registers: usize,
+    pub spilled_values: usize,
+    pub spill_operations: usize,
 }
 
