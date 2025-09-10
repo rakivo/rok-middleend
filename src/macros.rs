@@ -60,10 +60,3 @@ macro_rules! define_opcodes {
         }
     };
 }
-
-#[macro_export]
-macro_rules! reborrow {
-    ($expr:expr => $ty: ty) => {
-        unsafe { &*($expr as *const $ty) }
-    };
-}

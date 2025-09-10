@@ -5,6 +5,11 @@ use std::borrow::Cow;
 
 use smallvec::SmallVec;
 
+/// SAFETY: Caller ensures that this is safe
+pub const unsafe fn reborrow<'a, T>(t: &T) -> &'a T {
+    unsafe { &*(t as *const T) }
+}
+
 /// Helper trait for converting T to bytes
 pub trait IntoBytes<'a> {
     #[must_use]

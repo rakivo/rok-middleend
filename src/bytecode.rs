@@ -1,6 +1,15 @@
-use crate::{ssa::{
-    Block, DataFlowGraph, Inst, InstructionData as IData, SsaFunc, BinaryOp, StackSlot, Type, Value
-}, util::IntoBytes};
+use crate::util::{IntoBytes, reborrow};
+use crate::ssa::{
+    Block,
+    DataFlowGraph,
+    Inst,
+    InstructionData as IData,
+    SsaFunc,
+    BinaryOp,
+    StackSlot,
+    Type,
+    Value
+};
 
 use std::mem;
 
@@ -618,7 +627,7 @@ impl<'a> LoweringContext<'a> {
 
     fn preallocate_spill_slots(&mut self) {
         // SAFETY: we don't mutate self.liveness here
-        let liv = reborrow!(self.liveness() => Liveness);
+        let liv = unsafe { reborrow(self.liveness()) };
 
         for values in liv.live_across_call.values() {
             for &v in values {
