@@ -1,12 +1,17 @@
-use std::{fmt, ptr};
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 use crate::bytecode::Opcode;
 use crate::bytecode::BytecodeChunk;
+use crate::primary::PrimaryMap;
+use crate::ssa::FuncId;
+
+use std::{fmt, ptr};
+use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 // ============================================================================
 // VM DATA STRUCTURES (OPTIMIZED)
 // ============================================================================
+
+crate::entity_ref!(VMFuncId);
 
 /// VM execution errors
 #[derive(Debug, Clone)]
@@ -138,7 +143,7 @@ impl InstructionDecoder {
 
 #[derive(Copy, Debug, Clone)]
 pub struct StackFrame {
-    pub func_id: u32,
+    pub vm_func_id: VMFuncId,
     pub ret_pc: usize,
     pub fp: usize,
     pub sp: usize,
@@ -147,14 +152,15 @@ pub struct StackFrame {
 impl StackFrame {
     #[inline]
     #[must_use]
-    pub const fn new(func_id: u32, ret_pc: usize, fp: usize, sp: usize) -> Self {
-        StackFrame { func_id, ret_pc, fp, sp }
+    pub const fn new(vm_func_id: VMFuncId, ret_pc: usize, fp: usize, sp: usize) -> Self {
+        StackFrame { vm_func_id, ret_pc, fp, sp }
     }
 }
 
 pub struct VirtualMachine {
     // Function management
-    functions: Vec<BytecodeChunk>,
+    vm_functions: PrimaryMap<VMFuncId, BytecodeChunk>,
+    functions: HashMap<FuncId, VMFuncId>,
 
     // Execution state
     call_stack: Vec<StackFrame>,
@@ -189,7 +195,8 @@ impl VirtualMachine {
         }
 
         VirtualMachine {
-            functions: Vec::with_capacity(32),
+            functions: HashMap::with_capacity(32),
+            vm_functions: PrimaryMap::with_capacity(32),
             call_stack: Vec::with_capacity(32),
             pc: 0,
             stack_memory,
@@ -200,18 +207,14 @@ impl VirtualMachine {
     }
 
     #[inline]
-    pub fn add_function(&mut self, chunk: BytecodeChunk) -> u32 {
-        let id = self.functions.len() as u32;
-        self.functions.push(chunk);
-        id
+    pub fn add_function(&mut self, func_id: FuncId, chunk: BytecodeChunk) -> VMFuncId {
+        let vm_id = self.vm_functions.push(chunk);
+        self.functions.insert(func_id, vm_id);
+        vm_id
     }
 
     #[inline]
-    pub fn call_function(&mut self, function_id: u32, args: &[u64]) -> Result<[u64; 8], VMError> {
-        if function_id as usize >= self.functions.len() {
-            return Err(VMError::InvalidFunctionId(function_id));
-        }
-
+    pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
         unsafe {
             // Clear return registers for new function call
             ptr::write_bytes(self.registers.as_mut_ptr(), 0, 8);
@@ -224,7 +227,8 @@ impl VirtualMachine {
         }
 
         // Set up initial frame
-        let chunk = &self.functions[function_id as usize];
+        let vm_func_id = *self.functions.get(&func_id).unwrap();
+        let chunk = self.get_chunk(vm_func_id);
         let frame_size = chunk.frame_info.total_size as usize;
         let new_fp = self.stack_top;
         let new_sp = self.stack_top + frame_size;
@@ -234,7 +238,7 @@ impl VirtualMachine {
             return Err(VMError::StackOverflow);
         }
 
-        let frame = StackFrame::new(function_id, 0, new_fp, new_sp);
+        let frame = StackFrame::new(vm_func_id, 0, new_fp, new_sp);
         self.call_stack.push(frame);
         self.stack_top = new_sp;
         self.pc = 0;
@@ -279,14 +283,13 @@ impl VirtualMachine {
         let mut frame = *self.current_frame();
 
         while !self.halted && !self.call_stack.is_empty() {
-            let func_id = frame.func_id;
+            let func_id = frame.vm_func_id;
             let chunk = self.get_chunk(func_id);
             let mut decoder = InstructionDecoder::new(&chunk.code);
             decoder.set_pos(self.pc, chunk.code.as_ptr());
 
-            // Fetch opcode
             let opcode_byte = decoder.read_u8();
-            let opcode: Opcode = unsafe { std::mem::transmute(opcode_byte) };
+            let opcode = unsafe { std::mem::transmute(opcode_byte) };
 
             match opcode {
                 Opcode::IConst8 => {
@@ -437,7 +440,8 @@ impl VirtualMachine {
 
                     let ret_pc = decoder.get_pos(chunk.code.as_ptr());
 
-                    let new_chunk = self.get_chunk(func_id);
+                    let vm_func_id = *self.functions.get(&FuncId::from_u32(func_id)).unwrap();
+                    let new_chunk = self.get_chunk(vm_func_id);
                     let frame_size = new_chunk.frame_info.total_size as usize;
                     let new_fp = save_start + save_size; // Frame starts after saved registers
                     let new_sp = new_fp + frame_size;
@@ -447,7 +451,12 @@ impl VirtualMachine {
                         return Err(VMError::StackOverflow);
                     }
 
-                    let new_frame = StackFrame::new(func_id, ret_pc, new_fp, new_sp);
+                    let new_frame = StackFrame::new(
+                        vm_func_id,
+                        ret_pc,
+                        new_fp,
+                        new_sp
+                    );
                     self.call_stack.push(new_frame);
                     frame = new_frame;
                     self.stack_top = new_sp;
@@ -806,16 +815,18 @@ impl VirtualMachine {
 
     // helper to get chunk pointer in a single place (safer to centralize)
     #[inline(always)]
-    fn get_chunk(&self, function_id: u32) -> &BytecodeChunk {
+    fn get_chunk(&self, func_id: VMFuncId) -> &BytecodeChunk {
         #[cfg(debug_assertions)]
         {
-            self.functions
-                .get(function_id as usize)
+            self.vm_functions
+                .get(func_id)
                 .expect("invalid function id")
         }
         #[cfg(not(debug_assertions))]
-        {
-            unsafe { &*self.functions.as_ptr().add(function_id as usize) }
+        unsafe {
+            self.vm_functions
+                .get(func_id)
+                .unwrap_unchecked()
         }
     }
 }

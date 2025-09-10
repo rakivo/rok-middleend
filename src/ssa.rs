@@ -1,4 +1,7 @@
 /// A minimal SSA-based intermediate representation.
+use crate::entity::EntityRef;
+use crate::primary::PrimaryMap;
+
 use std::fmt;
 use std::hash::Hash;
 use std::collections::{HashMap, HashSet};
@@ -11,44 +14,11 @@ use smallvec::{smallvec, SmallVec};
 // We use newtype wrappers for indices to provide type safety.
 // This pattern is common in compilers (e.g., Cranelift, rustc).
 
-/// A macro to create a new entity reference type.
-macro_rules! entity_ref {
-    ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub struct $name(u32);
-
-        impl $name {
-            #[must_use]
-            pub fn new(index: usize) -> Self {
-                Self(index as u32)
-            }
-
-            #[must_use]
-            pub fn index(self) -> usize {
-                self.0 as usize
-            }
-        }
-
-        impl std::ops::Deref for $name {
-            type Target = u32;
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}({})", stringify!($name).to_lowercase(), self.0)
-            }
-        }
-    };
-}
-
-entity_ref!(Value);
-entity_ref!(Inst);
-entity_ref!(Block);
-entity_ref!(StackSlot);
-entity_ref!(FuncId);
+crate::entity_ref!(Value, "Value");
+crate::entity_ref!(Inst, "Inst");
+crate::entity_ref!(Block, "Block");
+crate::entity_ref!(StackSlot, "StackSlot");
+crate::entity_ref!(FuncId, "FuncId");
 
 //-////////////////////////////////////////////////////////////////////
 // Core Data Structures
@@ -105,13 +75,13 @@ pub struct DataFlowGraph {
 
 impl DataFlowGraph {
     pub fn make_value(&mut self, data: ValueData) -> Value {
-        let id = Value::new(self.values.len());
+        let id = Value::from_u32(self.values.len() as _);
         self.values.push(data);
         id
     }
 
     pub fn make_inst(&mut self, data: InstructionData) -> Inst {
-        let id = Inst::new(self.insts.len());
+        let id = Inst::from_u32(self.insts.len() as _);
         self.insts.push(data);
         id
     }
@@ -161,7 +131,7 @@ impl SsaFunc {
     }
 
     pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
-        let id = StackSlot::new(self.stack_slots.len());
+        let id = StackSlot::from_u32(self.stack_slots.len() as _);
         self.stack_slots.push(StackSlotData { ty, size });
         id
     }
@@ -276,7 +246,7 @@ pub enum ValueDef {
 
 #[derive(Debug, Clone, Default)]
 pub struct Module {
-    pub functions: Vec<SsaFunc>,
+    pub functions: PrimaryMap<FuncId, SsaFunc>
 }
 
 impl Module {
@@ -286,7 +256,6 @@ impl Module {
     }
 
     pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
-        let id = FuncId::new(self.functions.len());
         self.functions.push(SsaFunc {
             name: name.as_ref().into(),
             signature,
@@ -294,16 +263,19 @@ impl Module {
                 is_external: true,
             },
             ..Default::default()
-        });
-        id
+        })
     }
 
-    pub fn define_function(&mut self, _id: FuncId) {
-        // ...
+    pub fn define_function(&mut self, id: FuncId) {
+        let func = self.get_func_mut(id);
+        func.metadata = FunctionMetadata {
+            is_external: false,
+            ..func.metadata
+        };
     }
 
     pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
-        &mut self.functions[id.index()]
+        &mut self.functions[id]
     }
 }
 

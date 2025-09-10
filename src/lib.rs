@@ -27,6 +27,11 @@ mod macros;
 pub mod vm;
 pub mod ssa;
 pub mod util;
+pub mod iter;
+pub mod keys;
 pub mod lower;
+pub mod entity;
+pub mod primary;
 pub mod bytecode;
+pub mod boxed_slice;
 

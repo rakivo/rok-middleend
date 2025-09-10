@@ -1,3 +1,4 @@
+use crate::entity::EntityRef;
 use crate::util::{self, reborrow};
 use crate::bytecode::{
     StackFrameInfo,

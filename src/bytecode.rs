@@ -1,3 +1,4 @@
+use crate::entity::EntityRef;
 use crate::lower::LoweredSsaFunc;
 use crate::util::{self, IntoBytes};
 use crate::ssa::{
@@ -492,7 +493,7 @@ impl StackFrameInfo {
 
         // Allocate stack slots (growing downward from frame pointer)
         for (slot_idx, slot_data) in func.stack_slots.iter().enumerate() {
-            let slot = StackSlot::new(slot_idx);
+            let slot = StackSlot::from_u32(slot_idx as _);
             let size = slot_data.size;
 
             let align = slot_data.ty.align_bytes() as i32;
