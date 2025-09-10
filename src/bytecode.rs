@@ -1025,13 +1025,13 @@ pub fn disassemble_instruction(
             }
 
             println!();
-            println!("{offset_str} ;");
-            print!("{offset_str} ;");
+            println!("{offset_str};");
+            print!("{offset_str};");
             println!("{}", lowered.context.func.pretty_print_inst(*inst));
-            println!("{offset_str} ;");
-            print!("{offset_str} ;");
+            println!("{offset_str};");
+            print!("{offset_str};");
             println!("  pc={pc:?} inst_id={inst:?}, size={size}");
-            println!("{offset_str} ;");
+            println!("{offset_str};");
         }
     }
 

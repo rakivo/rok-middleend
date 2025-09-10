@@ -47,7 +47,7 @@ entity_ref!(Value);
 entity_ref!(Inst);
 entity_ref!(Block);
 entity_ref!(StackSlot);
-entity_ref!(FunctionId);
+entity_ref!(FuncId);
 
 //-////////////////////////////////////////////////////////////////////
 // Core Data Structures
@@ -216,7 +216,7 @@ pub enum InstructionData {
     FConst { value: f64 },
     Jump { destination: Block },
     Branch { destinations: [Block; 2], arg: Value },
-    Call { func_id: FunctionId, args: SmallVec<[Value; 8]> },
+    Call { func_id: FuncId, args: SmallVec<[Value; 8]> },
     Return { args: SmallVec<[Value; 2]> },
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
@@ -279,8 +279,8 @@ impl Module {
         Self::default()
     }
 
-    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FunctionId {
-        let id = FunctionId::new(self.functions.len());
+    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
+        let id = FuncId::new(self.functions.len());
         self.functions.push(SsaFunc {
             name: name.as_ref().into(),
             signature,
@@ -292,11 +292,11 @@ impl Module {
         id
     }
 
-    pub fn define_function(&mut self, _id: FunctionId) {
+    pub fn define_function(&mut self, _id: FuncId) {
         // ...
     }
 
-    pub fn get_func_mut(&mut self, id: FunctionId) -> &mut SsaFunc {
+    pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
         &mut self.functions[id.index()]
     }
 }
@@ -316,6 +316,7 @@ struct Cursor {
 }
 
 impl<'a> FunctionBuilder<'a> {
+    #[inline]
     pub fn new(func: &'a mut SsaFunc) -> Self {
         let entry_block = if let Some(block) = func.layout.block_entry {
             block
@@ -328,20 +329,25 @@ impl<'a> FunctionBuilder<'a> {
         Self { func, cursor: Cursor { current_block: entry_block } }
     }
 
+    #[inline(always)]
     pub fn create_block(&mut self) -> Block {
         let id = Block::new(self.func.cfg.blocks.len());
         self.func.cfg.blocks.push(BasicBlockData::default());
         id
     }
 
+    #[inline(always)]
     pub fn switch_to_block(&mut self, block: Block) {
         self.cursor.current_block = block;
     }
 
-    #[must_use] pub fn current_block(&self) -> Block {
+    #[must_use]
+    #[inline(always)]
+    pub fn current_block(&self) -> Block {
         self.cursor.current_block
     }
 
+    #[inline]
     pub fn add_block_params(&mut self, types: &[Type]) -> &[Value] {
         let block = self.current_block();
         let block_data = &mut self.func.cfg.blocks[block.index()];
@@ -356,19 +362,23 @@ impl<'a> FunctionBuilder<'a> {
         &block_data.params[param_idx_start..]
     }
 
+    #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
         self.func.create_stack_slot(ty, size)
     }
 
+    #[inline(always)]
     pub fn ins<'short>(&'short mut self) -> InstBuilder<'short, 'a> {
         let position = self.cursor;
         InstBuilder { builder: self, position }
     }
 
+    #[inline(always)]
     pub fn seal_block(&mut self, block: Block) {
         self.func.cfg.blocks[block.index()].is_sealed = true;
     }
 
+    #[inline(always)]
     pub fn finalize(&mut self) {
         for i in 0..self.func.cfg.blocks.len() {
             let block = Block::new(i);
@@ -383,6 +393,7 @@ pub struct InstBuilder<'short, 'long> {
 }
 
 impl InstBuilder<'_, '_> {
+    #[inline]
     fn insert_inst(&mut self, data: InstructionData) -> Inst {
         let inst = self.builder.func.dfg.make_inst(data);
         let block = self.position.current_block;
@@ -391,6 +402,7 @@ impl InstBuilder<'_, '_> {
         inst
     }
 
+    #[inline]
     fn make_inst_result(&mut self, inst: Inst, ty: Type, result_idx: u8) -> Value {
         let value = self.builder.func.dfg.make_value(ValueData {
             ty,
@@ -400,78 +412,92 @@ impl InstBuilder<'_, '_> {
         value
     }
 
+    #[inline]
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
         let inst = self.insert_inst(InstructionData::IConst { value: val });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::IAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::ILt, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::ISub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FSub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FMul, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
         let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FDiv, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn fconst(&mut self, ty: Type, val: f64) -> Value {
         let inst = self.insert_inst(InstructionData::FConst { value: val });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
         let inst = self.insert_inst(InstructionData::StackLoad { slot });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn stack_load(&mut self, ty: Type, slot: StackSlot) -> Value {
         let inst = self.insert_inst(InstructionData::StackLoad { slot });
         self.make_inst_result(inst, ty, 0)
     }
 
+    #[inline]
     pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
         self.insert_inst(InstructionData::StackStore { slot, arg: val });
     }
 
+    #[inline]
     pub fn jump(&mut self, dest: Block) {
         self.insert_inst(InstructionData::Jump { destination: dest });
         let from = self.position.current_block;
         self.builder.func.cfg.add_pred(from, dest);
     }
 
+    #[inline]
     pub fn brif(&mut self, cond: Value, true_dest: Block, false_dest: Block) {
         self.insert_inst(InstructionData::Branch { destinations: [true_dest, false_dest], arg: cond });
         let from = self.position.current_block;
@@ -479,13 +505,15 @@ impl InstBuilder<'_, '_> {
         self.builder.func.cfg.add_pred(from, false_dest);
     }
 
-    pub fn call(&mut self, func_id: FunctionId, args: &[Value]) -> SmallVec<[Value; 2]> {
+    #[inline]
+    pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
         let inst = self.insert_inst(InstructionData::Call { func_id, args: args.into() });
         let result_ty = Type::I64; // TODO: Get from function signature
         let result = self.make_inst_result(inst, result_ty, 0);
         smallvec![result]
     }
 
+    #[inline]
     pub fn ret(&mut self, vals: &[Value]) {
         self.insert_inst(InstructionData::Return { args: vals.into() });
     }
