@@ -612,7 +612,7 @@ impl InstBuilder<'_, '_> {
     #[inline]
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
         let inst = self.insert_inst(InstructionData::Call { func_id, args: args.into() });
-        let result_ty = Type::I64; // TODO: Get from function signature
+        let result_ty = Type::I64; // TODO(#2): Get from function signature
         let result = self.make_inst_result(inst, result_ty, 0);
         smallvec![result]
     }
