@@ -536,7 +536,7 @@ impl Opcode {
 /// Stack slot allocation information
 #[derive(Debug, Clone)]
 pub struct StackSlotAllocation {
-    pub offset: i32,    // Offset from frame pointer (negative for locals)
+    pub offset: u32,    // Offset from frame pointer (negative for locals)
     pub size: u32,      // Size in bytes
     pub ty: Type,       // Type of the slot
 }
@@ -553,25 +553,29 @@ impl StackFrameInfo {
     #[must_use]
     pub fn calculate_layout(func: &SsaFunc) -> Self {
         let mut frame_info = StackFrameInfo::default();
-        let mut current_offset = 0i32;
+        let mut current_offset = 0u32; // start at FP+0
 
-        // Allocate stack slots (growing downward from frame pointer)
+        // Allocate stack slots (growing upward)
         for (slot_idx, slot_data) in func.stack_slots.iter().enumerate() {
             let slot = StackSlot::from_u32(slot_idx as _);
+            let align = slot_data.ty.align_bytes() as u32;
+
+            // Align current offset upward
+            current_offset = util::align_up(current_offset, align);
+
             let size = slot_data.size;
-
-            let align = slot_data.ty.align_bytes() as i32;
-            current_offset = util::align_down(current_offset - size as i32, align);
-
             frame_info.slot_allocations.insert(slot, StackSlotAllocation {
-                offset: current_offset,
                 size,
+                offset: current_offset,
                 ty: slot_data.ty,
             });
+
+            // Move current offset past this slot
+            current_offset += size;
         }
 
-        // Total frame size (make it 16-byte aligned for calling convention)
-        frame_info.total_size = util::align_up((-current_offset) as u32, 16);
+        // Total frame size (still aligned to 16 bytes for ABI)
+        frame_info.total_size = util::align_up(current_offset as u32, 16);
 
         frame_info
     }

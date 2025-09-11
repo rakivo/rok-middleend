@@ -86,13 +86,13 @@ impl<'a> LoweringContext<'a> {
         let liv = self.compute_liveness();
         self.liveness = Some(liv);
 
-        // let config = RegAllocConfig::new(
-        //     self.func.signature.params.len() as _
-        // );
-        // self.assign_ssa_slots_smart(config);
+        let config = RegAllocConfig::new(
+            self.func.signature.params.len() as _
+        );
+        self.assign_ssa_slots_smart(config);
 
         // 1. Assign stack slots (register numbers) to all SSA values.
-        self.assign_ssa_slots_naive();
+        // self.assign_ssa_slots_naive();
         self.preallocate_spill_slots();
 
         // After possibly growing the frame with spill slots, copy frame info to chunk
@@ -175,28 +175,23 @@ impl<'a> LoweringContext<'a> {
     /// Allocate a new FP-relative stack slot for a spill and register it in `frame_info`.
     /// Returns the `StackSlot` handle.
     fn allocate_spill_slot(&mut self, ty: Type) -> StackSlot {
-        let size = ty.bytes();
-        let align = ty.align_bytes() as i32;
+        let size = ty.bytes() as i32;
+        let align = ty.align_bytes() as u32;
 
-        // compute new offset below existing frame (frame grows downward)
-        // existing total is number of bytes currently reserved (positive)
-        let existing_total = self.frame_info.total_size as i32;
+        // compute new offset above existing frame
+        let mut offset = self.frame_info.total_size;
+        offset = util::align_up(offset, align);
 
-        let offset = util::align_down(
-            -existing_total - (size as i32),
-            align
-        );
-
-        let slot = self.func.create_stack_slot(ty, size);
+        let slot = self.func.create_stack_slot(ty, size as u32);
 
         self.frame_info.slot_allocations.insert(slot, StackSlotAllocation {
             offset,
-            size,
+            size: size as u32,
             ty,
         });
 
-        // update total_size (positive)
-        self.frame_info.total_size = util::align_up((-offset) as u32, 16);
+        // update total_size
+        self.frame_info.total_size = util::align_up(offset as u32 + size as u32, 16);
 
         slot
     }
@@ -213,7 +208,7 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    #[allow(unused)]    
+    #[allow(unused)]
     fn assign_ssa_slots_smart(&mut self, config: RegAllocConfig) {
         // Clear any existing assignments
         self.ssa_to_reg.clear();
