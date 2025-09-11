@@ -1,7 +1,7 @@
-use bytecode_cl::vm::VirtualMachine;
-use bytecode_cl::lower::{LoweringContext};
-use bytecode_cl::bytecode::disassemble_chunk;
-use bytecode_cl::ssa::{FunctionBuilder, Type, Signature, Module};
+use rok_bytecode::vm::VirtualMachine;
+use rok_bytecode::lower::{LoweringContext};
+use rok_bytecode::bytecode::disassemble_chunk;
+use rok_bytecode::ssa::{FunctionBuilder, Type, Signature, Module};
 
 fn main() {
     let mut module = Module::new();
