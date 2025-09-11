@@ -1,7 +1,11 @@
+use crate::ssa::Type;
+use crate::util;
 use crate::bytecode::Opcode;
 use crate::bytecode::BytecodeChunk;
 use crate::primary::PrimaryMap;
+use crate::ssa::DataId;
 use crate::ssa::FuncId;
+use crate::ssa::Module;
 
 use std::{fmt, ptr};
 use std::collections::HashMap;
@@ -18,7 +22,8 @@ crate::entity_ref!(VMFuncId);
 pub enum VMError {
     EmptyCallStack,
     InvalidOpcode(u8),
-    InvalidFunctionId(u32),
+    InvalidDataId(u32),
+    InvalidFuncId(u32),
     StackOverflow,
     StackUnderflow,
     DivisionByZero,
@@ -34,7 +39,8 @@ impl fmt::Display for VMError {
         match self {
             VMError::EmptyCallStack => write!(f, "Empty call stack"),
             VMError::InvalidOpcode(op) => write!(f, "Invalid opcode: {op}"),
-            VMError::InvalidFunctionId(id) => write!(f, "Invalid function ID: {id}"),
+            VMError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
+            VMError::InvalidFuncId(id) => write!(f, "Invalid function ID: {id}"),
             VMError::StackOverflow => write!(f, "Stack overflow"),
             VMError::StackUnderflow => write!(f, "Stack underflow"),
             VMError::DivisionByZero => write!(f, "Division by zero"),
@@ -157,10 +163,20 @@ impl StackFrame {
     }
 }
 
+#[derive(Clone)]
+pub enum VMFunc {
+    Internal(VMFuncId),
+    External {
+        rety: Type,
+        args: Box<[Type]>,
+        addr: *const ()
+    }
+}
+
 pub struct VirtualMachine {
     // Function management
     vm_functions: PrimaryMap<VMFuncId, BytecodeChunk>,
-    functions: HashMap<FuncId, VMFuncId>,
+    functions: HashMap<FuncId, VMFunc>,
 
     // Execution state
     call_stack: Vec<StackFrame>,
@@ -169,6 +185,9 @@ pub struct VirtualMachine {
     // Memory regions
     stack_memory: Vec<u8>,
     stack_top: usize,
+
+    data_memory: Vec<u8>,
+    data_offsets: HashMap<DataId, u32>,
 
     // Working registers (for arithmetic operations)
     registers: [u64; 256], // r0-r7: return values, r8+: general purpose/args
@@ -195,6 +214,8 @@ impl VirtualMachine {
         }
 
         VirtualMachine {
+            data_memory: Vec::new(),
+            data_offsets: HashMap::new(),
             functions: HashMap::with_capacity(32),
             vm_functions: PrimaryMap::with_capacity(32),
             call_stack: Vec::with_capacity(32),
@@ -206,15 +227,58 @@ impl VirtualMachine {
         }
     }
 
+    pub fn load_module_data(&mut self, module: &Module) {
+        let mut current_offset = 0;
+
+        for (data_id, data_desc) in module.datas.iter() {
+            if !data_desc.is_external {
+                // Align data appropriately (e.g., 8-byte alignment)
+                current_offset = util::align_up(current_offset, 8);
+
+                // Record where this data starts
+                self.data_offsets.insert(data_id, current_offset);
+
+                // Append the data contents
+                self.data_memory.extend_from_slice(&data_desc.contents);
+                current_offset += data_desc.contents.len() as u32;
+            }
+        }
+    }
+
     #[inline]
     pub fn add_function(&mut self, func_id: FuncId, chunk: BytecodeChunk) -> VMFuncId {
         let vm_id = self.vm_functions.push(chunk);
-        self.functions.insert(func_id, vm_id);
+        self.functions.insert(func_id, VMFunc::Internal(vm_id));
         vm_id
     }
 
     #[inline]
+    pub fn add_external_function(
+        &mut self,
+        func_id: FuncId,
+        addr: usize,
+        rety: Type,
+        args: impl AsRef<[Type]>
+    ) {
+        self.functions.insert(func_id, VMFunc::External {
+            addr: addr as _,
+            rety: rety,
+            args: args.as_ref().into()
+        });
+    }
+
+    #[inline]
     pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
+        // Set up initial frame
+        let vm_func = self.functions.get(&func_id).unwrap();
+
+        let vm_func_id = match vm_func {
+            VMFunc::Internal(id) => *id,
+            VMFunc::External { .. } => {
+                todo!()
+            }
+        };
+
         unsafe {
             // Clear return registers for new function call
             ptr::write_bytes(self.registers.as_mut_ptr(), 0, 8);
@@ -226,8 +290,6 @@ impl VirtualMachine {
             }
         }
 
-        // Set up initial frame
-        let vm_func_id = *self.functions.get(&func_id).unwrap();
         let chunk = self.get_chunk(vm_func_id);
         let frame_size = chunk.frame_info.total_size as usize;
         let new_fp = self.stack_top;
@@ -328,7 +390,7 @@ impl VirtualMachine {
                     self.reg_write(reg as _, value);
                 }
 
-                Opcode::Add => {
+                Opcode::IAdd => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
@@ -337,7 +399,7 @@ impl VirtualMachine {
                     self.reg_write(dst as _, val1.wrapping_add(val2) as u64);
                 }
 
-                Opcode::Sub => {
+                Opcode::ISub => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
@@ -346,7 +408,7 @@ impl VirtualMachine {
                     self.reg_write(dst as _, val1.wrapping_sub(val2) as u64);
                 }
 
-                Opcode::Mul => {
+                Opcode::IMul => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
@@ -355,7 +417,7 @@ impl VirtualMachine {
                     self.reg_write(dst as _, val1.wrapping_mul(val2) as u64);
                 }
 
-                Opcode::Lt => {
+                Opcode::ILt => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
@@ -427,7 +489,7 @@ impl VirtualMachine {
 
                     #[cfg(debug_assertions)]
                     if func_id as usize >= self.functions.len() {
-                        return Err(VMError::InvalidFunctionId(func_id));
+                        return Err(VMError::InvalidFuncId(func_id));
                     }
 
                     let save_start = self.stack_top;
@@ -440,29 +502,85 @@ impl VirtualMachine {
 
                     let ret_pc = decoder.get_pos(chunk.code.as_ptr());
 
-                    let vm_func_id = *self.functions.get(&FuncId::from_u32(func_id)).unwrap();
-                    let new_chunk = self.get_chunk(vm_func_id);
-                    let frame_size = new_chunk.frame_info.total_size as usize;
-                    let new_fp = save_start + save_size; // Frame starts after saved registers
-                    let new_sp = new_fp + frame_size;
+                    // Set up initial frame
+                    let vm_func = self.functions.get(&FuncId::from_u32(func_id)).unwrap();
 
-                    #[cfg(debug_assertions)]
-                    if new_sp >= self.stack_memory.len() {
-                        return Err(VMError::StackOverflow);
+                    match vm_func {
+                        VMFunc::Internal(vm_func_id) => {
+                            let vm_func_id = *vm_func_id;
+                            let new_chunk = self.get_chunk(vm_func_id);
+                            let frame_size = new_chunk.frame_info.total_size as usize;
+                            let new_fp = save_start + save_size; // Frame starts after saved registers
+                            let new_sp = new_fp + frame_size;
+
+                            #[cfg(debug_assertions)]
+                            if new_sp >= self.stack_memory.len() {
+                                return Err(VMError::StackOverflow);
+                            }
+
+                            let new_frame = StackFrame::new(
+                                vm_func_id,
+                                ret_pc,
+                                new_fp,
+                                new_sp
+                            );
+                            self.call_stack.push(new_frame);
+                            frame = new_frame;
+                            self.stack_top = new_sp;
+                            self.pc = 0;
+
+                            continue;
+                        }
+                        VMFunc::External { args, addr, rety } => {
+                            use libffi::middle::Arg;
+                            use libffi::middle::Cif;
+                            use libffi::middle::Type as FFIType;
+                            use std::os::raw::c_void;
+                            fn ty_to_ffi(ty: Type) -> FFIType {
+                                match ty {
+                                    Type::Ptr => FFIType::pointer(),
+                                    Type::I32 => FFIType::c_int(),
+                                    Type::I64 => FFIType::c_longlong(),
+                                    _ => todo!()
+                                }
+                            }
+
+                            let mut ffi_types = Vec::with_capacity(args.len());
+                            let mut ffi_args = Vec::with_capacity(args.len());
+
+                            let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
+
+                            for (i, &ty) in args.iter().enumerate() {
+                                match ty {
+                                    Type::I32 => {
+                                        let val = self.registers[8 + i] as i32;
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_int());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
+                                    }
+                                    Type::I64 => {
+                                        let val = self.registers[8 + i] as i64;
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_longlong());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i64>().unwrap()));
+                                    }
+                                    Type::Ptr => {
+                                        let val = self.registers[8 + i] as *mut std::ffi::c_void;
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::pointer());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<*mut c_void>().unwrap()));
+                                    }
+                                    _ => todo!(),
+                                }
+                            }
+
+                            let cif = Cif::new(ffi_types, ty_to_ffi(*rety));
+
+                            let result: u64 = unsafe { cif.call(std::mem::transmute(*addr), &mut ffi_args) };
+
+                            self.reg_write(0, result);
+                        }
                     }
-
-                    let new_frame = StackFrame::new(
-                        vm_func_id,
-                        ret_pc,
-                        new_fp,
-                        new_sp
-                    );
-                    self.call_stack.push(new_frame);
-                    frame = new_frame;
-                    self.stack_top = new_sp;
-                    self.pc = 0;
-
-                    continue;
                 }
 
                 Opcode::Return => {
@@ -488,10 +606,80 @@ impl VirtualMachine {
                     continue;
                 }
 
+                Opcode::LoadDataAddr => {
+                    let dst = decoder.read_u32() as usize;
+                    let data_id = DataId::from_u32(decoder.read_u32());
+
+                    if let Some(&offset) = self.data_offsets.get(&data_id) {
+                        // Store the absolute address of the data in the register
+                        // In a real VM, this might be a virtual address
+                        let data_ptr = self.data_memory.as_ptr() as u64 + offset as u64;
+                        self.registers[dst] = data_ptr;
+                    } else {
+                        return Err(VMError::InvalidDataId(data_id.as_u32()));
+                    }
+                }
+
                 Opcode::Mov => {
                     let dst = decoder.read_u32();
                     let src = decoder.read_u32();
                     self.reg_write(dst as _, self.reg_read(src as _));
+                }
+
+                Opcode::Load32 => {
+                    let dst_reg = decoder.read_u32();
+                    let addr_reg = decoder.read_u32();
+                    let addr = self.reg_read(addr_reg as _) as *const u32;
+                    let val = unsafe { ptr::read(addr) };
+                    self.reg_write(dst_reg as _, val as u64);
+                }
+
+                Opcode::Load64 => {
+                    let dst_reg = decoder.read_u32();
+                    let addr_reg = decoder.read_u32();
+                    let addr = self.reg_read(addr_reg as _) as *const u64;
+                    let val = unsafe { ptr::read(addr) };
+                    self.reg_write(dst_reg as _, val);
+                }
+
+                Opcode::Store8 => {
+                    let addr_reg = decoder.read_u32();
+                    let val_reg = decoder.read_u32();
+                    let addr = self.reg_read(addr_reg as _) as *mut u8;
+                    let val = self.reg_read(val_reg as _) as u8;
+                    unsafe {
+                        ptr::write(addr, val);
+                    }
+                }
+
+                Opcode::Store16 => {
+                    let addr_reg = decoder.read_u32();
+                    let val_reg = decoder.read_u32();
+                    let addr = self.reg_read(addr_reg as _) as *mut u16;
+                    let val = self.reg_read(val_reg as _) as u16;
+                    unsafe {
+                        ptr::write(addr, val);
+                    }
+                }
+
+                Opcode::Store32 => {
+                    let addr_reg = decoder.read_u32();
+                    let val_reg = decoder.read_u32();
+                    let addr = self.reg_read(addr_reg as _) as *mut u32;
+                    let val = self.reg_read(val_reg as _) as u32;
+                    unsafe {
+                        ptr::write(addr, val);
+                    }
+                }
+
+                Opcode::Store64 => {
+                    let addr_reg = decoder.read_u32();
+                    let val_reg = decoder.read_u32();
+                    let addr = self.reg_read(addr_reg as _) as *mut u64;
+                    let val = self.reg_read(val_reg as _);
+                    unsafe {
+                        ptr::write(addr, val);
+                    }
                 }
 
                 Opcode::FrameSetup => {
@@ -518,7 +706,7 @@ impl VirtualMachine {
 
                 Opcode::FpLoad32 => {
                     let reg = decoder.read_u32();
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
                     self.reg_write(reg as _, v as u64);
@@ -533,7 +721,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::FpStore32 => {
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -550,7 +738,7 @@ impl VirtualMachine {
 
                 Opcode::SpLoad32 => {
                     let reg = decoder.read_u32();
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
                     self.reg_write(reg as _, v as u64);
@@ -558,14 +746,14 @@ impl VirtualMachine {
 
                 Opcode::SpLoad64 => {
                     let reg = decoder.read_u32();
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
                     self.reg_write(reg as _, v);
                 }
 
                 Opcode::SpStore32 => {
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -573,7 +761,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::SpStore64 => {
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -582,14 +770,15 @@ impl VirtualMachine {
 
                 Opcode::FpAddr => {
                     let reg = decoder.read_u32();
-                    let offset = decoder.read_i32();
-                    let addr = (frame.fp as i32 + offset) as u64;
+                    let offset = -decoder.read_i32();
+                    let addr = (frame.fp as i32 + offset) as usize;
+                    let addr = unsafe { self.stack_memory.as_ptr().add(addr) as _ };
                     self.reg_write(reg as _, addr);
                 }
 
                 Opcode::SpAddr => {
                     let reg = decoder.read_u32();
-                    let offset = decoder.read_i32();
+                    let offset = -decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as u64;
                     self.reg_write(reg as _, addr);
                 }

@@ -7,10 +7,15 @@ edition = "2024"
 smallvec = "1.13.2"
 cfg-if = "1.0.3"
 indexmap = "2.11.1"
+libffi = "4.1.2"
 
 [[example]]
 name = "lower_fib"
 path = "examples/lower_fib.rs"
+
+[[example]]
+name = "memory_api"
+path = "examples/memory_api.rs"
 
 [[example]]
 name = "vm"

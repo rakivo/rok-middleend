@@ -49,6 +49,8 @@ macro_rules! define_opcodes {
 
                     IData::IConst { .. }     => unreachable!("invalid bitwidth"),
                     IData::FConst { .. }     => unreachable!("invalid bitwidth"),
+                    IData::LoadNoOffset { .. }  => unreachable!("invalid bitwidth"),
+                    IData::StoreNoOffset { .. }  => unreachable!("invalid bitwidth"),
                     IData::StackLoad { .. }  => unreachable!("invalid bitwidth"),
                     IData::StackStore { .. } => unreachable!("invalid bitwidth"),
                 }

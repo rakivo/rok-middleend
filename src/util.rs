@@ -42,6 +42,16 @@ impl<'a> IntoBytes<'a> for crate::bytecode::Opcode {
     }
 }
 
+impl<'a, T> IntoBytes<'a> for T
+where
+    T: crate::entity::EntityRef
+{
+    #[inline(always)]
+    fn into_bytes(self) -> Cow<'a, [u8]> {
+        Cow::Owned(Vec::from((self.index() as u32).to_le_bytes()))
+    }
+}
+
 impl<'a> IntoBytes<'a> for &'a [u8] {
     #[inline(always)]
     fn into_bytes(self) -> Cow<'a, [u8]> {

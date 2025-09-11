@@ -86,13 +86,13 @@ impl<'a> LoweringContext<'a> {
         let liv = self.compute_liveness();
         self.liveness = Some(liv);
 
-        let config = RegAllocConfig::new(
-            self.func.signature.params.len() as _
-        ); // or customize as needed
-        self.assign_ssa_slots_smart(config);
+        // let config = RegAllocConfig::new(
+        //     self.func.signature.params.len() as _
+        // );
+        // self.assign_ssa_slots_smart(config);
 
         // 1. Assign stack slots (register numbers) to all SSA values.
-        // self.assign_ssa_slots();
+        self.assign_ssa_slots_naive();
         self.preallocate_spill_slots();
 
         // After possibly growing the frame with spill slots, copy frame info to chunk
@@ -213,6 +213,7 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
+    #[allow(unused)]    
     fn assign_ssa_slots_smart(&mut self, config: RegAllocConfig) {
         // Clear any existing assignments
         self.ssa_to_reg.clear();
@@ -517,12 +518,16 @@ impl LoweringContext<'_> {
                 let srcs: Vec<Value> = args.iter().copied().collect();
                 (srcs, vec![])
             }
-            IData::StackLoad { .. } | IData::StackAddr { .. } => {
+            IData::DataAddr { .. } |
+            IData::StackLoad { .. } |
+            IData::StackAddr { .. } => {
                 let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
                     .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
                 (vec![], dsts)
             }
             IData::StackStore { arg, .. } => (vec![*arg], vec![]),
+            IData::LoadNoOffset { addr, .. } => (vec![*addr], dfg.inst_results.get(&inst_id).map(|sv| sv.iter().copied().collect()).unwrap_or_default()),
+            IData::StoreNoOffset { args, .. } => (vec![args[0], args[1]], vec![]),
             IData::Nop => (vec![], vec![]),
         }
     }
@@ -543,6 +548,7 @@ pub struct RegAllocConfig {
     pub spill_cost_threshold: f32,
 }
 
+#[allow(unused)]
 impl RegAllocConfig {
     fn new(argument_count: u32) -> Self {
         Self {

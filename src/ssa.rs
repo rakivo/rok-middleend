@@ -19,6 +19,8 @@ crate::entity_ref!(Inst, "Inst");
 crate::entity_ref!(Block, "Block");
 crate::entity_ref!(StackSlot, "StackSlot");
 crate::entity_ref!(FuncId, "FuncId");
+crate::entity_ref!(DataId, "DataId");
+crate::entity_ref!(GlobalValue, "GlobalValue");
 
 //-////////////////////////////////////////////////////////////////////
 // Core Data Structures
@@ -122,6 +124,7 @@ pub struct SsaFunc {
 
 impl SsaFunc {
     #[must_use]
+    #[inline(always)]
     pub fn new(name: impl AsRef<str>, signature: Signature) -> Self {
         Self {
             name: name.as_ref().into(),
@@ -130,6 +133,7 @@ impl SsaFunc {
         }
     }
 
+    #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
         let id = StackSlot::from_u32(self.stack_slots.len() as _);
         self.stack_slots.push(StackSlotData { ty, size });
@@ -141,6 +145,17 @@ impl SsaFunc {
     pub fn value_type(&self, v: Value) -> Type {
         // adjust field name if your ValueData uses a different name
         self.dfg.values[v.index()].ty
+    }
+
+    #[inline(always)]
+    pub fn is_instruction_terminator(&self, inst: Inst) -> bool {
+        self.dfg.insts[inst.index()].is_terminator()
+    }
+
+    #[inline(always)]
+    pub fn is_block_terminated(&self, block: Block) -> bool {
+        let last_inst = self.cfg.blocks[block.index()].insts.last().copied();
+        last_inst.map_or(false, |inst| self.is_instruction_terminator(inst))
     }
 
     #[inline]
@@ -187,7 +202,7 @@ pub struct FunctionMetadata {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    Binary { opcode: BinaryOp, args: [Value; 2] },
+    Binary { binop: BinaryOp, args: [Value; 2] },
     IConst { value: i64 },
     FConst { value: f64 },
     Jump { destination: Block },
@@ -197,6 +212,10 @@ pub enum InstructionData {
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
     StackStore { slot: StackSlot, arg: Value },
+    LoadNoOffset { ty: Type, addr: Value },
+    StoreNoOffset { args: [Value; 2] },
+    DataAddr { data_id: DataId },
+    // GlobalValue { global_value: GlobalValue },
     Nop,
 }
 
@@ -213,8 +232,11 @@ impl InstructionData {
             Self::IConst { .. } => rbits(0),
             Self::FConst { .. } => rbits(0),
             Self::StackLoad { .. } => rbits(0),
+            Self::DataAddr { .. } => rbits(0),
             Self::StackAddr { .. } => rbits(0),
             Self::StackStore { arg, .. } => vbits(arg),
+            Self::LoadNoOffset { ty, .. } => ty.bits(),
+            Self::StoreNoOffset { args, .. } => vbits(&args[1]),
 
             Self::Jump { .. } => 32,
             Self::Branch { .. } => 32,
@@ -223,11 +245,21 @@ impl InstructionData {
             Self::Nop => 32,
         }
     }
+
+    pub fn is_terminator(&self) -> bool {
+        matches!{
+            self,
+            Self::Jump { .. }   |
+            Self::Branch { .. } |
+            Self::Return { .. }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
-    IAdd, ISub, IMul, ILt,
+    IAdd, ISub, IMul, IDiv, ILt,
+    And, Or, Xor,
     FAdd, FSub, FMul, FDiv,
 }
 
@@ -246,7 +278,21 @@ pub enum ValueDef {
 
 #[derive(Debug, Clone, Default)]
 pub struct Module {
-    pub functions: PrimaryMap<FuncId, SsaFunc>
+    pub functions: PrimaryMap<FuncId, SsaFunc>,
+    pub datas: PrimaryMap<DataId, DataDescription>,
+    pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataDescription {
+    pub contents: Box<[u8]>,
+    pub is_external: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct GlobalValueData {
+    pub name: String,
+    pub ty: Type,
 }
 
 impl Module {
@@ -263,6 +309,26 @@ impl Module {
                 is_external: true,
             },
             ..Default::default()
+        })
+    }
+
+    pub fn declare_data(&mut self, external: bool) -> DataId {
+        self.datas.push(DataDescription {
+            contents: Box::new([]),
+            is_external: external,
+        })
+    }
+
+    pub fn define_data(&mut self, id: DataId, contents: Box<[u8]>) {
+        let data = &mut self.datas[id];
+        data.contents = contents;
+        data.is_external = false;
+    }
+
+    pub fn declare_global_value(&mut self, name: impl Into<String>, ty: Type) -> GlobalValue {
+        self.global_values.push(GlobalValueData {
+            name: name.into(),
+            ty,
         })
     }
 
@@ -284,7 +350,7 @@ impl Module {
 //
 
 pub struct FunctionBuilder<'a> {
-    func: &'a mut SsaFunc,
+    pub func: &'a mut SsaFunc,
     cursor: Cursor,
 }
 
@@ -399,49 +465,84 @@ impl InstBuilder<'_, '_> {
     #[inline]
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::IAdd, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
-    }
-
-    #[inline]
-    pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::ILt, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     #[inline]
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::ISub, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ISub, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IMul, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IDiv, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::And, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Or, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Xor, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ILt, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     #[inline]
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FAdd, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FAdd, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     #[inline]
     pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FSub, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FSub, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     #[inline]
     pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FMul, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMul, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
     #[inline]
     pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { opcode: BinaryOp::FDiv, args: [lhs, rhs] });
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
     }
 
@@ -453,7 +554,7 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
-        let inst = self.insert_inst(InstructionData::StackLoad { slot });
+        let inst = self.insert_inst(InstructionData::StackAddr { slot });
         self.make_inst_result(inst, ty, 0)
     }
 
@@ -467,6 +568,29 @@ impl InstBuilder<'_, '_> {
     pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
         self.insert_inst(InstructionData::StackStore { slot, arg: val });
     }
+
+    #[inline]
+    pub fn store(&mut self, addr: Value, val: Value) {
+        self.insert_inst(InstructionData::StoreNoOffset { args: [addr, val] });
+    }
+
+    #[inline]
+    pub fn load(&mut self, ty: Type, addr: Value) -> Value {
+        let inst = self.insert_inst(InstructionData::LoadNoOffset { ty, addr });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn data_addr(&mut self, ty: Type, data_id: DataId) -> Value {
+        let inst = self.insert_inst(InstructionData::DataAddr { data_id });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    // #[inline]
+    // pub fn global_value(&mut self, ty: Type, global_value: GlobalValue) -> Value {
+    //     let inst = self.insert_inst(InstructionData::GlobalValue { global_value });
+    //     self.make_inst_result(inst, ty, 0)
+    // }
 
     #[inline]
     pub fn jump(&mut self, dest: Block) {
@@ -529,16 +653,20 @@ impl SsaFunc {
             }
         }
         match inst {
-            InstructionData::Binary { opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1])),
+            InstructionData::Binary { binop: opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1])),
             InstructionData::IConst { value } => write!(f, "iconst {value}"),
             InstructionData::FConst { value } => write!(f, "fconst {value}"),
             InstructionData::Jump { destination } => write!(f, "jump {destination}"),
             InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1]),
-            InstructionData::Call { func_id, args } => write!(f, "call F{}, ({})", func_id.index(), args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
+            InstructionData::Call { func_id, args } => write!(f, "call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
             InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", ")),
             InstructionData::StackAddr { slot } => write!(f, "stack_addr {slot}"),
             InstructionData::StackLoad { slot } => write!(f, "stack_load {slot}"),
             InstructionData::StackStore { slot, arg } => write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg)),
+            InstructionData::LoadNoOffset { ty, addr } => write!(f, "load_no_offset {}:{:?}, {}", self.fmt_value(*addr), ty, self.fmt_value(*addr)),
+            InstructionData::StoreNoOffset { args } => write!(f, "store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1])),
+            InstructionData::DataAddr { data_id } => write!(f, "data_addr {}", data_id),
+            // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
             InstructionData::Nop => write!(f, "nop"),
         }
     }
