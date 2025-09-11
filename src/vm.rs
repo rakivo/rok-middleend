@@ -536,23 +536,45 @@ impl VirtualMachine {
                             use libffi::middle::Cif;
                             use libffi::middle::Type as FFIType;
                             use std::os::raw::c_void;
+
                             fn ty_to_ffi(ty: Type) -> FFIType {
                                 match ty {
                                     Type::Ptr => FFIType::pointer(),
                                     Type::I32 => FFIType::c_int(),
                                     Type::I64 => FFIType::c_longlong(),
+                                    // C ABI promotion rules: smaller types promoted to int/unsigned int
+                                    Type::I8 => FFIType::c_int(),  // promoted to int
+                                    Type::I16 => FFIType::c_int(), // promoted to int
+                                    Type::U8 => FFIType::c_uint(), // promoted to unsigned int
+                                    Type::U16 => FFIType::c_uint(), // promoted to unsigned int
+                                    Type::U32 => FFIType::c_uint(),
+                                    Type::U64 => FFIType::c_ulonglong(),
                                     _ => todo!()
                                 }
                             }
 
                             let mut ffi_types = Vec::with_capacity(args.len());
                             let mut ffi_args = Vec::with_capacity(args.len());
-
                             let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
 
                             for (i, &ty) in args.iter().enumerate() {
                                 match ty {
+                                    Type::I8 => {
+                                        // C ABI: i8 promoted to int
+                                        let val = self.registers[8 + i] as i8 as i32; // sign-extend to int
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_int());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
+                                    }
+                                    Type::I16 => {
+                                        // C ABI: i16 promoted to int
+                                        let val = self.registers[8 + i] as i16 as i32; // sign-extend to int
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_int());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
+                                    }
                                     Type::I32 => {
+                                        // C ABI: i32 stays as i32 (no promotion needed)
                                         let val = self.registers[8 + i] as i32;
                                         arg_storage.push(Box::new(val));
                                         ffi_types.push(FFIType::c_int());
@@ -563,6 +585,32 @@ impl VirtualMachine {
                                         arg_storage.push(Box::new(val));
                                         ffi_types.push(FFIType::c_longlong());
                                         ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i64>().unwrap()));
+                                    }
+                                    Type::U8 => {
+                                        // C ABI: u8 promoted to unsigned int
+                                        let val = self.registers[8 + i] as u64 as u8 as u32; // proper zero extension
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_uint());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
+                                    }
+                                    Type::U16 => {
+                                        // C ABI: u16 promoted to unsigned int
+                                        let val = self.registers[8 + i] as u64 as u16 as u32; // proper zero extension
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_uint());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
+                                    }
+                                    Type::U32 => {
+                                        let val = self.registers[8 + i] as u64 as u32;
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_uint());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
+                                    }
+                                    Type::U64 => {
+                                        let val = self.registers[8 + i] as u64;
+                                        arg_storage.push(Box::new(val));
+                                        ffi_types.push(FFIType::c_ulonglong());
+                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u64>().unwrap()));
                                     }
                                     Type::Ptr => {
                                         let val = self.registers[8 + i] as *mut std::ffi::c_void;
@@ -575,9 +623,7 @@ impl VirtualMachine {
                             }
 
                             let cif = Cif::new(ffi_types, ty_to_ffi(*rety));
-
                             let result: u64 = unsafe { cif.call(std::mem::transmute(*addr), &mut ffi_args) };
-
                             self.reg_write(0, result);
                         }
                     }
@@ -647,9 +693,7 @@ impl VirtualMachine {
                     let val_reg = decoder.read_u32();
                     let addr = self.reg_read(addr_reg as _) as *mut u8;
                     let val = self.reg_read(val_reg as _) as u8;
-                    unsafe {
-                        ptr::write(addr, val);
-                    }
+                    unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::Store16 => {
@@ -657,9 +701,7 @@ impl VirtualMachine {
                     let val_reg = decoder.read_u32();
                     let addr = self.reg_read(addr_reg as _) as *mut u16;
                     let val = self.reg_read(val_reg as _) as u16;
-                    unsafe {
-                        ptr::write(addr, val);
-                    }
+                    unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::Store32 => {
@@ -667,9 +709,7 @@ impl VirtualMachine {
                     let val_reg = decoder.read_u32();
                     let addr = self.reg_read(addr_reg as _) as *mut u32;
                     let val = self.reg_read(val_reg as _) as u32;
-                    unsafe {
-                        ptr::write(addr, val);
-                    }
+                    unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::Store64 => {
@@ -677,9 +717,7 @@ impl VirtualMachine {
                     let val_reg = decoder.read_u32();
                     let addr = self.reg_read(addr_reg as _) as *mut u64;
                     let val = self.reg_read(val_reg as _);
-                    unsafe {
-                        ptr::write(addr, val);
-                    }
+                    unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::FrameSetup => {
@@ -706,7 +744,7 @@ impl VirtualMachine {
 
                 Opcode::FpLoad32 => {
                     let reg = decoder.read_u32();
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
                     self.reg_write(reg as _, v as u64);
@@ -714,14 +752,14 @@ impl VirtualMachine {
 
                 Opcode::FpLoad64 => {
                     let reg = decoder.read_u32();
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
                     self.reg_write(reg as _, v);
                 }
 
                 Opcode::FpStore32 => {
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -729,7 +767,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::FpStore64 => {
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -738,7 +776,7 @@ impl VirtualMachine {
 
                 Opcode::SpLoad32 => {
                     let reg = decoder.read_u32();
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
                     self.reg_write(reg as _, v as u64);
@@ -746,14 +784,14 @@ impl VirtualMachine {
 
                 Opcode::SpLoad64 => {
                     let reg = decoder.read_u32();
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
                     self.reg_write(reg as _, v);
                 }
 
                 Opcode::SpStore32 => {
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -761,7 +799,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::SpStore64 => {
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let reg = decoder.read_u32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
@@ -770,7 +808,7 @@ impl VirtualMachine {
 
                 Opcode::FpAddr => {
                     let reg = decoder.read_u32();
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let addr = unsafe { self.stack_memory.as_ptr().add(addr) as _ };
                     self.reg_write(reg as _, addr);
@@ -778,7 +816,7 @@ impl VirtualMachine {
 
                 Opcode::SpAddr => {
                     let reg = decoder.read_u32();
-                    let offset = -decoder.read_i32();
+                    let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as u64;
                     self.reg_write(reg as _, addr);
                 }
