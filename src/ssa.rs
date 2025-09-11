@@ -29,15 +29,20 @@ crate::entity_ref!(GlobalValue, "GlobalValue");
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
-    I32, I64, F32, F64, Ptr
+    U8, U16, U32, U64,
+    I8, I16, I32, I64,
+    F32, F64,
+    Ptr
 }
 
 impl Type {
     #[must_use]
     pub const fn bytes(self) -> u32 {
         match self {
-            Type::I32 | Type::F32 => 4,
-            Type::I64 | Type::F64 | Type::Ptr => 8,
+            Type::I8 | Type::U8 => 1,
+            Type::I16 | Type::U16 => 2,
+            Type::I32 | Type::U32 | Type::F32 => 4,
+            Type::U64 | Type::I64 | Type::F64 | Type::Ptr => 8,
         }
     }
 
@@ -48,10 +53,7 @@ impl Type {
 
     #[must_use]
     pub const fn align_bytes(self) -> u32 {
-        match self {
-            Type::I32 | Type::F32 => 4,
-            Type::I64 | Type::F64 | Type::Ptr => 8,
-        }
+        self.bytes()
     }
 
     #[must_use]
