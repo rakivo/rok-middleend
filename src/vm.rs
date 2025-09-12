@@ -173,9 +173,9 @@ pub enum VMFunc {
     }
 }
 
-pub struct VirtualMachine {
+pub struct VirtualMachine<'a> {
     // Function management
-    vm_functions: PrimaryMap<VMFuncId, BytecodeChunk>,
+    vm_functions: PrimaryMap<VMFuncId, &'a BytecodeChunk>,
     functions: HashMap<FuncId, VMFunc>,
 
     // Execution state
@@ -196,13 +196,13 @@ pub struct VirtualMachine {
     halted: bool,
 }
 
-impl Default for VirtualMachine {
+impl Default for VirtualMachine<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl VirtualMachine {
+impl<'a> VirtualMachine<'a> {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
     #[must_use]
@@ -246,7 +246,7 @@ impl VirtualMachine {
     }
 
     #[inline]
-    pub fn add_function(&mut self, func_id: FuncId, chunk: BytecodeChunk) -> VMFuncId {
+    pub fn add_function(&mut self, func_id: FuncId, chunk: &'a BytecodeChunk) -> VMFuncId {
         let vm_id = self.vm_functions.push(chunk);
         self.functions.insert(func_id, VMFunc::Internal(vm_id));
         vm_id
@@ -923,7 +923,7 @@ impl BytecodeBuilder {
     }
 }
 
-impl VirtualMachine {
+impl VirtualMachine<'_> {
     /// install once during VM construction in debug to get nicer panic hook output
     pub fn install_debug_panic_hook() {
         #[cfg(debug_assertions)]
