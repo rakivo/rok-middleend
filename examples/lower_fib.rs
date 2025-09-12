@@ -50,11 +50,11 @@ fn main() {
     module.define_function(fib_id);
 
     println!("Original SSA IR:");
-    for func in module.functions.values() {
+    for func in module.funcs.values() {
         println!("{}", func);
     }
 
-    let fib_func = &mut module.functions[fib_id];
+    let fib_func = &mut module.funcs[fib_id];
     let fib_func_name = fib_func.name.clone();
     let lowerer = LoweringContext::new(fib_func);
     let lowered_func = lowerer.lower();
@@ -63,7 +63,7 @@ fn main() {
     disassemble_chunk(&lowered_func, &fib_func_name);
 
     let mut vm = VirtualMachine::new();
-    vm.add_function(fib_id, lowered_func.chunk);
+    vm.add_function(fib_id, &lowered_func.chunk);
     let ret = vm.call_function(fib_id, &[20]);
     println!("{ret:#?}");
 }
