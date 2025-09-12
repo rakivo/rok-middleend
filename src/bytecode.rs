@@ -706,6 +706,11 @@ pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
             &mut curr_block,
             print_metadata
         );
+
+        if offset == 0 {
+            // Unknown opcode
+            break
+        }
     }
 }
 
@@ -728,7 +733,7 @@ fn print_aligned(name: &str, operands: &str) {
         output.push_str(operand);
 
         if operand_iter.peek().is_some() {
-            let padding = 8 - operand.len();
+            let padding = 10 - operand.len();
             let padding = " ".repeat(padding);
             output.push_str(&padding);
         }
@@ -1060,7 +1065,7 @@ pub fn disassemble_instruction(
 
         _ => {
             println!("Unknown opcode: {opcode_byte}");
-            offset + 1
+            0
         }
     }
 }
