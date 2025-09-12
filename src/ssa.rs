@@ -5,6 +5,7 @@ use crate::primary::PrimaryMap;
 use std::fmt;
 use std::hash::Hash;
 use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 
 use smallvec::{smallvec, SmallVec};
 
@@ -21,6 +22,7 @@ crate::entity_ref!(StackSlot, "StackSlot");
 crate::entity_ref!(FuncId, "FuncId");
 crate::entity_ref!(DataId, "DataId");
 crate::entity_ref!(GlobalValue, "GlobalValue");
+crate::entity_ref!(ExtFuncId, "ExternalFuncId");
 
 //-////////////////////////////////////////////////////////////////////
 // Core Data Structures
@@ -67,6 +69,13 @@ impl Type {
 pub struct Signature {
     pub params: Vec<Type>,
     pub returns: Vec<Type>,
+}
+
+/// Represents an external function, defined outside the module.
+#[derive(Debug, Clone)]
+pub struct ExtFuncData {
+    pub name: String,
+    pub signature: Signature,
 }
 
 /// The core data flow graph, containing all instructions and values.
@@ -210,6 +219,7 @@ pub enum InstructionData {
     Jump { destination: Block },
     Branch { destinations: [Block; 2], arg: Value },
     Call { func_id: FuncId, args: SmallVec<[Value; 8]> },
+    CallExt { func_id: ExtFuncId, args: SmallVec<[Value; 8]> },
     Return { args: SmallVec<[Value; 2]> },
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
@@ -243,6 +253,7 @@ impl InstructionData {
             Self::Jump { .. } => 32,
             Self::Branch { .. } => 32,
             Self::Call { .. } => 32,
+            Self::CallExt { .. } => 32,
             Self::Return { .. } => 32,
             Self::Nop => 32,
         }
@@ -280,7 +291,8 @@ pub enum ValueDef {
 
 #[derive(Debug, Clone, Default)]
 pub struct Module {
-    pub functions: PrimaryMap<FuncId, SsaFunc>,
+    pub funcs: PrimaryMap<FuncId, SsaFunc>,
+    pub ext_funcs: PrimaryMap<ExtFuncId, ExtFuncData>,
     pub datas: PrimaryMap<DataId, DataDescription>,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
@@ -304,7 +316,7 @@ impl Module {
     }
 
     pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
-        self.functions.push(SsaFunc {
+        self.funcs.push(SsaFunc {
             name: name.as_ref().into(),
             signature,
             metadata: FunctionMetadata {
@@ -327,11 +339,12 @@ impl Module {
         data.is_external = false;
     }
 
-    pub fn declare_global_value(&mut self, name: impl Into<String>, ty: Type) -> GlobalValue {
-        self.global_values.push(GlobalValueData {
-            name: name.into(),
-            ty,
-        })
+    pub fn declare_global_value(&mut self, data: GlobalValueData) -> GlobalValue {
+        self.global_values.push(data)
+    }
+
+    pub fn import_function(&mut self, data: ExtFuncData) -> ExtFuncId {
+        self.ext_funcs.push(data)
     }
 
     pub fn define_function(&mut self, id: FuncId) {
@@ -343,7 +356,7 @@ impl Module {
     }
 
     pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
-        &mut self.functions[id]
+        &mut self.funcs[id]
     }
 }
 
@@ -436,6 +449,15 @@ impl<'a> FunctionBuilder<'a> {
 pub struct InstBuilder<'short, 'long> {
     builder: &'short mut FunctionBuilder<'long>,
     position: Cursor,
+}
+
+impl<'short, 'long> Deref for InstBuilder<'short, 'long> {
+    type Target = FunctionBuilder<'long>;
+    fn deref(&self) -> &Self::Target { &self.builder }
+}
+
+impl<'short, 'long> DerefMut for InstBuilder<'short, 'long> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.builder }
 }
 
 impl InstBuilder<'_, '_> {
@@ -618,6 +640,33 @@ impl InstBuilder<'_, '_> {
     }
 
     #[inline]
+    pub fn call_ext(&mut self, func_id: ExtFuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
+        let inst = self.insert_inst(InstructionData::CallExt { func_id, args: args.into() });
+        let result_ty = Type::I64; // TODO: Get from function signature
+        let result = self.make_inst_result(inst, result_ty, 0);
+        smallvec![result]
+    }
+
+    #[inline]
+    pub fn call_memcpy(
+        &mut self,
+        parent: &mut Module,
+        dest: Value,
+        src: Value,
+        size: Value,
+    ) {
+        let libc_memcpy = parent.import_function(ExtFuncData {
+            name: "memcpy".into(),
+            signature: Signature {
+                params: vec![Type::Ptr, Type::Ptr, Type::I64],
+                ..Default::default()
+            }
+        });
+
+        self.call_ext(libc_memcpy, &[dest, src, size]);
+    }
+
+    #[inline]
     pub fn ret(&mut self, vals: &[Value]) {
         self.insert_inst(InstructionData::Return { args: vals.into() });
     }
@@ -661,6 +710,7 @@ impl SsaFunc {
             InstructionData::Jump { destination } => write!(f, "jump {destination}"),
             InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1]),
             InstructionData::Call { func_id, args } => write!(f, "call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
+            InstructionData::CallExt { func_id, args } => write!(f, "call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
             InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", ")),
             InstructionData::StackAddr { slot } => write!(f, "stack_addr {slot}"),
             InstructionData::StackLoad { slot } => write!(f, "stack_load {slot}"),

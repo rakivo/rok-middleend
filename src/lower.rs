@@ -509,6 +509,12 @@ impl LoweringContext<'_> {
                     .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
                 (srcs, dsts)
             }
+            IData::CallExt { args, .. } => {
+                let srcs: Vec<Value> = args.iter().copied().collect();
+                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                (srcs, dsts)
+            }
             IData::Return { args } => {
                 let srcs: Vec<Value> = args.iter().copied().collect();
                 (srcs, vec![])
