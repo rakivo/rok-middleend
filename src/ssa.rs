@@ -151,10 +151,8 @@ impl SsaFunc {
         id
     }
 
-    /// Return the Type of a Value (assumes `ValueData` has `ty` field).
     #[must_use]
     pub fn value_type(&self, v: Value) -> Type {
-        // adjust field name if your ValueData uses a different name
         self.dfg.values[v.index()].ty
     }
 
@@ -540,6 +538,54 @@ impl InstBuilder<'_, '_> {
         let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
         let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ILt, args: [lhs, rhs] });
         self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn iadd_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.iadd(lhs, rhs)
+    }
+
+    pub fn isub_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.isub(lhs, rhs)
+    }
+
+    pub fn imul_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.imul(lhs, rhs)
+    }
+
+    pub fn idiv_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.idiv(lhs, rhs)
+    }
+
+    pub fn and_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.and(lhs, rhs)
+    }
+
+    pub fn or_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.or(lhs, rhs)
+    }
+
+    pub fn xor_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.xor(lhs, rhs)
+    }
+
+    pub fn ilt_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.ilt(lhs, rhs)
     }
 
     #[inline]
