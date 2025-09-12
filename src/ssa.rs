@@ -640,8 +640,8 @@ impl InstBuilder<'_, '_> {
     }
 
     #[inline]
-    pub fn store(&mut self, addr: Value, val: Value) {
-        self.insert_inst(InstructionData::StoreNoOffset { args: [addr, val] });
+    pub fn store(&mut self, dst: Value, src: Value) {
+        self.insert_inst(InstructionData::StoreNoOffset { args: [dst, src] });
     }
 
     #[inline]
@@ -710,6 +710,25 @@ impl InstBuilder<'_, '_> {
         });
 
         self.call_ext(libc_memcpy, &[dest, src, size]);
+    }
+
+    #[inline]
+    pub fn call_memset(
+        &mut self,
+        parent: &mut Module,
+        dest: Value,
+        c: Value,
+        n: Value,
+    ) {
+        let libc_memset = parent.import_function(ExtFuncData {
+            name: "memset".into(),
+            signature: Signature {
+                params: vec![Type::Ptr, Type::I32, Type::I64],
+                ..Default::default()
+            }
+        });
+
+        self.call_ext(libc_memset, &[dest, c, n]);
     }
 
     #[inline]
