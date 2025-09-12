@@ -212,6 +212,7 @@ pub struct FunctionMetadata {
 #[derive(Debug, Clone)]
 pub enum InstructionData {
     Binary { binop: BinaryOp, args: [Value; 2] },
+    Unary { unop: UnaryOp, arg: Value },
     IConst { value: i64 },
     FConst { value: f64 },
     Jump { destination: Block },
@@ -239,6 +240,7 @@ impl InstructionData {
 
         match self {
             Self::Binary { args, .. } => vbits(&args[0]),
+            Self::Unary { arg, .. } => vbits(arg),
             Self::IConst { .. } => rbits(0),
             Self::FConst { .. } => rbits(0),
             Self::StackLoad { .. } => rbits(0),
@@ -270,8 +272,15 @@ impl InstructionData {
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
     IAdd, ISub, IMul, IDiv, ILt,
-    And, Or, Xor,
+    And, Or, Xor, Ushr, Ishl, Band, Bor,
     FAdd, FSub, FMul, FDiv,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UnaryOp {
+    Ireduce,
+    Uextend,
+    Sextend,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -419,6 +428,7 @@ impl<'a> FunctionBuilder<'a> {
         &block_data.params[param_idx_start..]
     }
 
+    // TODO: Why do we need to take in Type in create_stack_slot
     #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
         self.func.create_stack_slot(ty, size)
@@ -587,6 +597,77 @@ impl InstBuilder<'_, '_> {
         let rhs = self.iconst(ty, rhs);
         self.ilt(lhs, rhs)
     }
+
+    #[inline]
+    pub fn ushr(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ushr, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ishl, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn band(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Band, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn bor(&mut self, lhs: Value, rhs: Value) -> Value {
+        let ty = self.builder.func.dfg.values[lhs.index()].ty;
+        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Bor, args: [lhs, rhs] });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    pub fn ushr_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.ushr(lhs, rhs)
+    }
+
+    pub fn ishl_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.ishl(lhs, rhs)
+    }
+
+    pub fn band_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.band(lhs, rhs)
+    }
+
+    pub fn bor_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.bor(lhs, rhs)
+    }
+
+    #[inline]
+    pub fn ireduce(&mut self, ty: Type, arg: Value) -> Value {
+        let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Ireduce, arg });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn uextend(&mut self, ty: Type, arg: Value) -> Value {
+        let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Uextend, arg });
+        self.make_inst_result(inst, ty, 0)
+    }
+
+    #[inline]
+    pub fn sextend(&mut self, ty: Type, arg: Value) -> Value {
+        let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Sextend, arg });
+        self.make_inst_result(inst, ty, 0)
+    }
+
 
     #[inline]
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
@@ -770,6 +851,7 @@ impl SsaFunc {
         }
         match inst {
             InstructionData::Binary { binop: opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1])),
+            InstructionData::Unary { unop, arg } => write!(f, "{:?} {}", unop, self.fmt_value(*arg)),
             InstructionData::IConst { value } => write!(f, "iconst {value}"),
             InstructionData::FConst { value } => write!(f, "fconst {value}"),
             InstructionData::Jump { destination } => write!(f, "jump {destination}"),
@@ -800,6 +882,9 @@ impl fmt::Display for SsaFunc {
             self.signature.params.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", "),
             self.signature.returns.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ")
         )?;
+        for (i, slot) in self.stack_slots.iter().enumerate() {
+            writeln!(f, "  stack_slot{}: {:?}, size={}", i, slot.ty, slot.size)?;
+        }
         if let Some(entry) = self.layout.block_entry {
             let mut visited = HashSet::new();
             let mut worklist = vec![entry];

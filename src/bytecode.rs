@@ -8,6 +8,7 @@ use crate::ssa::{
     SsaFunc,
     BinaryOp,
     StackSlot,
+    UnaryOp,
     Type,
     Value
 };
@@ -150,7 +151,51 @@ define_opcodes! {
         chunk.append(b);
     },
 
-    ILt(dst: u32, a: u32, b: u32)            = 17,
+    Ushr(dst: u32, a: u32, b: u32)            = 17,
+    @ IData::Binary { binop: BinaryOp::Ushr, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Ushr);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    Ishl(dst: u32, a: u32, b: u32)            = 18,
+    @ IData::Binary { binop: BinaryOp::Ishl, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Ishl);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    Band(dst: u32, a: u32, b: u32)            = 19,
+    @ IData::Binary { binop: BinaryOp::Band, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Band);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    Bor(dst: u32, a: u32, b: u32)             = 20,
+    @ IData::Binary { binop: BinaryOp::Bor, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::Bor);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    ILt(dst: u32, a: u32, b: u32)            = 21,
     @ IData::Binary { binop: BinaryOp::ILt, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let a = self.ssa_to_reg[&args[0]];
@@ -160,7 +205,7 @@ define_opcodes! {
         chunk.append(a);
         chunk.append(b);
     },
-    FAdd(dst: u32, a: u32, b: u32)          = 14,
+    FAdd(dst: u32, a: u32, b: u32)          = 22,
     @ IData::Binary { binop: BinaryOp::FAdd, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let a = self.ssa_to_reg[&args[0]];
@@ -170,7 +215,7 @@ define_opcodes! {
         chunk.append(a);
         chunk.append(b);
     },
-    FSub(dst: u32, a: u32, b: u32)          = 15,
+    FSub(dst: u32, a: u32, b: u32)          = 23,
     @ IData::Binary { binop: BinaryOp::FSub, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let a = self.ssa_to_reg[&args[0]];
@@ -180,7 +225,7 @@ define_opcodes! {
         chunk.append(a);
         chunk.append(b);
     },
-    FMul(dst: u32, a: u32, b: u32)          = 16,
+    FMul(dst: u32, a: u32, b: u32)          = 24,
     @ IData::Binary { binop: BinaryOp::FMul, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let a = self.ssa_to_reg[&args[0]];
@@ -190,7 +235,7 @@ define_opcodes! {
         chunk.append(a);
         chunk.append(b);
     },
-    FDiv(dst: u32, a: u32, b: u32)          = 17,
+    FDiv(dst: u32, a: u32, b: u32)          = 25,
     @ IData::Binary { binop: BinaryOp::FDiv, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let a = self.ssa_to_reg[&args[0]];
@@ -201,12 +246,12 @@ define_opcodes! {
         chunk.append(b);
     },
 
-    Jump16(offset: i32)        = 21,
+    Jump16(offset: i32)        = 26,
     @ IData::Jump { destination, .. } => |_results, chunk| {
         chunk.append(Opcode::Jump16);
         self.append_jump_placeholder::<i16>(chunk, *destination);
     },
-    BranchIf16(cond: u32, offset: i32)    = 23,
+    BranchIf16(cond: u32, offset: i32)    = 27,
     @ IData::Branch { arg, destinations, .. } => |_results, chunk| {
         let [t, e] = *destinations;
 
@@ -220,7 +265,7 @@ define_opcodes! {
         self.append_jump_placeholder::<i16>(chunk, e);
     },
 
-    Return()        = 24,
+    Return()        = 28,
     @ IData::Return { args, .. } => |_results, chunk| {
         // Move return values to the first N registers (r0, r1, ...).
         for (i, &arg) in args.iter().enumerate() {
@@ -237,7 +282,7 @@ define_opcodes! {
         chunk.append(Opcode::Return);
     },
 
-    Call(func_id: u32)          = 25,
+    Call(func_id: u32)          = 29,
     @ IData::Call { func_id, args, .. } => |results, chunk, inst_id| {
         // 0) Emit stores for spilled values live across this call
         let l = self.liveness();
@@ -295,6 +340,31 @@ define_opcodes! {
                 }
             }
         }
+    },
+
+    Ireduce(dst: u32, src: u32) = 30,
+    @ IData::Unary { unop: UnaryOp::Ireduce, arg } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let src = self.ssa_to_reg[arg];
+        chunk.append(Opcode::Ireduce);
+        chunk.append(dst);
+        chunk.append(src);
+    },
+    Uextend(dst: u32, src: u32) = 31,
+    @ IData::Unary { unop: UnaryOp::Uextend, arg } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let src = self.ssa_to_reg[arg];
+        chunk.append(Opcode::Uextend);
+        chunk.append(dst);
+        chunk.append(src);
+    },
+    Sextend(dst: u32, src: u32) = 32,
+    @ IData::Unary { unop: UnaryOp::Sextend, arg } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let src = self.ssa_to_reg[arg];
+        chunk.append(Opcode::Sextend);
+        chunk.append(dst);
+        chunk.append(src);
     },
 
     // Memory
@@ -506,6 +576,10 @@ impl Opcode {
             BinaryOp::And => Opcode::And,
             BinaryOp::Or => Opcode::Or,
             BinaryOp::Xor => Opcode::Xor,
+            BinaryOp::Ushr => Opcode::Ushr,
+            BinaryOp::Ishl => Opcode::Ishl,
+            BinaryOp::Band => Opcode::Band,
+            BinaryOp::Bor => Opcode::Bor,
             _ => return None,
         })
     }
