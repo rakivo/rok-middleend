@@ -1,4 +1,5 @@
 // TODO(#5): Legalization pass
+// TODO(#7): Unreachable (trap) instruction
 // TODO(#4): Structure operations
 // TODO(#3): extend/truncate operations
 // TODO(#1): VM callbacks (intrinsics)
