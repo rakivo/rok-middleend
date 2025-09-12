@@ -11,6 +11,105 @@ use std::{fmt, ptr};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+#[cfg(not(debug_assertions))]
+#[macro_use]
+mod trampolines {
+    use dynasm::dynasm;
+    use once_cell::sync::Lazy;
+    use dynasmrt::ExecutableBuffer;
+
+    pub type ArithFn = extern "sysv64" fn(registers: *mut u64, r_dest: u64, r_src1: u64, r_src2: u64);
+    pub type MovFn = extern "sysv64" fn(registers: *mut u64, r_dest: u64, r_src: u64);
+
+    macro_rules! int_arith_trampoline {
+        ($name:ident, $op:tt) => {
+            pub static $name: Lazy<ExecutableBuffer> = Lazy::new(|| {
+                let mut ops = dynasmrt::x64::Assembler::new().unwrap();
+                dynasm!(ops
+                    ; .arch x64
+                    ; mov rax, [rdi + rdx*8]
+                    ; $op rax, [rdi + rcx*8]
+                    ; mov [rdi + rsi*8], rax
+                    ; ret
+                );
+                ops.finalize().unwrap()
+            });
+        };
+    }
+
+    macro_rules! float_arith_trampoline {
+        ($name:ident, $op:tt) => {
+            pub static $name: Lazy<ExecutableBuffer> = Lazy::new(|| {
+                let mut ops = dynasmrt::x64::Assembler::new().unwrap();
+                dynasm!(ops
+                    ; .arch x64
+                    ; movsd xmm0, [rdi + rdx*8]
+                    ; $op xmm0, [rdi + rcx*8]
+                    ; movsd [rdi + rsi*8], xmm0
+                    ; ret
+                );
+                ops.finalize().unwrap()
+            });
+        };
+    }
+
+    int_arith_trampoline!(IADD_TRAMPOLINE, add);
+    int_arith_trampoline!(ISUB_TRAMPOLINE, sub);
+    int_arith_trampoline!(IMUL_TRAMPOLINE, imul);
+
+    float_arith_trampoline!(FADD_TRAMPOLINE, addsd);
+    float_arith_trampoline!(FSUB_TRAMPOLINE, subsd);
+    float_arith_trampoline!(FMUL_TRAMPOLINE, mulsd);
+    float_arith_trampoline!(FDIV_TRAMPOLINE, divsd);
+
+    pub static ILT_TRAMPOLINE: Lazy<ExecutableBuffer> = Lazy::new(|| {
+        let mut ops = dynasmrt::x64::Assembler::new().unwrap();
+        dynasm!(ops
+            ; .arch x64
+            ; mov rax, [rdi + rdx*8]
+            ; cmp rax, [rdi + rcx*8]
+            ; setl al
+            ; movzx rax, al
+            ; mov [rdi + rsi*8], rax
+            ; ret
+        );
+        ops.finalize().unwrap()
+    });
+
+    pub static MOV_TRAMPOLINE: Lazy<ExecutableBuffer> = Lazy::new(|| {
+        let mut ops = dynasmrt::x64::Assembler::new().unwrap();
+        dynasm!(ops
+            ; .arch x64
+            ; mov rax, [rdi + rdx*8] // rdx is src
+            ; mov [rdi + rsi*8], rax // rsi is dst
+            ; ret
+        );
+        ops.finalize().unwrap()
+    });
+
+    #[macro_export]
+    macro_rules! call_arith_trampoline {
+        ($t: path, $($arg:tt)*) => {{
+            let buf = &**$t;
+            let f: $crate::vm::trampolines::ArithFn = unsafe {
+                core::mem::transmute(buf.as_ptr())
+            };
+            f($($arg)*)
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! call_trampoline {
+        ($t: path: $ty: ty, $($arg:tt)*) => {{
+            let buf = &**$t;
+            let f: $ty = unsafe {
+                core::mem::transmute(buf.as_ptr())
+            };
+            f($($arg)*)
+        }};
+    }
+}
+
 // ============================================================================
 // VM DATA STRUCTURES (OPTIMIZED)
 // ============================================================================
@@ -394,76 +493,147 @@ impl<'a> VirtualMachine<'a> {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, val1.wrapping_add(val2) as u64);
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::IADD_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = self.reg_read(src1 as _) as i64;
+                        let val2 = self.reg_read(src2 as _) as i64;
+                        self.reg_write(dst as _, val1.wrapping_add(val2) as u64);
+                    }
                 }
 
                 Opcode::ISub => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, val1.wrapping_sub(val2) as u64);
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::ISUB_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = self.reg_read(src1 as _) as i64;
+                        let val2 = self.reg_read(src2 as _) as i64;
+                        self.reg_write(dst as _, val1.wrapping_sub(val2) as u64);
+                    }
                 }
 
                 Opcode::IMul => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, val1.wrapping_mul(val2) as u64);
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::IMUL_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = self.reg_read(src1 as _) as i64;
+                        let val2 = self.reg_read(src2 as _) as i64;
+                        self.reg_write(dst as _, val1.wrapping_mul(val2) as u64);
+                    }
                 }
 
                 Opcode::ILt => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, u64::from(val1 < val2));
+                     #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::ILT_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = self.reg_read(src1 as _) as i64;
+                        let val2 = self.reg_read(src2 as _) as i64;
+                        self.reg_write(dst as _, u64::from(val1 < val2));
+                    }
                 }
 
                 Opcode::FAdd => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    self.reg_write(dst as _, (val1 + val2).to_bits());
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::FADD_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = f64::from_bits(self.reg_read(src1 as _));
+                        let val2 = f64::from_bits(self.reg_read(src2 as _));
+                        self.reg_write(dst as _, (val1 + val2).to_bits());
+                    }
                 }
 
                 Opcode::FSub => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    self.reg_write(dst as _, (val1 - val2).to_bits());
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::FSUB_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = f64::from_bits(self.reg_read(src1 as _));
+                        let val2 = f64::from_bits(self.reg_read(src2 as _));
+                        self.reg_write(dst as _, (val1 - val2).to_bits());
+                    }
                 }
 
                 Opcode::FMul => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    self.reg_write(dst as _, (val1 * val2).to_bits());
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::FMUL_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        let val1 = f64::from_bits(self.reg_read(src1 as _));
+                        let val2 = f64::from_bits(self.reg_read(src2 as _));
+                        self.reg_write(dst as _, (val1 * val2).to_bits());
+                    }
                 }
 
                 Opcode::FDiv => {
                     let dst = decoder.read_u32();
                     let src1 = decoder.read_u32();
                     let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    #[cfg(debug_assertions)]
-                    if val2 == 0.0 {
-                        return Err(VMError::DivisionByZero);
+                    #[cfg(not(debug_assertions))] {
+                        call_arith_trampoline!{
+                            trampolines::FDIV_TRAMPOLINE,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src1 as u64, src2 as u64
+                        }
                     }
-                    self.reg_write(dst as _, (val1 / val2).to_bits());
+                    #[cfg(debug_assertions)] {
+                        let val1 = f64::from_bits(self.reg_read(src1 as _));
+                        let val2 = f64::from_bits(self.reg_read(src2 as _));
+                        if val2 == 0.0 {
+                            return Err(VMError::DivisionByZero);
+                        }
+                        self.reg_write(dst as _, (val1 / val2).to_bits());
+                    }
                 }
 
                 Opcode::Jump16 => {
@@ -669,7 +839,16 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Mov => {
                     let dst = decoder.read_u32();
                     let src = decoder.read_u32();
-                    self.reg_write(dst as _, self.reg_read(src as _));
+                    #[cfg(not(debug_assertions))] {
+                        call_trampoline!{
+                            trampolines::MOV_TRAMPOLINE: trampolines::MovFn,
+                            self.registers.as_mut_ptr(),
+                            dst as u64, src as u64
+                        }
+                    }
+                    #[cfg(debug_assertions)] {
+                        self.reg_write(dst as _, self.reg_read(src as _));
+                    }
                 }
 
                 Opcode::Load32 => {
