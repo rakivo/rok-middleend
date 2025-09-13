@@ -104,6 +104,7 @@ impl DataFlowGraph {
 /// The control flow graph, containing all basic blocks.
 #[derive(Debug, Clone, Default)]
 pub struct ControlFlowGraph {
+    // TODO: Make .blocks in ControlFlowGraph a PrimaryMap
     pub blocks: Vec<BasicBlockData>,
     pub predecessors: HashMap<Block, SmallVec<[Block; 4]>>,
 }
@@ -268,7 +269,8 @@ impl InstructionData {
             self,
             Self::Jump { .. }   |
             Self::Branch { .. } |
-            Self::Return { .. }
+            Self::Return { .. } |
+            Self::Unreachable
         }
     }
 }
