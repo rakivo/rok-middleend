@@ -434,6 +434,7 @@ impl<'a> FunctionBuilder<'a> {
         &block_data.params[param_idx_start..]
     }
 
+    // TODO(#12): Names for stack slots?
     // TODO(#10): Why do we need to take in Type in create_stack_slot
     #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
