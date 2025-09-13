@@ -229,6 +229,7 @@ pub enum InstructionData {
     StoreNoOffset { args: [Value; 2] },
     DataAddr { data_id: DataId },
     // GlobalValue { global_value: GlobalValue },
+    Unreachable,
     Nop,
 }
 
@@ -257,7 +258,8 @@ impl InstructionData {
             Self::Call { .. } => 32,
             Self::CallExt { .. } => 32,
             Self::Return { .. } => 32,
-            Self::Nop => 32,
+
+            Self::Unreachable | Self::Nop => 0,
         }
     }
 
@@ -436,6 +438,7 @@ impl<'a> FunctionBuilder<'a> {
         self.func.create_stack_slot(ty, size)
     }
 
+    #[inline(always)]
     pub fn insert_comment(
         &mut self,
         inst: Inst,
@@ -553,6 +556,15 @@ impl InstBuilder<'_, '_> {
             let ty = self.builder.func.dfg.values[lhs.index()].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        unreachable_with_comment,
+        #[inline]
+        pub fn unreachable(&mut self) -> Value {
+            let inst = self.insert_inst(InstructionData::Unreachable);
+            self.make_inst_result(inst, Type::I8, 0)
         }
     }
 
@@ -990,6 +1002,7 @@ impl SsaFunc {
             InstructionData::StoreNoOffset { args } => s.push_str(&format!("store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))),
             InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {}", data_id)),
             // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
+            InstructionData::Unreachable => s.push_str("unreachable"),
             InstructionData::Nop => s.push_str("nop"),
         }
 

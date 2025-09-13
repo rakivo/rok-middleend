@@ -1,3 +1,5 @@
+use smallvec::{smallvec, SmallVec};
+
 use crate::entity::EntityRef;
 use crate::util::{self, reborrow};
 use crate::bytecode::{
@@ -237,7 +239,7 @@ impl<'a> LoweringContext<'a> {
         }
 
         // Function arguments are values that are used but never defined
-        let mut function_args: Vec<Value> = all_used.difference(&all_defined).copied().collect();
+        let mut function_args = all_used.difference(&all_defined).copied().collect::<Vec<_>>();
         function_args.sort_by_key(|v| v.index()); // Sort by value index for deterministic assignment
 
         // Pre-assign function arguments to r8, r9, r10, etc.
@@ -377,7 +379,7 @@ impl LoweringContext<'_> {
         let mut out = Liveness::default();
 
         // collect all blocks by index
-        let all_blocks: Vec<Block> = (0..self.func.cfg.blocks.len()).map(Block::new).collect();
+        let all_blocks = (0..self.func.cfg.blocks.len()).map(Block::new).collect::<Vec<_>>();
 
         // 1) compute uses/defs per block
         for &bb in &all_blocks {
@@ -488,54 +490,65 @@ impl LoweringContext<'_> {
 
     /// Helper: return (sources, dests) for an instruction.
     /// This version needs inst id because results are stored in `dfg.inst_results`.
-    fn inst_uses_defs(inst_id: Inst, dfg: &DataFlowGraph, inst: &IData) -> (Vec<Value>, Vec<Value>) {
+    fn inst_uses_defs(
+        inst_id: Inst,
+        dfg: &DataFlowGraph,
+        inst: &IData
+    ) -> (SmallVec<[Value; 8]>, SmallVec<[Value; 8]>) {
         match inst {
             IData::Binary { args, .. } => {
-                let srcs: Vec<Value> = args.to_vec();
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (srcs, dsts)
+                let dsts = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
+                (SmallVec::from_slice(args), dsts)
             }
             IData::Unary { arg, .. } => {
-                let srcs: Vec<Value> = vec![*arg];
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
+                let srcs = smallvec![*arg];
+                let dsts = dfg.inst_results.get(&inst_id)
                     .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
                 (srcs, dsts)
             }
             IData::IConst { .. } | IData::FConst { .. } => {
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (vec![], dsts)
+                let dsts = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
+                (smallvec![], dsts)
             }
-            IData::Jump { .. } => (vec![], vec![]),
-            IData::Branch { arg, .. } => (vec![*arg], vec![]),
+            IData::Jump { .. } => (smallvec![], smallvec![]),
+            IData::Branch { arg, .. } => (smallvec![*arg], smallvec![]),
             IData::Call { args, .. } => {
-                let srcs: Vec<Value> = args.iter().copied().collect();
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                let srcs = args.iter().copied().collect();
+                let dsts = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
                 (srcs, dsts)
             }
             IData::CallExt { args, .. } => {
-                let srcs: Vec<Value> = args.iter().copied().collect();
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
+                let srcs = args.iter().copied().collect();
+                let dsts = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
                 (srcs, dsts)
             }
             IData::Return { args } => {
-                let srcs: Vec<Value> = args.iter().copied().collect();
-                (srcs, vec![])
+                let srcs = args.iter().copied().collect();
+                (srcs, smallvec![])
             }
             IData::DataAddr { .. } |
             IData::StackLoad { .. } |
             IData::StackAddr { .. } => {
-                let dsts: Vec<Value> = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect()).unwrap_or_default();
-                (vec![], dsts)
+                let dsts = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
+                (smallvec![], dsts)
             }
-            IData::StackStore { arg, .. } => (vec![*arg], vec![]),
-            IData::LoadNoOffset { addr, .. } => (vec![*addr], dfg.inst_results.get(&inst_id).map(|sv| sv.iter().copied().collect()).unwrap_or_default()),
-            IData::StoreNoOffset { args, .. } => (vec![args[0], args[1]], vec![]),
-            IData::Nop => (vec![], vec![]),
+            IData::StackStore { arg, .. } => (smallvec![*arg], smallvec![]),
+            IData::LoadNoOffset { addr, .. } => (
+                smallvec![*addr],
+                dfg.inst_results.get(&inst_id).map(|sv| sv.iter().copied().collect()).unwrap_or_default()
+            ),
+            IData::StoreNoOffset { args, .. } => (smallvec![args[0], args[1]], smallvec![]),
+            IData::Unreachable | IData::Nop => (smallvec![], smallvec![]),
         }
     }
 }
@@ -698,9 +711,9 @@ impl SmartRegisterAllocator {
     }
 
     fn build_intervals(&mut self, func: &SsaFunc) {
-        let mut value_ranges: HashMap<Value, (u32, u32)> = HashMap::new();
-        let mut value_uses: HashMap<Value, Vec<u32>> = HashMap::new();
-        let mut value_defs: HashMap<Value, Vec<u32>> = HashMap::new();
+        let mut value_ranges = HashMap::new();
+        let mut value_uses: HashMap<_, Vec<_>> = HashMap::new();
+        let mut value_defs: HashMap<_, Vec<_>> = HashMap::new();
 
         self.position_counter = 0;
 

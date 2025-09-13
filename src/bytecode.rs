@@ -562,7 +562,10 @@ define_opcodes! {
     },
 
     // VM control
-    Halt()          = 255
+    Halt()          = 255,
+    @ IData::Unreachable => |results, chunk| {
+        chunk.append(Opcode::Halt);
+    }
 }
 
 impl Opcode {

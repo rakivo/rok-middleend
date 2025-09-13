@@ -25,7 +25,11 @@ macro_rules! define_opcodes {
         }
 
         impl<'a> $crate::lower::LoweringContext<'a> {
-            pub fn generated_emit_inst(&mut $context, inst_id: Inst, chunk: &mut BytecodeChunk) {
+            pub fn generated_emit_inst(
+                &mut $context,
+                inst_id: Inst,
+                chunk: &mut BytecodeChunk
+            ) {
                 use crate::entity::EntityRef;
 
                 let inst = &$context.func.dfg.insts[inst_id.index()];
