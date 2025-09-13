@@ -1,4 +1,7 @@
+use crate::ssa::IntrinsicId;
+use crate::entity::EntityRef;
 use crate::ssa::Datas;
+use crate::ssa::Intrinsics;
 use crate::ssa::Type;
 use crate::util;
 use crate::bytecode::Opcode;
@@ -17,6 +20,12 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 crate::entity_ref!(VMFuncId);
 
+pub type VMCallback = Box<dyn Fn(
+    &mut VirtualMachine,
+    &mut InstructionDecoder,
+    &BytecodeChunk
+)>;
+
 /// VM execution errors
 #[derive(Debug, Clone)]
 pub enum VMError {
@@ -24,6 +33,7 @@ pub enum VMError {
     InvalidOpcode(u8),
     InvalidDataId(u32),
     InvalidFuncId(u32),
+    InvalidIntrinId(u32),
     StackOverflow,
     StackUnderflow,
     DivisionByZero,
@@ -41,6 +51,7 @@ impl fmt::Display for VMError {
             VMError::InvalidOpcode(op) => write!(f, "Invalid opcode: {op}"),
             VMError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
             VMError::InvalidFuncId(id) => write!(f, "Invalid function ID: {id}"),
+            VMError::InvalidIntrinId(id) => write!(f, "Invalid intrinsic ID: {id}"),
             VMError::StackOverflow => write!(f, "Stack overflow"),
             VMError::StackUnderflow => write!(f, "Stack underflow"),
             VMError::DivisionByZero => write!(f, "Division by zero"),
@@ -182,6 +193,8 @@ pub struct VirtualMachine<'a> {
     stack_memory: Vec<u8>,
     stack_top: usize,
 
+    intrinsics: Intrinsics,
+
     data_memory: Vec<u8>,
     data_offsets: HashMap<DataId, u32>,
 
@@ -204,6 +217,7 @@ impl<'a> VirtualMachine<'a> {
         }
 
         VirtualMachine {
+            intrinsics: PrimaryMap::new(),
             data_memory: Vec::new(),
             data_offsets: HashMap::new(),
             functions: HashMap::with_capacity(32),
@@ -215,6 +229,10 @@ impl<'a> VirtualMachine<'a> {
             registers: [0; 256],
             halted: false,
         }
+    }
+
+    pub fn load_intrinsics(&mut self, intrinsics: Intrinsics) {
+        self.intrinsics = intrinsics;
     }
 
     pub fn load_module_data(&mut self, datas: &Datas) {
@@ -479,6 +497,19 @@ impl<'a> VirtualMachine<'a> {
                         self.pc = new_pc;
                         continue;
                     }
+                }
+
+                Opcode::CallIntrin => {
+                    let intrinsic_id = IntrinsicId::from_u32(decoder.read_u32());
+
+                    #[cfg(debug_assertions)]
+                    if intrinsic_id.index() >= self.intrinsics.len() {
+                        return Err(VMError::InvalidIntrinId(intrinsic_id.as_u32()));
+                    }
+
+                    let callback = unsafe { util::reborrow(&self.intrinsics[intrinsic_id].vm_callback) };
+                    let chunk = unsafe { util::reborrow(chunk) };
+                    (callback)(self, &mut decoder, chunk);
                 }
 
                 Opcode::Call => {

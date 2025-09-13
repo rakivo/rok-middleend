@@ -516,14 +516,9 @@ impl LoweringContext<'_> {
             }
             IData::Jump { .. } => (smallvec![], smallvec![]),
             IData::Branch { arg, .. } => (smallvec![*arg], smallvec![]),
+            IData::CallExt { args, .. } |
+            IData::CallIntrin { args, .. } |
             IData::Call { args, .. } => {
-                let srcs = args.iter().copied().collect();
-                let dsts = dfg.inst_results.get(&inst_id)
-                    .map(|sv| sv.iter().copied().collect())
-                    .unwrap_or_default();
-                (srcs, dsts)
-            }
-            IData::CallExt { args, .. } => {
                 let srcs = args.iter().copied().collect();
                 let dsts = dfg.inst_results.get(&inst_id)
                     .map(|sv| sv.iter().copied().collect())

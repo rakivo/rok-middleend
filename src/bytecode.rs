@@ -561,7 +561,66 @@ define_opcodes! {
         chunk.append(Opcode::Nop);
     },
 
-    // VM control
+    CallIntrin(intrinsic_id: u32) = 135,
+    @ IData::CallIntrin { intrinsic_id, args } => |results, chunk, inst_id| {
+        // 0) Emit stores for spilled values live across this call
+        let l = self.liveness();
+        if let Some(vals) = l.live_across_call.get(&inst_id) {
+            for &v in vals {
+                if let Some(&spill_slot) = self.spill_slots.get(&v) {
+                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
+                    let src_reg = self.ssa_to_reg[&v];
+                    let opcode = Opcode::fp_store(allocation.ty.bits()).unwrap();
+                    chunk.append(opcode);
+                    chunk.append(allocation.offset as u32);
+                    chunk.append(src_reg);
+                }
+            }
+        }
+
+        // 1) Move arguments to registers starting from r8.
+        for (i, &arg) in args.iter().enumerate() {
+            let arg_slot = self.ssa_to_reg[&arg];
+            chunk.append(Opcode::Mov);
+            chunk.append((i + 8) as u32); // dst
+            chunk.append(arg_slot);         // src
+        }
+
+        // 2) Emit call
+        chunk.append(Opcode::CallIntrin);
+        chunk.append(intrinsic_id.index() as u32);
+
+        // 3) Move result(s) from r0 to destination register(s) BEFORE reloading spills.
+        let mut result_vals: Vec<Value> = Vec::new();
+        if let Some(results) = results {
+            if !results.is_empty() {
+                result_vals.push(results[0]);
+                let result_slot = self.ssa_to_reg[&results[0]];
+                if result_slot != 0 {
+                    chunk.append(Opcode::Mov);
+                    chunk.append(result_slot); // dst
+                    chunk.append(0u32);       // src (r0)
+                }
+            }
+        }
+
+        // 4) Reload spilled values, but skip values that are call results (we just wrote them).
+        let l = self.liveness();
+        if let Some(vals) = l.live_across_call.get(&inst_id) {
+            for &v in vals {
+                if result_vals.contains(&v) { continue; }
+                if let Some(&spill_slot) = self.spill_slots.get(&v) {
+                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
+                    let dst_reg = self.ssa_to_reg[&v];
+                    let opcode = Opcode::fp_load(allocation.ty.bits()).unwrap();
+                    chunk.append(opcode);
+                    chunk.append(dst_reg);
+                    chunk.append(allocation.offset as u32);
+                }
+            }
+        }
+    },
+
     Halt()          = 255,
     @ IData::Unreachable => |results, chunk| {
         chunk.append(Opcode::Halt);
@@ -977,6 +1036,12 @@ pub fn disassemble_instruction(
             print_aligned("CALL", &format!("F{func_id}"));
             offset + 5
         }
+        Opcode::CallIntrin => {
+            let intrinsic_id =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            print_aligned("CALL_INTRIN", &format!("I{intrinsic_id}"));
+            offset + 5
+        }
         Opcode::Mov => {
             let dst =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
@@ -1067,7 +1132,7 @@ pub fn disassemble_instruction(
         }
 
         _ => {
-            println!("Unknown opcode: {opcode_byte}");
+            println!("not implemented print: {opcode:?}");
             0
         }
     }

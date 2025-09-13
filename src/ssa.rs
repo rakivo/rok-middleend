@@ -1,6 +1,7 @@
 /// A minimal SSA-based intermediate representation.
 use crate::entity::EntityRef;
 use crate::primary::PrimaryMap;
+use crate::vm::VMCallback;
 use crate::with_comment;
 
 use std::fmt;
@@ -20,6 +21,7 @@ crate::entity_ref!(Value, "Value");
 crate::entity_ref!(Inst, "Inst");
 crate::entity_ref!(Block, "Block");
 crate::entity_ref!(StackSlot, "StackSlot");
+crate::entity_ref!(IntrinsicId, "IntrinsicId");
 crate::entity_ref!(FuncId, "FuncId");
 crate::entity_ref!(DataId, "DataId");
 crate::entity_ref!(GlobalValue, "GlobalValue");
@@ -70,6 +72,13 @@ impl Type {
 pub struct Signature {
     pub params: Vec<Type>,
     pub returns: Vec<Type>,
+}
+
+/// Represents an intrinsic
+pub struct IntrinData {
+    pub name: String,
+    pub signature: Signature,
+    pub vm_callback: VMCallback
 }
 
 /// Represents an external function, defined outside the module.
@@ -214,6 +223,7 @@ pub struct FunctionMetadata {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
+    CallIntrin { intrinsic_id: IntrinsicId, args: SmallVec<[Value; 8]> },
     Binary { binop: BinaryOp, args: [Value; 2] },
     Unary { unop: UnaryOp, arg: Value },
     IConst { value: i64 },
@@ -260,7 +270,9 @@ impl InstructionData {
             Self::CallExt { .. } => 32,
             Self::Return { .. } => 32,
 
-            Self::Unreachable | Self::Nop => 0,
+            Self::CallIntrin { .. } |
+            Self::Unreachable |
+            Self::Nop => 0
         }
     }
 
@@ -303,11 +315,13 @@ pub enum ValueDef {
 }
 
 pub type Datas = PrimaryMap<DataId, DataDescription>;
+pub type Intrinsics = PrimaryMap<IntrinsicId, IntrinData>;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct Module {
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFuncData>,
+    pub intrinsics: Intrinsics,
     pub datas: Datas,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
@@ -328,6 +342,16 @@ impl Module {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[inline(always)]
+    pub fn import_function(&mut self, data: ExtFuncData) -> ExtFuncId {
+        self.ext_funcs.push(data)
+    }
+
+    #[inline(always)]
+    pub fn add_intrinsic(&mut self, intrin_data: IntrinData) -> IntrinsicId {
+        self.intrinsics.push(intrin_data)
     }
 
     pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
@@ -357,10 +381,6 @@ impl Module {
 
     pub fn declare_global_value(&mut self, data: GlobalValueData) -> GlobalValue {
         self.global_values.push(data)
-    }
-
-    pub fn import_function(&mut self, data: ExtFuncData) -> ExtFuncId {
-        self.ext_funcs.push(data)
     }
 
     pub fn define_function(&mut self, id: FuncId) {
@@ -894,6 +914,19 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
+        call_intrin_with_comment,
+        #[inline]
+        pub fn call_intrin(&mut self, intrinsic_id: IntrinsicId, args: &[Value]) -> SmallVec<[Value; 2]> {
+            let inst = self.insert_inst(InstructionData::CallIntrin {
+                intrinsic_id, args: args.into()
+            });
+            let result_ty = Type::I64; // TODO(#2): Get from function signature
+            let result = self.make_inst_result(inst, result_ty, 0);
+            smallvec![result]
+        }
+    }
+
+    with_comment! {
         call_ext_with_comment,
         #[inline]
         pub fn call_ext(&mut self, func_id: ExtFuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
@@ -913,6 +946,7 @@ impl InstBuilder<'_, '_> {
             dest: Value,
             src: Value,
             size: Value,
+
         ) {
             let libc_memcpy = parent.import_function(ExtFuncData {
                 name: "memcpy".into(),
@@ -996,6 +1030,7 @@ impl SsaFunc {
             InstructionData::Jump { destination } => s.push_str(&format!("jump {destination}")),
             InstructionData::Branch { destinations, arg } => s.push_str(&format!("brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])),
             InstructionData::Call { func_id, args } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallIntrin { intrinsic_id, args } => s.push_str(&format!("call_intrin {} ({})", intrinsic_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Return { args } => s.push_str(&format!("return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
@@ -1009,7 +1044,7 @@ impl SsaFunc {
             InstructionData::Nop => s.push_str("nop"),
         }
 
-        write!(f, "  {s:<40}")?;
+        write!(f, "  {s:<70}")?;
 
         if let Some(comment) = self.metadata.comments.get(&inst_id) {
             write!(f, "; {comment}")?;
