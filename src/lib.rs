@@ -105,7 +105,6 @@
 //   ```
 //   which is not particularly correct, I suspect that the data offsets might overlap
 //   and cause this, because the data we insert into the `.datas` is 100% correct.
-// TODO(#7): Unreachable (trap) instruction
 // TODO(#3): extend/truncate operations
 // TODO(#1): VM callbacks (intrinsics)
 //   something like that:
