@@ -853,6 +853,14 @@ pub fn disassemble_instruction(
             print_aligned("LOAD_DATA_ADDR", &format!("v{dst}, D{data_id}"));
             offset + 9
         }
+        Opcode::IConst8 => {
+            let dst =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val =
+                i8::from_le_bytes(lowered.chunk.code[offset + 5..offset + 6].try_into().unwrap());
+            print_aligned("ICONST8", &format!("v{dst}, {val}_i8"));
+            offset + 6
+        }
         Opcode::IConst32 => {
             let dst =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
@@ -988,6 +996,14 @@ pub fn disassemble_instruction(
             let addr =
                 u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
             print_aligned("LOAD64", &format!("v{dst}, v{addr}"));
+            offset + 9
+        }
+        Opcode::Store8 => {
+            let addr =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let val =
+                u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            print_aligned("STORE8", &format!("v{addr}, v{val}"));
             offset + 9
         }
         Opcode::Store32 => {
