@@ -196,14 +196,14 @@ impl<'a> VirtualMachine<'a> {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
     #[must_use]
-    pub fn new(datas: &Datas) -> Self {
+    pub fn new() -> Self {
         let mut stack_memory = Vec::with_capacity(Self::STACK_SIZE);
         #[allow(clippy::uninit_vec)]
         unsafe {
             stack_memory.set_len(Self::STACK_SIZE);
         }
 
-        let mut vm = VirtualMachine {
+        VirtualMachine {
             data_memory: Vec::new(),
             data_offsets: HashMap::new(),
             functions: HashMap::with_capacity(32),
@@ -214,11 +214,7 @@ impl<'a> VirtualMachine<'a> {
             stack_top: 0,
             registers: [0; 256],
             halted: false,
-        };
-
-        vm.load_module_data(datas);
-
-        vm
+        }
     }
 
     pub fn load_module_data(&mut self, datas: &Datas) {
