@@ -62,7 +62,7 @@ fn main() {
     println!("\nLowered Bytecode:");
     disassemble_chunk(&lowered_func, &fib_func_name);
 
-    let mut vm = VirtualMachine::new();
+    let mut vm = VirtualMachine::new(&module.datas);
     vm.add_function(fib_id, &lowered_func.chunk);
     let ret = vm.call_function(fib_id, &[40]);
     println!("{ret:#?}");

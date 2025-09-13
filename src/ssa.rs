@@ -298,11 +298,13 @@ pub enum ValueDef {
     Const(i64),
 }
 
+pub type Datas = PrimaryMap<DataId, DataDescription>;
+
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFuncData>,
-    pub datas: PrimaryMap<DataId, DataDescription>,
+    pub datas: Datas,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
 

@@ -1,3 +1,4 @@
+use crate::ssa::Datas;
 use crate::ssa::Type;
 use crate::util;
 use crate::bytecode::Opcode;
@@ -5,7 +6,6 @@ use crate::bytecode::BytecodeChunk;
 use crate::primary::PrimaryMap;
 use crate::ssa::DataId;
 use crate::ssa::FuncId;
-use crate::ssa::Module;
 
 use std::{fmt, ptr};
 use std::collections::HashMap;
@@ -54,10 +54,6 @@ impl fmt::Display for VMError {
 }
 
 impl std::error::Error for VMError {}
-
-// ============================================================================
-// FAST INSTRUCTION DECODER
-// ============================================================================
 
 pub struct InstructionDecoder {
     ptr: *const u8,
@@ -196,24 +192,18 @@ pub struct VirtualMachine<'a> {
     halted: bool,
 }
 
-impl Default for VirtualMachine<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<'a> VirtualMachine<'a> {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(datas: &Datas) -> Self {
         let mut stack_memory = Vec::with_capacity(Self::STACK_SIZE);
         #[allow(clippy::uninit_vec)]
         unsafe {
             stack_memory.set_len(Self::STACK_SIZE);
         }
 
-        VirtualMachine {
+        let mut vm = VirtualMachine {
             data_memory: Vec::new(),
             data_offsets: HashMap::new(),
             functions: HashMap::with_capacity(32),
@@ -224,13 +214,24 @@ impl<'a> VirtualMachine<'a> {
             stack_top: 0,
             registers: [0; 256],
             halted: false,
-        }
+        };
+
+        vm.load_module_data(datas);
+
+        vm
     }
 
-    pub fn load_module_data(&mut self, module: &Module) {
+    pub fn load_module_data(&mut self, datas: &Datas) {
         let mut current_offset = 0;
 
-        for (data_id, data_desc) in module.datas.iter() {
+        let total_size = datas.values().map(|desc| {
+            desc.contents.len()
+        }).sum();
+
+        self.data_memory.reserve(total_size);
+        self.data_offsets.reserve(datas.len());
+
+        for (data_id, data_desc) in datas.iter() {
             if !data_desc.is_external {
                 // Align data appropriately (e.g., 8-byte alignment)
                 current_offset = util::align_up(current_offset, 8);
