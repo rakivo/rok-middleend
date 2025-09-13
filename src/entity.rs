@@ -127,18 +127,6 @@ macro_rules! entity_impl {
             }
         }
 
-        impl $crate::packed_option::ReservedValue for $entity {
-            #[inline]
-            fn reserved_value() -> $entity {
-                $entity::from_u32(std::u32::MAX)
-            }
-
-            #[inline]
-            fn is_reserved_value(&self) -> bool {
-                self.as_u32() == std::u32::MAX
-            }
-        }
-
         impl $entity {
             /// Create a new instance from a `u32`.
             #[allow(dead_code, reason = "macro-generated code")]
