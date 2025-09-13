@@ -1,11 +1,12 @@
 /// A minimal SSA-based intermediate representation.
 use crate::entity::EntityRef;
 use crate::primary::PrimaryMap;
+use crate::with_comment;
 
 use std::fmt;
 use std::hash::Hash;
-use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
+use std::collections::{HashMap, HashSet};
 
 use smallvec::{smallvec, SmallVec};
 
@@ -203,6 +204,7 @@ pub struct StackSlotData {
 #[derive(Debug, Clone, Default)]
 pub struct FunctionMetadata {
     pub is_external: bool,
+    pub comments: HashMap<Inst, Box<str>>
 }
 
 //-////////////////////////////////////////////////////////////////////
@@ -328,6 +330,7 @@ impl Module {
             signature,
             metadata: FunctionMetadata {
                 is_external: true,
+                ..Default::default()
             },
             ..Default::default()
         })
@@ -356,10 +359,7 @@ impl Module {
 
     pub fn define_function(&mut self, id: FuncId) {
         let func = self.get_func_mut(id);
-        func.metadata = FunctionMetadata {
-            is_external: false,
-            ..func.metadata
-        };
+        func.metadata.is_external = false;
     }
 
     pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
@@ -434,6 +434,14 @@ impl<'a> FunctionBuilder<'a> {
         self.func.create_stack_slot(ty, size)
     }
 
+    pub fn insert_comment(
+        &mut self,
+        inst: Inst,
+        comment: impl Into<Box<str>>
+    ) {
+        self.func.metadata.comments.insert(inst, comment.into());
+    }
+
     #[inline(always)]
     pub fn ins<'short>(&'short mut self) -> InstBuilder<'short, 'a> {
         let position = self.cursor;
@@ -479,6 +487,13 @@ impl InstBuilder<'_, '_> {
     }
 
     #[inline]
+    #[cfg_attr(not(debug_assertions), allow(unused))]
+    fn get_last_inst(&self) -> Option<Inst> {
+        let block = self.current_block();
+        self.builder.func.cfg.blocks[block.index()].insts.last().copied()
+    }
+
+    #[inline]
     fn make_inst_result(&mut self, inst: Inst, ty: Type, result_idx: u8) -> Value {
         let value = self.builder.func.dfg.make_value(ValueData {
             ty,
@@ -488,66 +503,95 @@ impl InstBuilder<'_, '_> {
         value
     }
 
-    #[inline]
-    pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        let inst = self.insert_inst(InstructionData::IConst { value: val });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        iconst_with_comment,
+        #[inline]
+        pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
+            let inst = self.insert_inst(InstructionData::IConst { value: val });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IAdd, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        iadd_with_comment,
+        #[inline]
+        pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary {
+                binop: BinaryOp::IAdd, args: [lhs, rhs]
+            });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ISub, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        isub_with_comment,
+        #[inline]
+        pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ISub, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IMul, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        imul_with_comment,
+        #[inline]
+        pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IMul, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IDiv, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        idiv_with_comment,
+        #[inline]
+        pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IDiv, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::And, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        and_with_comment,
+        #[inline]
+        pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::And, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Or, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        or_with_comment,
+        #[inline]
+        pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Or, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Xor, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        xor_with_comment,
+        #[inline]
+        pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Xor, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ILt, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        ilt_with_comment,
+        #[inline]
+        pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ILt, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
     pub fn iadd_imm(&mut self, lhs: Value, rhs: i64) -> Value {
@@ -598,143 +642,200 @@ impl InstBuilder<'_, '_> {
         self.ilt(lhs, rhs)
     }
 
-    #[inline]
-    pub fn ushr(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ushr, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        ushr_with_comment,
+        #[inline]
+        pub fn ushr(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ushr, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        ishl_with_comment,
+        #[inline]
+        pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ishl, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        band_with_comment,
+        #[inline]
+        pub fn band(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Band, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        bor_with_comment,
+        #[inline]
+        pub fn bor(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Bor, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
     #[inline]
-    pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ishl, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
-    }
-
-    #[inline]
-    pub fn band(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Band, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
-    }
-
-    #[inline]
-    pub fn bor(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Bor, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
-    }
-
     pub fn ushr_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.ushr(lhs, rhs)
     }
 
+    #[inline]
     pub fn ishl_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.ishl(lhs, rhs)
     }
 
+    #[inline]
     pub fn band_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.band(lhs, rhs)
     }
 
+    #[inline]
     pub fn bor_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.bor(lhs, rhs)
     }
 
-    #[inline]
-    pub fn ireduce(&mut self, ty: Type, arg: Value) -> Value {
-        let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Ireduce, arg });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        ireduce_with_comment,
+        #[inline]
+        pub fn ireduce(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Ireduce, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn uextend(&mut self, ty: Type, arg: Value) -> Value {
-        let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Uextend, arg });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        uextend_with_comment,
+        #[inline]
+        pub fn uextend(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Uextend, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn sextend(&mut self, ty: Type, arg: Value) -> Value {
-        let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Sextend, arg });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        sextend_with_comment,
+        #[inline]
+        pub fn sextend(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Sextend, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-
-    #[inline]
-    pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FAdd, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        fadd_with_comment,
+        #[inline]
+        pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FAdd, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FSub, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        fsub_with_comment,
+        #[inline]
+        pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FSub, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMul, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        fmul_with_comment,
+        #[inline]
+        pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMul, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.func.dfg.values[lhs.index()].ty;
-        let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        fdiv_with_comment,
+        #[inline]
+        pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn fconst(&mut self, ty: Type, val: f64) -> Value {
-        let inst = self.insert_inst(InstructionData::FConst { value: val });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        fconst_with_comment,
+        #[inline]
+        pub fn fconst(&mut self, ty: Type, val: f64) -> Value {
+            let inst = self.insert_inst(InstructionData::FConst { value: val });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
-        let inst = self.insert_inst(InstructionData::StackAddr { slot });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        stack_addr_with_comment,
+        #[inline]
+        pub fn stack_addr(&mut self, ty: Type, slot: StackSlot) -> Value {
+            let inst = self.insert_inst(InstructionData::StackAddr { slot });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn stack_load(&mut self, ty: Type, slot: StackSlot) -> Value {
-        let inst = self.insert_inst(InstructionData::StackLoad { slot });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        stack_load_with_comment,
+        #[inline]
+        pub fn stack_load(&mut self, ty: Type, slot: StackSlot) -> Value {
+            let inst = self.insert_inst(InstructionData::StackLoad { slot });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
-        self.insert_inst(InstructionData::StackStore { slot, arg: val });
+    with_comment! {
+        stack_store_with_comment,
+        #[inline]
+        pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
+            self.insert_inst(InstructionData::StackStore { slot, arg: val });
+        }
     }
 
-    #[inline]
-    pub fn store(&mut self, dst: Value, src: Value) {
-        self.insert_inst(InstructionData::StoreNoOffset { args: [dst, src] });
+    with_comment! {
+        store_with_comment,
+        #[inline]
+        pub fn store(&mut self, dst: Value, src: Value) {
+            self.insert_inst(InstructionData::StoreNoOffset { args: [dst, src] });
+        }
     }
 
-    #[inline]
-    pub fn load(&mut self, ty: Type, addr: Value) -> Value {
-        let inst = self.insert_inst(InstructionData::LoadNoOffset { ty, addr });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        load_with_comment,
+        #[inline]
+        pub fn load(&mut self, ty: Type, addr: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::LoadNoOffset { ty, addr });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
-    #[inline]
-    pub fn data_addr(&mut self, ty: Type, data_id: DataId) -> Value {
-        let inst = self.insert_inst(InstructionData::DataAddr { data_id });
-        self.make_inst_result(inst, ty, 0)
+    with_comment! {
+        data_addr_with_comment,
+        #[inline]
+        pub fn data_addr(&mut self, ty: Type, data_id: DataId) -> Value {
+            let inst = self.insert_inst(InstructionData::DataAddr { data_id });
+            self.make_inst_result(inst, ty, 0)
+        }
     }
 
     // #[inline]
@@ -743,78 +844,99 @@ impl InstBuilder<'_, '_> {
     //     self.make_inst_result(inst, ty, 0)
     // }
 
-    #[inline]
-    pub fn jump(&mut self, dest: Block) {
-        self.insert_inst(InstructionData::Jump { destination: dest });
-        let from = self.position.current_block;
-        self.builder.func.cfg.add_pred(from, dest);
+    with_comment! {
+        jump_with_comment,
+        #[inline]
+        pub fn jump(&mut self, dest: Block) {
+            self.insert_inst(InstructionData::Jump { destination: dest });
+            let from = self.position.current_block;
+            self.builder.func.cfg.add_pred(from, dest);
+        }
     }
 
-    #[inline]
-    pub fn brif(&mut self, cond: Value, true_dest: Block, false_dest: Block) {
-        self.insert_inst(InstructionData::Branch { destinations: [true_dest, false_dest], arg: cond });
-        let from = self.position.current_block;
-        self.builder.func.cfg.add_pred(from, true_dest);
-        self.builder.func.cfg.add_pred(from, false_dest);
+    with_comment! {
+        brif_with_comment,
+        #[inline]
+        pub fn brif(&mut self, cond: Value, true_dest: Block, false_dest: Block) {
+            self.insert_inst(InstructionData::Branch { destinations: [true_dest, false_dest], arg: cond });
+            let from = self.position.current_block;
+            self.builder.func.cfg.add_pred(from, true_dest);
+            self.builder.func.cfg.add_pred(from, false_dest);
+        }
     }
 
-    #[inline]
-    pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
-        let inst = self.insert_inst(InstructionData::Call { func_id, args: args.into() });
-        let result_ty = Type::I64; // TODO(#2): Get from function signature
-        let result = self.make_inst_result(inst, result_ty, 0);
-        smallvec![result]
+    with_comment! {
+        call_with_comment,
+        #[inline]
+        pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
+            let inst = self.insert_inst(InstructionData::Call { func_id, args: args.into() });
+            let result_ty = Type::I64; // TODO(#2): Get from function signature
+            let result = self.make_inst_result(inst, result_ty, 0);
+            smallvec![result]
+        }
     }
 
-    #[inline]
-    pub fn call_ext(&mut self, func_id: ExtFuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
-        let inst = self.insert_inst(InstructionData::CallExt { func_id, args: args.into() });
-        let result_ty = Type::I64; // TODO(#6): Get from function signature
-        let result = self.make_inst_result(inst, result_ty, 0);
-        smallvec![result]
+    with_comment! {
+        call_ext_with_comment,
+        #[inline]
+        pub fn call_ext(&mut self, func_id: ExtFuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
+            let inst = self.insert_inst(InstructionData::CallExt { func_id, args: args.into() });
+            let result_ty = Type::I64; // TODO(#6): Get from function signature
+            let result = self.make_inst_result(inst, result_ty, 0);
+            smallvec![result]
+        }
     }
 
-    #[inline]
-    pub fn call_memcpy(
-        &mut self,
-        parent: &mut Module,
-        dest: Value,
-        src: Value,
-        size: Value,
-    ) {
-        let libc_memcpy = parent.import_function(ExtFuncData {
-            name: "memcpy".into(),
-            signature: Signature {
-                params: vec![Type::Ptr, Type::Ptr, Type::I64],
-                ..Default::default()
-            }
-        });
+    with_comment! {
+        call_memcpy_with_comment,
+        #[inline]
+        pub fn call_memcpy(
+            &mut self,
+            parent: &mut Module,
+            dest: Value,
+            src: Value,
+            size: Value,
+        ) {
+            let libc_memcpy = parent.import_function(ExtFuncData {
+                name: "memcpy".into(),
+                signature: Signature {
+                    params: vec![Type::Ptr, Type::Ptr, Type::I64],
+                    ..Default::default()
+                }
+            });
 
-        self.call_ext(libc_memcpy, &[dest, src, size]);
+            self.call_ext(libc_memcpy, &[dest, src, size]);
+        }
     }
 
-    #[inline]
-    pub fn call_memset(
-        &mut self,
-        parent: &mut Module,
-        dest: Value,
-        c: Value,
-        n: Value,
-    ) {
-        let libc_memset = parent.import_function(ExtFuncData {
-            name: "memset".into(),
-            signature: Signature {
-                params: vec![Type::Ptr, Type::I32, Type::I64],
-                ..Default::default()
-            }
-        });
+    with_comment! {
+        call_memset_with_comment,
+        #[inline]
+        pub fn call_memset(
+            &mut self,
+            parent: &mut Module,
+            dest: Value,
+            c: Value,
+            n: Value,
+        ) {
+            let libc_memset = parent.import_function(ExtFuncData {
+                name: "memset".into(),
+                signature: Signature {
+                    params: vec![Type::Ptr, Type::I32, Type::I64],
+                    ..Default::default()
+                }
+            });
 
-        self.call_ext(libc_memset, &[dest, c, n]);
+            self.call_ext(libc_memset, &[dest, c, n]);
+        }
     }
 
-    #[inline]
-    pub fn ret(&mut self, vals: &[Value]) {
-        self.insert_inst(InstructionData::Return { args: vals.into() });
+    with_comment! {
+        ret_with_comment,
+        #[inline]
+        pub fn ret(&mut self, vals: &[Value]) {
+            self.insert_inst(InstructionData::Return { args: vals.into() });
+        }
     }
 }
 
@@ -842,32 +964,40 @@ impl SsaFunc {
 
     pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
         let inst = &self.dfg.insts[inst_id.index()];
-        write!(f, "  ")?;
+        let mut s = String::new();
         if let Some(results) = self.dfg.inst_results.get(&inst_id) {
             if !results.is_empty() {
-                write!(f, "{}", results.iter().map(|r| self.fmt_value(*r)).collect::<Vec<_>>().join(", "))?;
-                write!(f, " = ")?;
+                s.push_str(&results.iter().map(|r| self.fmt_value(*r)).collect::<Vec<_>>().join(", "));
+                s.push_str(" = ");
             }
         }
         match inst {
-            InstructionData::Binary { binop: opcode, args } => write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1])),
-            InstructionData::Unary { unop, arg } => write!(f, "{:?} {}", unop, self.fmt_value(*arg)),
-            InstructionData::IConst { value } => write!(f, "iconst {value}"),
-            InstructionData::FConst { value } => write!(f, "fconst {value}"),
-            InstructionData::Jump { destination } => write!(f, "jump {destination}"),
-            InstructionData::Branch { destinations, arg } => write!(f, "brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1]),
-            InstructionData::Call { func_id, args } => write!(f, "call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
-            InstructionData::CallExt { func_id, args } => write!(f, "call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", ")),
-            InstructionData::Return { args } => write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", ")),
-            InstructionData::StackAddr { slot } => write!(f, "stack_addr {slot}"),
-            InstructionData::StackLoad { slot } => write!(f, "stack_load {slot}"),
-            InstructionData::StackStore { slot, arg } => write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg)),
-            InstructionData::LoadNoOffset { ty, addr } => write!(f, "load_no_offset {}:{:?}, {}", self.fmt_value(*addr), ty, self.fmt_value(*addr)),
-            InstructionData::StoreNoOffset { args } => write!(f, "store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1])),
-            InstructionData::DataAddr { data_id } => write!(f, "data_addr {}", data_id),
+            InstructionData::Binary { binop: opcode, args } => s.push_str(&format!("{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::Unary { unop, arg } => s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg))),
+            InstructionData::IConst { value } => s.push_str(&format!("iconst {value}")),
+            InstructionData::FConst { value } => s.push_str(&format!("fconst {value}")),
+            InstructionData::Jump { destination } => s.push_str(&format!("jump {destination}")),
+            InstructionData::Branch { destinations, arg } => s.push_str(&format!("brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])),
+            InstructionData::Call { func_id, args } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Return { args } => s.push_str(&format!("return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
+            InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
+            InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
+            InstructionData::StackStore { slot, arg } => s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg))),
+            InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!("load_no_offset {}:{:?}, {}", self.fmt_value(*addr), ty, self.fmt_value(*addr))),
+            InstructionData::StoreNoOffset { args } => s.push_str(&format!("store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {}", data_id)),
             // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
-            InstructionData::Nop => write!(f, "nop"),
+            InstructionData::Nop => s.push_str("nop"),
         }
+
+        write!(f, "  {s:<40}")?;
+
+        if let Some(comment) = self.metadata.comments.get(&inst_id) {
+            write!(f, "; {comment}")?;
+        }
+
+        Ok(())
     }
 
     pub fn fmt_value(&self, val: Value) -> String {
