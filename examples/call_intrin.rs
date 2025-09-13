@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rok_bytecode::vm::VirtualMachine;
 use rok_bytecode::lower::{LoweringContext};
 use rok_bytecode::bytecode::disassemble_chunk;
@@ -15,7 +17,7 @@ fn main() {
     let intrinsic_id = module.add_intrinsic(IntrinData {
         name: "bar".into(),
         signature: Signature::default(),
-        vm_callback: Box::new(|_vm, _decoder, _chunk| {
+        vm_callback: Arc::new(|_vm, _decoder, _chunk| {
             println!("callback from the VM")
         })
     });

@@ -10,9 +10,12 @@ use crate::primary::PrimaryMap;
 use crate::ssa::DataId;
 use crate::ssa::FuncId;
 
+use std::sync::Arc;
 use std::{fmt, ptr};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+
+use smallvec::SmallVec;
 
 // ============================================================================
 // VM DATA STRUCTURES (OPTIMIZED)
@@ -20,7 +23,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 crate::entity_ref!(VMFuncId);
 
-pub type VMCallback = Box<dyn Fn(
+pub type VMCallback = Arc<dyn Fn(
     &mut VirtualMachine,
     &mut InstructionDecoder,
     &BytecodeChunk
@@ -280,6 +283,17 @@ impl<'a> VirtualMachine<'a> {
             rety: rety,
             args: args.as_ref().into()
         });
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn get_args(&self, count: usize) -> SmallVec<[u64; 8]> {
+        let mut ret = SmallVec::with_capacity(count);
+        for reg in 8..count+8 {
+            ret.push(self.reg_read(reg));
+        }
+
+        ret
     }
 
     #[inline]

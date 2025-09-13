@@ -75,6 +75,7 @@ pub struct Signature {
 }
 
 /// Represents an intrinsic
+#[derive(Clone)]
 pub struct IntrinData {
     pub name: String,
     pub signature: Signature,
