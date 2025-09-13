@@ -1,5 +1,4 @@
 // TODO(#5): Legalization pass
-// TODO(#9): Instruction comments
 // TODO(#8): Bug with data
 //   for example this:
 //   ```
