@@ -30,9 +30,9 @@ pub struct LoweredSsaFunc<'a> {
 
 #[cfg(debug_assertions)]
 #[derive(Clone, Debug)]
-pub struct InstMeta {
+pub struct LoInstMeta {
     pub inst: Inst,             // SSA inst id
-    pub pc: usize,                // start pc
+    pub pc: usize,              // start pc
     pub size: u8,              // byte size
 }
 
@@ -58,7 +58,7 @@ pub struct LoweringContext<'a> {
     pub spill_slots: HashMap<Value, StackSlot>,
 
     #[cfg(debug_assertions)]
-    pub pc_to_inst_meta: HashMap<usize, InstMeta>,  // index == inst index in lowered list
+    pub pc_to_inst_meta: HashMap<usize, LoInstMeta>,  // index == inst index in lowered list
 }
 
 /// The context for lowering a single function.
@@ -322,7 +322,7 @@ impl<'a> LoweringContext<'a> {
                 #[cfg(debug_assertions)]
                 self.pc_to_inst_meta.insert(
                     pc,
-                    InstMeta {
+                    LoInstMeta {
                         inst: inst_id,
                         pc,
                         size: (chunk.code.len() - pc) as u8

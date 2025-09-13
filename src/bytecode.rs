@@ -754,7 +754,7 @@ pub fn disassemble_instruction(
 
     #[cfg(debug_assertions)]
     if print_metadata {
-        if let Some(crate::lower::InstMeta { pc, inst, size }) =
+        if let Some(crate::lower::LoInstMeta { pc, inst, size }) =
             lowered.context.pc_to_inst_meta.get(&offset)
         {
             // look up the block this instruction belongs to
