@@ -947,7 +947,6 @@ impl InstBuilder<'_, '_> {
             dest: Value,
             src: Value,
             size: Value,
-
         ) {
             let libc_memcpy = parent.import_function(ExtFuncData {
                 name: "memcpy".into(),
@@ -980,6 +979,19 @@ impl InstBuilder<'_, '_> {
             });
 
             self.call_ext(libc_memset, &[dest, c, n]);
+        }
+    }
+
+    with_comment! {
+        call_abort_with_comment,
+        #[inline]
+        pub fn call_abort(&mut self, parent: &mut Module) {
+            let libc_abort = parent.import_function(ExtFuncData {
+                name: "abort".into(),
+                signature: Signature::default()
+            });
+
+            self.call_ext(libc_abort, &[]);
         }
     }
 
