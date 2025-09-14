@@ -12,7 +12,6 @@ use crate::ssa::{
     Type,
     Value
 };
-
 use std::mem;
 
 use indexmap::IndexMap;
@@ -621,6 +620,13 @@ define_opcodes! {
         }
     },
 
+    CallExt(func_id: u32)          = 136,
+    @ IData::CallExt { func_id, args, .. } => |results, chunk, inst_id| {
+        // 2) Emit call
+        chunk.append(Opcode::CallExt);
+        chunk.append(func_id.index() as u32);
+    },
+
     Halt()          = 255,
     @ IData::Unreachable => |results, chunk| {
         chunk.append(Opcode::Halt);
@@ -747,7 +753,7 @@ impl BytecodeChunk {
 //
 
 pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
-    let print_metadata = false;
+    let print_metadata = true;
 
     println!("== {name} ==");
     println!("Frame size: {} bytes", lowered_func.chunk.frame_info.total_size);
@@ -830,8 +836,13 @@ pub fn disassemble_instruction(
 
             println!();
             println!("{offset_str};");
-            print!("{offset_str};");
-            println!("{}", lowered.context.func.pretty_print_inst(*inst));
+            println!("{offset_str}; original SSA instruction:");
+            println!("{offset_str}; {inst}", inst = lowered.context.func.pretty_print_inst(*inst));
+            if let Some(comment) = lowered.context.func.metadata.comments.get(inst) {
+                println!("{offset_str};");
+                println!("{offset_str}; comment:");
+                println!("{offset_str}; {comment}");
+            }
             println!("{offset_str};");
             print!("{offset_str};");
             println!("  pc={pc:?} inst_id={inst:?}, size={size}");
@@ -1049,13 +1060,19 @@ pub fn disassemble_instruction(
         Opcode::Call => {
             let func_id =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("CALL", &format!("F{func_id}"));
+            print_aligned("CALL", &format!("FUNC_{func_id}"));
+            offset + 5
+        }
+        Opcode::CallExt => {
+            let func_id =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            print_aligned("CALL_EXT", &format!("EXT_{func_id}"));
             offset + 5
         }
         Opcode::CallIntrin => {
             let intrinsic_id =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("CALL_INTRIN", &format!("I{intrinsic_id}"));
+            print_aligned("CALL_INTRIN", &format!("INTRIN_{intrinsic_id}"));
             offset + 5
         }
         Opcode::Mov => {

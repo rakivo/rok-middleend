@@ -51,7 +51,6 @@ macro_rules! define_opcodes {
                         )?
                     )*
 
-                    IData::CallExt { .. } => todo!(),
                     IData::IConst { .. }     => unreachable!("invalid bitwidth"),
                     IData::FConst { .. }     => unreachable!("invalid bitwidth"),
                     IData::LoadNoOffset { .. }  => unreachable!("invalid bitwidth"),
