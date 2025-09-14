@@ -1,7 +1,9 @@
+use crate::ssa::ExtFuncId;
 use crate::ssa::IntrinsicId;
 use crate::entity::EntityRef;
 use crate::ssa::Datas;
 use crate::ssa::Intrinsics;
+use crate::ssa::Signature;
 use crate::ssa::Type;
 use crate::util;
 use crate::bytecode::Opcode;
@@ -20,8 +22,6 @@ use smallvec::SmallVec;
 // ============================================================================
 // VM DATA STRUCTURES (OPTIMIZED)
 // ============================================================================
-
-crate::entity_ref!(VMFuncId);
 
 pub type VMCallback = Arc<dyn Fn(
     &mut VirtualMachine,
@@ -159,7 +159,7 @@ impl InstructionDecoder {
 
 #[derive(Copy, Debug, Clone)]
 pub struct StackFrame {
-    pub vm_func_id: VMFuncId,
+    pub func_id: FuncId,
     pub ret_pc: usize,
     pub fp: usize,
     pub sp: usize,
@@ -168,25 +168,20 @@ pub struct StackFrame {
 impl StackFrame {
     #[inline]
     #[must_use]
-    pub const fn new(vm_func_id: VMFuncId, ret_pc: usize, fp: usize, sp: usize) -> Self {
-        StackFrame { vm_func_id, ret_pc, fp, sp }
+    pub const fn new(func_id: FuncId, ret_pc: usize, fp: usize, sp: usize) -> Self {
+        StackFrame { func_id, ret_pc, fp, sp }
     }
 }
 
 #[derive(Clone)]
-pub enum VMFunc {
-    Internal(VMFuncId),
-    External {
-        rety: Type,
-        args: Box<[Type]>,
-        addr: *const ()
-    }
+pub struct ExtFunc {
+    pub signature: Signature,
+    pub addr: *const ()
 }
 
 pub struct VirtualMachine<'a> {
-    // Function management
-    vm_functions: PrimaryMap<VMFuncId, &'a BytecodeChunk>,
-    functions: HashMap<FuncId, VMFunc>,
+    funcs: HashMap<FuncId, &'a BytecodeChunk>,
+    ext_funcs: HashMap<ExtFuncId, ExtFunc>,
 
     // Execution state
     call_stack: Vec<StackFrame>,
@@ -223,8 +218,8 @@ impl<'a> VirtualMachine<'a> {
             intrinsics: PrimaryMap::new(),
             data_memory: Vec::new(),
             data_offsets: HashMap::new(),
-            functions: HashMap::with_capacity(32),
-            vm_functions: PrimaryMap::with_capacity(32),
+            funcs: HashMap::new(),
+            ext_funcs: HashMap::new(),
             call_stack: Vec::with_capacity(32),
             pc: 0,
             stack_memory,
@@ -234,8 +229,22 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.call_stack.clear();
+        self.pc = 0;
+        // don't care about the memory
+        // self.stack_memory.clear();
+        self.stack_top = 0;
+        self.registers = [0; 256];
+        self.halted = false;
+    }
+
     pub fn load_intrinsics(&mut self, intrinsics: Intrinsics) {
         self.intrinsics = intrinsics;
+    }
+
+    pub fn load_ext_funcs(&mut self, ext_funcs: HashMap<ExtFuncId, ExtFunc>) {
+        self.ext_funcs = ext_funcs;
     }
 
     pub fn load_module_data(&mut self, datas: &Datas) {
@@ -264,25 +273,18 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline]
-    pub fn add_function(&mut self, func_id: FuncId, chunk: &'a BytecodeChunk) -> VMFuncId {
-        let vm_id = self.vm_functions.push(chunk);
-        self.functions.insert(func_id, VMFunc::Internal(vm_id));
-        vm_id
+    pub fn add_function(&mut self, func_id: FuncId, chunk: &'a BytecodeChunk) {
+        self.funcs.insert(func_id, chunk);
     }
 
     #[inline]
     pub fn add_external_function(
         &mut self,
-        func_id: FuncId,
-        addr: usize,
-        rety: Type,
-        args: impl AsRef<[Type]>
+        func_id: ExtFuncId,
+        signature: Signature,
+        addr: *const (),
     ) {
-        self.functions.insert(func_id, VMFunc::External {
-            addr: addr as _,
-            rety: rety,
-            args: args.as_ref().into()
-        });
+        self.ext_funcs.insert(func_id, ExtFunc { addr, signature });
     }
 
     #[inline]
@@ -299,14 +301,7 @@ impl<'a> VirtualMachine<'a> {
     #[inline]
     pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
         // Set up initial frame
-        let vm_func = self.functions.get(&func_id).unwrap();
-
-        let vm_func_id = match vm_func {
-            VMFunc::Internal(id) => *id,
-            VMFunc::External { .. } => {
-                todo!()
-            }
-        };
+        let chunk = self.funcs.get(&func_id).unwrap();
 
         unsafe {
             // Clear return registers for new function call
@@ -319,7 +314,6 @@ impl<'a> VirtualMachine<'a> {
             }
         }
 
-        let chunk = self.get_chunk(vm_func_id);
         let frame_size = chunk.frame_info.total_size as usize;
         let new_fp = self.stack_top;
         let new_sp = self.stack_top + frame_size;
@@ -329,7 +323,7 @@ impl<'a> VirtualMachine<'a> {
             return Err(VMError::StackOverflow);
         }
 
-        let frame = StackFrame::new(vm_func_id, 0, new_fp, new_sp);
+        let frame = StackFrame::new(func_id, 0, new_fp, new_sp);
         self.call_stack.push(frame);
         self.stack_top = new_sp;
         self.pc = 0;
@@ -374,7 +368,7 @@ impl<'a> VirtualMachine<'a> {
         let mut frame = *self.current_frame();
 
         while !self.halted && !self.call_stack.is_empty() {
-            let func_id = frame.vm_func_id;
+            let func_id = frame.func_id;
             let chunk = self.get_chunk(func_id);
             let mut decoder = InstructionDecoder::new(&chunk.code);
             decoder.set_pos(self.pc, chunk.code.as_ptr());
@@ -527,11 +521,11 @@ impl<'a> VirtualMachine<'a> {
                 }
 
                 Opcode::Call => {
-                    let func_id = decoder.read_u32();
+                    let func_id = FuncId::from_u32(decoder.read_u32());
 
                     #[cfg(debug_assertions)]
-                    if func_id as usize >= self.functions.len() {
-                        return Err(VMError::InvalidFuncId(func_id));
+                    if func_id.index() >= self.funcs.len() {
+                        return Err(VMError::InvalidFuncId(func_id.as_u32()));
                     }
 
                     let save_start = self.stack_top;
@@ -545,130 +539,137 @@ impl<'a> VirtualMachine<'a> {
                     let ret_pc = decoder.get_pos(chunk.code.as_ptr());
 
                     // Set up initial frame
-                    let vm_func = self.functions.get(&FuncId::from_u32(func_id)).unwrap();
+                    let new_chunk = self.get_chunk(func_id);
+                    let frame_size = new_chunk.frame_info.total_size as usize;
+                    let new_fp = save_start + save_size; // Frame starts after saved registers
+                    let new_sp = new_fp + frame_size;
 
-                    match vm_func {
-                        VMFunc::Internal(vm_func_id) => {
-                            let vm_func_id = *vm_func_id;
-                            let new_chunk = self.get_chunk(vm_func_id);
-                            let frame_size = new_chunk.frame_info.total_size as usize;
-                            let new_fp = save_start + save_size; // Frame starts after saved registers
-                            let new_sp = new_fp + frame_size;
+                    #[cfg(debug_assertions)]
+                    if new_sp >= self.stack_memory.len() {
+                        return Err(VMError::StackOverflow);
+                    }
 
-                            #[cfg(debug_assertions)]
-                            if new_sp >= self.stack_memory.len() {
-                                return Err(VMError::StackOverflow);
-                            }
+                    let new_frame = StackFrame::new(
+                        func_id,
+                        ret_pc,
+                        new_fp,
+                        new_sp
+                    );
+                    self.call_stack.push(new_frame);
+                    frame = new_frame;
+                    self.stack_top = new_sp;
+                    self.pc = 0;
 
-                            let new_frame = StackFrame::new(
-                                vm_func_id,
-                                ret_pc,
-                                new_fp,
-                                new_sp
-                            );
-                            self.call_stack.push(new_frame);
-                            frame = new_frame;
-                            self.stack_top = new_sp;
-                            self.pc = 0;
+                    continue;
+                }
 
-                            continue;
-                        }
-                        VMFunc::External { args, addr, rety } => {
-                            use libffi::middle::Arg;
-                            use libffi::middle::Cif;
-                            use libffi::middle::Type as FFIType;
-                            use std::os::raw::c_void;
+                Opcode::CallExt => {
+                    let ext_func_id = ExtFuncId::from_u32(decoder.read_u32());
 
-                            fn ty_to_ffi(ty: Type) -> FFIType {
-                                match ty {
-                                    Type::Ptr => FFIType::pointer(),
-                                    Type::I32 => FFIType::c_int(),
-                                    Type::I64 => FFIType::c_longlong(),
-                                    // C ABI promotion rules: smaller types promoted to int/unsigned int
-                                    Type::I8 => FFIType::c_int(),  // promoted to int
-                                    Type::I16 => FFIType::c_int(), // promoted to int
-                                    Type::U8 => FFIType::c_uint(), // promoted to unsigned int
-                                    Type::U16 => FFIType::c_uint(), // promoted to unsigned int
-                                    Type::U32 => FFIType::c_uint(),
-                                    Type::U64 => FFIType::c_ulonglong(),
-                                    _ => todo!()
-                                }
-                            }
+                    #[cfg(debug_assertions)]
+                    if ext_func_id.index() >= self.ext_funcs.len() {
+                        return Err(VMError::InvalidFuncId(ext_func_id.as_u32()));
+                    }
 
-                            let mut ffi_types = Vec::with_capacity(args.len());
-                            let mut ffi_args = Vec::with_capacity(args.len());
-                            let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
+                    use libffi::middle::Arg;
+                    use libffi::middle::Cif;
+                    use libffi::middle::Type as FFIType;
+                    use std::os::raw::c_void;
 
-                            for (i, &ty) in args.iter().enumerate() {
-                                match ty {
-                                    Type::I8 => {
-                                        // C ABI: i8 promoted to int
-                                        let val = self.registers[8 + i] as i8 as i32; // sign-extend to int
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_int());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
-                                    }
-                                    Type::I16 => {
-                                        // C ABI: i16 promoted to int
-                                        let val = self.registers[8 + i] as i16 as i32; // sign-extend to int
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_int());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
-                                    }
-                                    Type::I32 => {
-                                        // C ABI: i32 stays as i32 (no promotion needed)
-                                        let val = self.registers[8 + i] as i32;
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_int());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
-                                    }
-                                    Type::I64 => {
-                                        let val = self.registers[8 + i] as i64;
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_longlong());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i64>().unwrap()));
-                                    }
-                                    Type::U8 => {
-                                        // C ABI: u8 promoted to unsigned int
-                                        let val = self.registers[8 + i] as u64 as u8 as u32; // proper zero extension
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_uint());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
-                                    }
-                                    Type::U16 => {
-                                        // C ABI: u16 promoted to unsigned int
-                                        let val = self.registers[8 + i] as u64 as u16 as u32; // proper zero extension
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_uint());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
-                                    }
-                                    Type::U32 => {
-                                        let val = self.registers[8 + i] as u64 as u32;
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_uint());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
-                                    }
-                                    Type::U64 => {
-                                        let val = self.registers[8 + i] as u64;
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::c_ulonglong());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u64>().unwrap()));
-                                    }
-                                    Type::Ptr => {
-                                        let val = self.registers[8 + i] as *mut std::ffi::c_void;
-                                        arg_storage.push(Box::new(val));
-                                        ffi_types.push(FFIType::pointer());
-                                        ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<*mut c_void>().unwrap()));
-                                    }
-                                    _ => todo!(),
-                                }
-                            }
-
-                            let cif = Cif::new(ffi_types, ty_to_ffi(*rety));
-                            let result: u64 = unsafe { cif.call(std::mem::transmute(*addr), &mut ffi_args) };
-                            self.reg_write(0, result);
+                    fn ty_to_ffi(ty: Type) -> FFIType {
+                        match ty {
+                            Type::Ptr => FFIType::pointer(),
+                            Type::I32 => FFIType::c_int(),
+                            Type::I64 => FFIType::c_longlong(),
+                            // C ABI promotion rules: smaller types promoted to int/unsigned int
+                            Type::I8 => FFIType::c_int(),  // promoted to int
+                            Type::I16 => FFIType::c_int(), // promoted to int
+                            Type::U8 => FFIType::c_uint(), // promoted to unsigned int
+                            Type::U16 => FFIType::c_uint(), // promoted to unsigned int
+                            Type::U32 => FFIType::c_uint(),
+                            Type::U64 => FFIType::c_ulonglong(),
+                            _ => todo!()
                         }
                     }
+
+                    let ExtFunc { ref signature, addr } = self.ext_funcs[&ext_func_id];
+
+                    let rety = signature.returns.first();
+                    let args = &signature.params;
+
+                    let mut ffi_types = Vec::with_capacity(args.len());
+                    let mut ffi_args = Vec::with_capacity(args.len());
+                    let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
+
+                    for (i, &ty) in args.iter().enumerate() {
+                        match ty {
+                            Type::I8 => {
+                                // C ABI: i8 promoted to int
+                                let val = self.registers[8 + i] as i8 as i32; // sign-extend to int
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_int());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
+                            }
+                            Type::I16 => {
+                                // C ABI: i16 promoted to int
+                                let val = self.registers[8 + i] as i16 as i32; // sign-extend to int
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_int());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
+                            }
+                            Type::I32 => {
+                                // C ABI: i32 stays as i32 (no promotion needed)
+                                let val = self.registers[8 + i] as i32;
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_int());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
+                            }
+                            Type::I64 => {
+                                let val = self.registers[8 + i] as i64;
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_longlong());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i64>().unwrap()));
+                            }
+                            Type::U8 => {
+                                // C ABI: u8 promoted to unsigned int
+                                let val = self.registers[8 + i] as u64 as u8 as u32; // proper zero extension
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_uint());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
+                            }
+                            Type::U16 => {
+                                // C ABI: u16 promoted to unsigned int
+                                let val = self.registers[8 + i] as u64 as u16 as u32; // proper zero extension
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_uint());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
+                            }
+                            Type::U32 => {
+                                let val = self.registers[8 + i] as u64 as u32;
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_uint());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
+                            }
+                            Type::U64 => {
+                                let val = self.registers[8 + i] as u64;
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::c_ulonglong());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u64>().unwrap()));
+                            }
+                            Type::Ptr => {
+                                let val = self.registers[8 + i] as *mut std::ffi::c_void;
+                                arg_storage.push(Box::new(val));
+                                ffi_types.push(FFIType::pointer());
+                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<*mut c_void>().unwrap()));
+                            }
+                            _ => todo!(),
+                        }
+                    }
+
+                    let rety = rety.copied().map_or(FFIType::void(), ty_to_ffi);
+                    let cif = Cif::new(ffi_types, rety);
+                    let result: u64 = unsafe { cif.call(std::mem::transmute(addr), &mut ffi_args) };
+                    self.reg_write(0, result);
                 }
 
                 Opcode::Return => {
@@ -1084,17 +1085,17 @@ impl VirtualMachine<'_> {
 
     // helper to get chunk pointer in a single place (safer to centralize)
     #[inline(always)]
-    fn get_chunk(&self, func_id: VMFuncId) -> &BytecodeChunk {
+    fn get_chunk(&self, func_id: FuncId) -> &BytecodeChunk {
         #[cfg(debug_assertions)]
         {
-            self.vm_functions
-                .get(func_id)
+            self.funcs
+                .get(&func_id)
                 .expect("invalid function id")
         }
         #[cfg(not(debug_assertions))]
         unsafe {
-            self.vm_functions
-                .get(func_id)
+            self.funcs
+                .get(&func_id)
                 .unwrap_unchecked()
         }
     }
