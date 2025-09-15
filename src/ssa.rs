@@ -1002,6 +1002,14 @@ impl InstBuilder<'_, '_> {
             self.insert_inst(InstructionData::Return { args: vals.into() });
         }
     }
+
+    with_comment! {
+        nop_with_comment,
+        #[inline]
+        pub fn nop(&mut self) {
+            self.insert_inst(InstructionData::Nop);
+        }
+    }
 }
 
 //-////////////////////////////////////////////////////////////////////
