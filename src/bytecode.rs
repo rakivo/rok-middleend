@@ -556,9 +556,7 @@ define_opcodes! {
     },
 
     Nop() = 128,
-    @ IData::Nop => |results, chunk| {
-        chunk.append(Opcode::Nop);
-    },
+    @ IData::Nop => |results, chunk| {},
 
     CallIntrin(intrinsic_id: u32) = 135,
     @ IData::CallIntrin { intrinsic_id, args } => |results, chunk, inst_id| {
