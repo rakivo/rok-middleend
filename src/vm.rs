@@ -672,6 +672,8 @@ impl<'a> VirtualMachine<'a> {
                     self.reg_write(0, result);
                 }
 
+                Opcode::Nop => {}
+
                 Opcode::Return => {
                     if self.call_stack.is_empty() {
                         return Err(VMError::EmptyCallStack);
