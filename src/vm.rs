@@ -203,6 +203,39 @@ pub struct VirtualMachine<'a> {
     halted: bool,
 }
 
+macro_rules! def_op_binary {
+    ($self:expr, $decoder:expr, $op:ident) => {
+        let dst = $decoder.read_u32();
+        let src1 = $decoder.read_u32();
+        let src2 = $decoder.read_u32();
+        let val1 = $self.reg_read(src1 as _);
+        let val2 = $self.reg_read(src2 as _);
+        $self.reg_write(dst as _, val1.$op(val2) as u64);
+    };
+}
+
+macro_rules! def_op_binary_f {
+    ($self:expr, $decoder:expr, $op:tt) => {
+        let dst = $decoder.read_u32();
+        let src1 = $decoder.read_u32();
+        let src2 = $decoder.read_u32();
+        let val1 = f64::from_bits($self.reg_read(src1 as _));
+        let val2 = f64::from_bits($self.reg_read(src2 as _));
+        $self.reg_write(dst as _, (val1 $op val2).to_bits());
+    };
+}
+
+macro_rules! def_op_icmp {
+    ($self:expr, $decoder:expr, $op:tt, $ty:ty) => {
+        let dst = $decoder.read_u32();
+        let src1 = $decoder.read_u32();
+        let src2 = $decoder.read_u32();
+        let val1 = $self.reg_read(src1 as _) as $ty;
+        let val2 = $self.reg_read(src2 as _) as $ty;
+        $self.reg_write(dst as _, (val1 $op val2) as u64);
+    };
+}
+
 impl<'a> VirtualMachine<'a> {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
@@ -414,79 +447,62 @@ impl<'a> VirtualMachine<'a> {
                 }
 
                 Opcode::IAdd => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, val1.wrapping_add(val2) as u64);
+                    def_op_binary!(self, decoder, wrapping_add);
                 }
 
                 Opcode::ISub => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, val1.wrapping_sub(val2) as u64);
+                    def_op_binary!(self, decoder, wrapping_sub);
                 }
 
                 Opcode::IMul => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, val1.wrapping_mul(val2) as u64);
+                    def_op_binary!(self, decoder, wrapping_mul);
                 }
 
-                Opcode::ILt => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = self.reg_read(src1 as _) as i64;
-                    let val2 = self.reg_read(src2 as _) as i64;
-                    self.reg_write(dst as _, u64::from(val1 < val2));
+                Opcode::IEq => {
+                    def_op_icmp!(self, decoder, ==, u64);
+                }
+                Opcode::INe => {
+                    def_op_icmp!(self, decoder, !=, u64);
+                }
+                Opcode::ISGt => {
+                    def_op_icmp!(self, decoder, >, i64);
+                }
+                Opcode::ISGe => {
+                    def_op_icmp!(self, decoder, >=, i64);
+                }
+                Opcode::ISLt => {
+                    def_op_icmp!(self, decoder, <, i64);
+                }
+                Opcode::ISLe => {
+                    def_op_icmp!(self, decoder, <=, i64);
+                }
+                Opcode::IUGt => {
+                    def_op_icmp!(self, decoder, >, u64);
+                }
+                Opcode::IUGe => {
+                    def_op_icmp!(self, decoder, >=, u64);
+                }
+                Opcode::IULt => {
+                    def_op_icmp!(self, decoder, <, u64);
+                }
+                Opcode::IULe => {
+                    def_op_icmp!(self, decoder, <=, u64);
                 }
 
                 Opcode::FAdd => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    self.reg_write(dst as _, (val1 + val2).to_bits());
+                    def_op_binary_f!(self, decoder, +);
                 }
 
                 Opcode::FSub => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    self.reg_write(dst as _, (val1 - val2).to_bits());
+                    def_op_binary_f!(self, decoder, -);
                 }
 
                 Opcode::FMul => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    self.reg_write(dst as _, (val1 * val2).to_bits());
+                    def_op_binary_f!(self, decoder, *);
                 }
 
                 Opcode::FDiv => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
-                    let val1 = f64::from_bits(self.reg_read(src1 as _));
-                    let val2 = f64::from_bits(self.reg_read(src2 as _));
-                    #[cfg(debug_assertions)]
-                    if val2 == 0.0 {
-                        return Err(VMError::DivisionByZero);
-                    }
-                    self.reg_write(dst as _, (val1 / val2).to_bits());
+                    def_op_binary_f!(self, decoder, /);
                 }
 
                 Opcode::Jump16 => {
@@ -600,6 +616,15 @@ impl<'a> VirtualMachine<'a> {
                     let mut ffi_types = Vec::with_capacity(args.len());
                     let mut ffi_args = Vec::with_capacity(args.len());
                     let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
+
+                    if ext_func_id.as_u32() == 3 {
+                        let ptr = self.registers[8] as *const [u8; 5];
+                        let bytes = unsafe { ptr.read() };
+                        let s = unsafe {
+                            std::str::from_utf8_unchecked(&bytes)
+                        };
+                        println!("{s}")
+                    }
 
                     for (i, &ty) in args.iter().enumerate() {
                         match ty {

@@ -32,7 +32,7 @@ macro_rules! define_opcodes {
             ) {
                 use crate::entity::EntityRef;
 
-                let inst = &$context.func.dfg.insts[inst_id.index()];
+                let inst = unsafe { crate::util::reborrow(&$context.func.dfg.insts[inst_id.index()]) };
                 let results = $context.func.dfg.inst_results.get(&inst_id);
 
                 #[allow(unused, dead_code)]

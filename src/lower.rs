@@ -418,7 +418,7 @@ impl LoweringContext<'_> {
                 let block_data = &self.func.cfg.blocks[bb.index()];
                 if let Some(&last_inst) = block_data.insts.last() {
                     match &self.func.dfg.insts[last_inst.index()] {
-                        IData::Jump { destination } => {
+                        IData::Jump { destination, .. } => {
                             if let Some(s_in) = out.live_in.get(destination) {
                                 live_out.extend(s_in.iter().copied());
                             }
@@ -496,6 +496,12 @@ impl LoweringContext<'_> {
         inst: &IData
     ) -> (SmallVec<[Value; 8]>, SmallVec<[Value; 8]>) {
         match inst {
+            IData::Icmp { args, .. } => {
+                let dsts = dfg.inst_results.get(&inst_id)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
+                (SmallVec::from_slice(args), dsts)
+            }
             IData::Binary { args, .. } => {
                 let dsts = dfg.inst_results.get(&inst_id)
                     .map(|sv| sv.iter().copied().collect())
@@ -514,8 +520,12 @@ impl LoweringContext<'_> {
                     .unwrap_or_default();
                 (smallvec![], dsts)
             }
-            IData::Jump { .. } => (smallvec![], smallvec![]),
-            IData::Branch { arg, .. } => (smallvec![*arg], smallvec![]),
+            IData::Jump { args, .. } => (args.iter().copied().collect(), smallvec![]),
+            IData::Branch { arg, args, .. } => {
+                let mut srcs = SmallVec::from(args.as_slice());
+                srcs.push(*arg);
+                (srcs, smallvec![])
+            }
             IData::CallExt { args, .. } |
             IData::CallIntrin { args, .. } |
             IData::Call { args, .. } => {

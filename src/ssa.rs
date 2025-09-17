@@ -82,6 +82,9 @@ pub struct IntrinData {
     pub vm_callback: VMCallback
 }
 
+unsafe impl Send for IntrinData {}
+unsafe impl Sync for IntrinData {}
+
 /// Represents an external function, defined outside the module.
 #[derive(Debug, Clone)]
 pub struct ExtFuncData {
@@ -226,11 +229,12 @@ pub struct FunctionMetadata {
 pub enum InstructionData {
     CallIntrin { intrinsic_id: IntrinsicId, args: SmallVec<[Value; 8]> },
     Binary { binop: BinaryOp, args: [Value; 2] },
+    Icmp { code: IntCC, args: [Value; 2] },
     Unary { unop: UnaryOp, arg: Value },
     IConst { value: i64 },
     FConst { value: f64 },
-    Jump { destination: Block },
-    Branch { destinations: [Block; 2], arg: Value },
+    Jump { destination: Block, args: SmallVec<[Value; 4]> },
+    Branch { destinations: [Block; 2], args: SmallVec<[Value; 4]>, arg: Value },
     Call { func_id: FuncId, args: SmallVec<[Value; 8]> },
     CallExt { func_id: ExtFuncId, args: SmallVec<[Value; 8]> },
     Return { args: SmallVec<[Value; 2]> },
@@ -255,6 +259,7 @@ impl InstructionData {
 
         match self {
             Self::Binary { args, .. } => vbits(&args[0]),
+            Self::Icmp { args, .. } => vbits(&args[0]),
             Self::Unary { arg, .. } => vbits(arg),
             Self::IConst { .. } => rbits(0),
             Self::FConst { .. } => rbits(0),
@@ -289,8 +294,22 @@ impl InstructionData {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum IntCC {
+    Equal,
+    NotEqual,
+    SignedGreaterThan,
+    SignedGreaterThanOrEqual,
+    SignedLessThan,
+    SignedLessThanOrEqual,
+    UnsignedGreaterThan,
+    UnsignedGreaterThanOrEqual,
+    UnsignedLessThan,
+    UnsignedLessThanOrEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
-    IAdd, ISub, IMul, IDiv, ILt,
+    IAdd, ISub, IMul, IDiv,
     And, Or, Xor, Ushr, Ishl, Band, Bor,
     FAdd, FSub, FMul, FDiv,
 }
@@ -623,11 +642,11 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
-        ilt_with_comment,
+        icmp_with_comment,
         #[inline]
-        pub fn ilt(&mut self, lhs: Value, rhs: Value) -> Value {
+        pub fn icmp(&mut self, code: IntCC, lhs: Value, rhs: Value) -> Value {
             let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
-            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ILt, args: [lhs, rhs] });
+            let inst = self.insert_inst(InstructionData::Icmp { code, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
     }
@@ -674,10 +693,10 @@ impl InstBuilder<'_, '_> {
         self.xor(lhs, rhs)
     }
 
-    pub fn ilt_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+    pub fn icmp_imm(&mut self, code: IntCC, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
-        self.ilt(lhs, rhs)
+        self.icmp(code, lhs, rhs)
     }
 
     with_comment! {
@@ -886,9 +905,40 @@ impl InstBuilder<'_, '_> {
         jump_with_comment,
         #[inline]
         pub fn jump(&mut self, dest: Block) {
-            self.insert_inst(InstructionData::Jump { destination: dest });
+            self.insert_inst(InstructionData::Jump {
+                destination: dest,
+                args: SmallVec::new()
+            });
             let from = self.position.current_block;
             self.builder.func.cfg.add_pred(from, dest);
+        }
+    }
+
+    with_comment! {
+        jump_params_with_comment,
+        #[inline]
+        pub fn jump_params(&mut self, dest: Block, params: &[Value]) {
+            self.insert_inst(InstructionData::Jump {
+                destination: dest,
+                args: params.into()
+            });
+            let from = self.position.current_block;
+            self.builder.func.cfg.add_pred(from, dest);
+        }
+    }
+
+    with_comment! {
+        brif_params_with_comment,
+        #[inline]
+        pub fn brif_params(&mut self, cond: Value, true_dest: Block, false_dest: Block, args: &[Value]) {
+            self.insert_inst(InstructionData::Branch {
+                destinations: [true_dest, false_dest],
+                arg: cond,
+                args: args.into()
+            });
+            let from = self.position.current_block;
+            self.builder.func.cfg.add_pred(from, true_dest);
+            self.builder.func.cfg.add_pred(from, false_dest);
         }
     }
 
@@ -896,7 +946,11 @@ impl InstBuilder<'_, '_> {
         brif_with_comment,
         #[inline]
         pub fn brif(&mut self, cond: Value, true_dest: Block, false_dest: Block) {
-            self.insert_inst(InstructionData::Branch { destinations: [true_dest, false_dest], arg: cond });
+            self.insert_inst(InstructionData::Branch {
+                destinations: [true_dest, false_dest],
+                arg: cond,
+                args: SmallVec::new()
+            });
             let from = self.position.current_block;
             self.builder.func.cfg.add_pred(from, true_dest);
             self.builder.func.cfg.add_pred(from, false_dest);
@@ -1045,11 +1099,12 @@ impl SsaFunc {
         }
         match inst {
             InstructionData::Binary { binop: opcode, args } => s.push_str(&format!("{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::Icmp { code, args } => s.push_str(&format!("icmp_{:?} {}, {}", code, self.fmt_value(args[0]), self.fmt_value(args[1]))),
             InstructionData::Unary { unop, arg } => s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg))),
             InstructionData::IConst { value } => s.push_str(&format!("iconst {value}")),
             InstructionData::FConst { value } => s.push_str(&format!("fconst {value}")),
-            InstructionData::Jump { destination } => s.push_str(&format!("jump {destination}")),
-            InstructionData::Branch { destinations, arg } => s.push_str(&format!("brif {}, {}, {}", self.fmt_value(*arg), destinations[0], destinations[1])),
+            InstructionData::Jump { destination, args } => s.push_str(&format!("jump {}({})", destination, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Call { func_id, args } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::CallIntrin { intrinsic_id, args } => s.push_str(&format!("call_intrin {} ({})", intrinsic_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
@@ -1057,7 +1112,7 @@ impl SsaFunc {
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
             InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
             InstructionData::StackStore { slot, arg } => s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg))),
-            InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!("load_no_offset {}:{:?}, {}", self.fmt_value(*addr), ty, self.fmt_value(*addr))),
+            InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!("load_no_offset {}:{:?}", self.fmt_value(*addr), ty)),
             InstructionData::StoreNoOffset { args } => s.push_str(&format!("store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))),
             InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {}", data_id)),
             // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),

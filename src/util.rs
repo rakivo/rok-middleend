@@ -21,6 +21,12 @@ pub const unsafe fn reborrow<'a, T>(t: &T) -> &'a T {
     unsafe { &*(t as *const T) }
 }
 
+/// SAFETY: Caller ensures that this is safe
+#[inline(always)]
+pub const unsafe fn reborrow_mut<'a, T>(t: &mut T) -> &'a mut T {
+    unsafe { &mut *(t as *mut T) }
+}
+
 /// Helper trait for converting T to bytes
 pub trait IntoBytes<'a> {
     #[must_use]

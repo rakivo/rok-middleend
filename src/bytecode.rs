@@ -10,7 +10,8 @@ use crate::ssa::{
     StackSlot,
     UnaryOp,
     Type,
-    Value
+    Value,
+    IntCC
 };
 use std::mem;
 
@@ -194,16 +195,117 @@ define_opcodes! {
         chunk.append(b);
     },
 
-    ILt(dst: u32, a: u32, b: u32)            = 21,
-    @ IData::Binary { binop: BinaryOp::ILt, args } => |results, chunk| {
+
+    IEq(dst: u32, a: u32, b: u32)            = 96,
+    @ IData::Icmp { code: IntCC::Equal, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let a = self.ssa_to_reg[&args[0]];
         let b = self.ssa_to_reg[&args[1]];
-        chunk.append(Opcode::ILt);
+        chunk.append(Opcode::IEq);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
+
+    INe(dst: u32, a: u32, b: u32)            = 97,
+    @ IData::Icmp { code: IntCC::NotEqual, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::INe);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    ISGt(dst: u32, a: u32, b: u32)           = 98,
+    @ IData::Icmp { code: IntCC::SignedGreaterThan, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::ISGt);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    ISGe(dst: u32, a: u32, b: u32)           = 99,
+    @ IData::Icmp { code: IntCC::SignedGreaterThanOrEqual, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::ISGe);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    ISLt(dst: u32, a: u32, b: u32)           = 100,
+    @ IData::Icmp { code: IntCC::SignedLessThan, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::ISLt);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    ISLe(dst: u32, a: u32, b: u32)           = 101,
+    @ IData::Icmp { code: IntCC::SignedLessThanOrEqual, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::ISLe);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    IUGt(dst: u32, a: u32, b: u32)           = 102,
+    @ IData::Icmp { code: IntCC::UnsignedGreaterThan, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::IUGt);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    IUGe(dst: u32, a: u32, b: u32)           = 103,
+    @ IData::Icmp { code: IntCC::UnsignedGreaterThanOrEqual, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::IUGe);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    IULt(dst: u32, a: u32, b: u32)           = 104,
+    @ IData::Icmp { code: IntCC::UnsignedLessThan, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::IULt);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
+    IULe(dst: u32, a: u32, b: u32)           = 105,
+    @ IData::Icmp { code: IntCC::UnsignedLessThanOrEqual, args } => |results, chunk| {
+        let dst = self.ssa_to_reg[&results.unwrap()[0]];
+        let a = self.ssa_to_reg[&args[0]];
+        let b = self.ssa_to_reg[&args[1]];
+        chunk.append(Opcode::IULe);
+        chunk.append(dst);
+        chunk.append(a);
+        chunk.append(b);
+    },
+
     FAdd(dst: u32, a: u32, b: u32)          = 22,
     @ IData::Binary { binop: BinaryOp::FAdd, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
@@ -246,18 +348,50 @@ define_opcodes! {
     },
 
     Jump16(offset: i32)        = 26,
-    @ IData::Jump { destination, .. } => |_results, chunk| {
+    @ IData::Jump { destination, args, .. } => |_results, chunk| {
+        let dest_block = &self.func.cfg.blocks[destination.index()];
+        for (i, &arg) in args.iter().enumerate() {
+            let arg_reg = self.ssa_to_reg[&arg];
+            let param_reg = self.ssa_to_reg[&dest_block.params[i]];
+            if arg_reg != param_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(param_reg);
+                chunk.append(arg_reg);
+            }
+        }
         chunk.append(Opcode::Jump16);
         self.append_jump_placeholder::<i16>(chunk, *destination);
     },
     BranchIf16(cond: u32, offset: i32)    = 27,
-    @ IData::Branch { arg, destinations, .. } => |_results, chunk| {
+    @ IData::Branch { arg, destinations, args, .. } => |_results, chunk| {
         let [t, e] = *destinations;
+
+        let true_dest_block = &self.func.cfg.blocks[t.index()];
+        for (i, &arg_value) in args.iter().enumerate() {
+            let arg_reg = self.ssa_to_reg[&arg_value];
+            let param_reg = self.ssa_to_reg[&true_dest_block.params[i]];
+            if arg_reg != param_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(param_reg);
+                chunk.append(arg_reg);
+            }
+        }
 
         let cond_slot = self.ssa_to_reg[arg];
         chunk.append(Opcode::BranchIf16);
         chunk.append(cond_slot);
         self.append_jump_placeholder::<i16>(chunk, t);
+
+        let false_dest_block = &self.func.cfg.blocks[e.index()];
+        for (i, &arg_value) in args.iter().enumerate() {
+            let arg_reg = self.ssa_to_reg[&arg_value];
+            let param_reg = self.ssa_to_reg[&false_dest_block.params[i]];
+            if arg_reg != param_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(param_reg);
+                chunk.append(arg_reg);
+            }
+        }
 
         // Unconditional jump for the false branch
         chunk.append(Opcode::Jump16);
@@ -633,6 +767,22 @@ define_opcodes! {
 
 impl Opcode {
     #[must_use]
+    pub const fn from_int_cc(cc: IntCC) -> Option<Self> {
+        Some(match cc {
+            IntCC::Equal => Opcode::IEq,
+            IntCC::NotEqual => Opcode::INe,
+            IntCC::SignedGreaterThan => Opcode::ISGt,
+            IntCC::SignedGreaterThanOrEqual => Opcode::ISGe,
+            IntCC::SignedLessThan => Opcode::ISLt,
+            IntCC::SignedLessThanOrEqual => Opcode::ISLe,
+            IntCC::UnsignedGreaterThan => Opcode::IUGt,
+            IntCC::UnsignedGreaterThanOrEqual => Opcode::IUGe,
+            IntCC::UnsignedLessThan => Opcode::IULt,
+            IntCC::UnsignedLessThanOrEqual => Opcode::IULe,
+        })
+    }
+
+    #[must_use]
     pub const fn from_binary(op: BinaryOp) -> Option<Self> {
         Some(match op {
             BinaryOp::IAdd => Opcode::IAdd,
@@ -751,7 +901,7 @@ impl BytecodeChunk {
 //
 
 pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
-    let print_metadata = true;
+    let print_metadata = false;
 
     println!("== {name} ==");
     println!("Frame size: {} bytes", lowered_func.chunk.frame_info.total_size);
@@ -964,14 +1114,27 @@ pub fn disassemble_instruction(
             print_aligned("XOR", &format!("v{dst}, v{a}, v{b}"));
             offset + 13
         }
-        Opcode::ILt => {
+        Opcode::IEq | Opcode::INe | Opcode::ISGt | Opcode::ISGe | Opcode::ISLt | Opcode::ISLe | Opcode::IUGt | Opcode::IUGe | Opcode::IULt | Opcode::IULe => {
             let dst =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
             let a =
                 u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
             let b =
                 u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
-            print_aligned("LT", &format!("v{dst}, v{a}, v{b}"));
+            let name = match opcode {
+                Opcode::IEq => "IEQ",
+                Opcode::INe => "INE",
+                Opcode::ISGt => "ISGT",
+                Opcode::ISGe => "ISGE",
+                Opcode::ISLt => "ISLT",
+                Opcode::ISLe => "ISLE",
+                Opcode::IUGt => "IUGT",
+                Opcode::IUGe => "IUGE",
+                Opcode::IULt => "IULT",
+                Opcode::IULe => "IULE",
+                _ => unreachable!(),
+            };
+            print_aligned(name, &format!("v{dst}, v{a}, v{b}"));
             offset + 13
         }
         Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv => {
