@@ -14,19 +14,19 @@ macro_rules! entity_ref {
     // Basic traits.
     ($entity:ident) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub struct $entity(u32);
+        pub struct $entity(pub(crate) u32);
         $crate::entity_impl!($entity);
     };
 
     ($entity:ident, $display_prefix:expr) => {
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub struct $entity(u32);
+        pub struct $entity(pub(crate) u32);
         $crate::entity_impl!($entity, $display_prefix);
     };
 
     ($entity:ident, $display_prefix:expr, $arg:ident, $to_expr:expr, $from_expr:expr) => {
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub struct $entity(u32);
+        pub struct $entity(pub(crate) u32);
         $crate::entity_impl!($entity, $display_prefix, $arg, $to_expr, $from_expr);
     }
 }

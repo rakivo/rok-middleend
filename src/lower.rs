@@ -42,8 +42,10 @@ pub struct LoInstMeta {
 // Lowering from SSA to Bytecode
 //
 pub struct LoweringContext<'a> {
-    pub func: &'a mut SsaFunc,
+    pub func: &'a SsaFunc,
     pub ssa_to_reg: HashMap<Value, u32>,
+
+    next_stack_slot: StackSlot,
 
     block_offsets: HashMap<Block, u32>,
 
@@ -68,8 +70,9 @@ pub struct LoweringContext<'a> {
 impl<'a> LoweringContext<'a> {
     pub const RETURN_VALUES_REGISTERS_COUNT: u32 = 8;
 
-    pub fn new(func: &'a mut SsaFunc) -> Self {
+    pub fn new(func: &'a SsaFunc) -> Self {
         Self {
+            next_stack_slot: StackSlot::from_u32(func.stack_slots.len() as _),
             #[cfg(debug_assertions)]
             pc_to_inst_meta: HashMap::new(),
             frame_info: StackFrameInfo::calculate_layout(func),
@@ -94,7 +97,6 @@ impl<'a> LoweringContext<'a> {
         self.assign_ssa_slots_smart(config);
 
         // 1. Assign stack slots (register numbers) to all SSA values.
-        // self.assign_ssa_slots_naive();
         self.preallocate_spill_slots();
 
         // After possibly growing the frame with spill slots, copy frame info to chunk
@@ -184,7 +186,7 @@ impl<'a> LoweringContext<'a> {
         let mut offset = self.frame_info.total_size;
         offset = util::align_up(offset, align);
 
-        let slot = self.func.create_stack_slot(ty, size as u32);
+        let slot = self.create_stack_slot(ty, size as u32);
 
         self.frame_info.slot_allocations.insert(slot, StackSlotAllocation {
             offset,
@@ -193,8 +195,17 @@ impl<'a> LoweringContext<'a> {
         });
 
         // update total_size
-        self.frame_info.total_size = util::align_up(offset as u32 + size as u32, 16);
+        self.frame_info.total_size = util::align_up(
+            offset as u32 + size as u32,
+            16
+        );
 
+        slot
+    }
+
+    fn create_stack_slot(&mut self, _ty: Type, _size: u32) -> StackSlot {
+        let slot = self.next_stack_slot;
+        self.next_stack_slot.0 += 1;
         slot
     }
 
