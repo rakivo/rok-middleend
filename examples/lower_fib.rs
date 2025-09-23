@@ -1,7 +1,7 @@
 use rok_bytecode::vm::VirtualMachine;
 use rok_bytecode::lower::{LoweringContext};
 use rok_bytecode::bytecode::disassemble_chunk;
-use rok_bytecode::ssa::{FunctionBuilder, Type, Signature, Module};
+use rok_bytecode::ssa::{FunctionBuilder, IntCC, Module, Signature, Type};
 
 fn main() {
     let mut module = Module::new();
@@ -24,7 +24,7 @@ fn main() {
     let exit_block = builder.create_block();
 
     let v1 = builder.ins().iconst_with_comment(Type::I64, 2, "load constant 2");
-    let v2 = builder.ins().ilt_with_comment(arg_n, v1, "n < 2");
+    let v2 = builder.ins().icmp_with_comment(IntCC::UnsignedLessThan, arg_n, v1, "n < 2");
     builder.ins().brif_with_comment(v2, ret_n_block, recur_block, "if n < 2, return n, else recurse");
 
     builder.switch_to_block(recur_block);
@@ -64,6 +64,6 @@ fn main() {
 
     let mut vm = VirtualMachine::new();
     vm.add_function(fib_id, &lowered_func.chunk);
-    let ret = vm.call_function(fib_id, &[40]);
+    let ret = vm.call_function(fib_id, &[20]);
     println!("{ret:#?}");
 }
