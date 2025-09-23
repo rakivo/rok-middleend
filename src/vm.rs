@@ -183,11 +183,9 @@ pub struct VirtualMachine<'a> {
     funcs: HashMap<FuncId, &'a BytecodeChunk>,
     ext_funcs: HashMap<ExtFuncId, ExtFunc>,
 
-    // Execution state
     call_stack: Vec<StackFrame>,
     pc: usize,
 
-    // Memory regions
     stack_memory: Vec<u8>,
     stack_top: usize,
 
@@ -196,10 +194,8 @@ pub struct VirtualMachine<'a> {
     data_memory: Vec<u8>,
     data_offsets: HashMap<DataId, u32>,
 
-    // Working registers (for arithmetic operations)
     registers: [u64; 256], // r0-r7: return values, r8+: general purpose/args
 
-    // Execution control
     halted: bool,
 }
 
@@ -291,7 +287,7 @@ impl<'a> VirtualMachine<'a> {
         self.data_offsets.reserve(datas.len());
 
         for (data_id, data_desc) in datas.iter() {
-            if !data_desc.is_external {
+            if !data_desc.is_external() {
                 // Align data appropriately (e.g., 8-byte alignment)
                 current_offset = util::align_up(current_offset, 8);
 
@@ -299,7 +295,7 @@ impl<'a> VirtualMachine<'a> {
                 self.data_offsets.insert(data_id, current_offset);
 
                 // Append the data contents
-                self.data_memory.extend_from_slice(&data_desc.contents);
+                self.data_memory.extend_from_slice(&data_desc.contents.read());
                 current_offset += data_desc.contents.len() as u32;
             }
         }
@@ -333,6 +329,10 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline]
     pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
+        Self::try_run(|| self.call_function_(func_id, args))
+    }
+
+    fn call_function_(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
         // Set up initial frame
         let chunk = self.funcs.get(&func_id).unwrap();
 
@@ -369,32 +369,9 @@ impl<'a> VirtualMachine<'a> {
         Ok(result)
     }
 
-    #[inline(always)]
-    fn current_frame(&self) -> &StackFrame {
-        unsafe { self.call_stack.last().unwrap_unchecked() }
-    }
-
+    #[inline]
     pub fn execute(&mut self) -> Result<(), VMError> {
-        Self::install_debug_panic_hook();
-
-        let run_result = catch_unwind(AssertUnwindSafe(|| {
-            self.execute_()
-        }));
-
-        match run_result {
-            Ok(ok) => ok,
-            Err(payload) => {
-                // Convert panic payload into string
-                let panic_msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = payload.downcast_ref::<String>() {
-                    s.to_owned()
-                } else {
-                    "non-string panic".to_string()
-                };
-                Err(VMError::InterpreterPanic(panic_msg))
-            }
-        }
+        Self::try_run(|| self.execute_())
     }
 
     fn execute_(&mut self) -> Result<(), VMError> {
@@ -994,16 +971,22 @@ impl BytecodeBuilder {
 }
 
 impl VirtualMachine<'_> {
-    /// install once during VM construction in debug to get nicer panic hook output
-    pub fn install_debug_panic_hook() {
-        #[cfg(debug_assertions)]
-        {
-            std::panic::set_hook(Box::new(|info| {
-                // print a helpful header so you can find the VM panic in logs
-                eprintln!("===== VM PANIC =====");
-                eprintln!("{}", info);
-                eprintln!("====================");
-            }));
+    fn try_run<T>(f: impl FnOnce() -> Result<T, VMError>) -> Result<T, VMError> {
+        let result = catch_unwind(AssertUnwindSafe(f));
+
+        match result {
+            Ok(ok) => ok,
+            Err(payload) => {
+                // Convert panic payload into string
+                let panic_msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.to_owned()
+                } else {
+                    "non-string panic".to_string()
+                };
+                Err(VMError::InterpreterPanic(panic_msg))
+            }
         }
     }
 
@@ -1123,6 +1106,22 @@ impl VirtualMachine<'_> {
         unsafe {
             self.funcs
                 .get(&func_id)
+                .unwrap_unchecked()
+        }
+    }
+
+    #[inline(always)]
+    fn current_frame(&self) -> &StackFrame {
+        #[cfg(debug_assertions)]
+        {
+            self.call_stack
+                .last()
+                .unwrap()
+        }
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            self.call_stack
+                .last()
                 .unwrap_unchecked()
         }
     }

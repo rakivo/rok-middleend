@@ -8,7 +8,9 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use smallvec::{smallvec, SmallVec};
 
 //-////////////////////////////////////////////////////////////////////
@@ -346,10 +348,125 @@ pub struct Module {
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+pub struct AtomicContents(pub RwLock<Box<[u8]>>);
+
+impl AtomicContents {
+    pub fn new(contents: Box<[u8]>) -> Self {
+        Self(RwLock::new(contents))
+    }
+
+    pub fn read(&self) -> RwLockReadGuard<'_, Box<[u8]>> {
+        self.0.read()
+    }
+
+    pub fn write(&self) -> RwLockWriteGuard<'_, Box<[u8]>> {
+        self.0.write()
+    }
+
+    // Length operations
+    pub fn len(&self) -> usize {
+        self.0.read().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.read().is_empty()
+    }
+
+    // Element access
+    pub fn get(&self, index: usize) -> Option<u8> {
+        self.0.read().get(index).copied()
+    }
+
+    pub fn first(&self) -> Option<u8> {
+        self.0.read().first().copied()
+    }
+
+    pub fn last(&self) -> Option<u8> {
+        self.0.read().last().copied()
+    }
+
+    // Slice operations
+    pub fn get_slice(&self, range: std::ops::Range<usize>) -> Option<Vec<u8>> {
+        self.0.read().get(range).map(|slice| slice.to_vec())
+    }
+
+    // Search operations
+    pub fn contains(&self, needle: &u8) -> bool {
+        self.0.read().contains(needle)
+    }
+
+    pub fn starts_with(&self, needle: &[u8]) -> bool {
+        self.0.read().starts_with(needle)
+    }
+
+    pub fn ends_with(&self, needle: &[u8]) -> bool {
+        self.0.read().ends_with(needle)
+    }
+
+    pub fn find(&self, needle: &[u8]) -> Option<usize> {
+        let guard = self.0.read();
+        guard.windows(needle.len()).position(|window| window == needle)
+    }
+
+    // Iterator-style operations (return owned data)
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.0.read().to_vec()
+    }
+
+    pub fn iter(&self) -> std::vec::IntoIter<u8> {
+        self.0.read().to_vec().into_iter()
+    }
+
+    // Closure-based operations for complex access patterns
+    pub fn with_slice<T>(&self, f: impl FnOnce(&[u8]) -> T) -> T {
+        let guard = self.0.read();
+        f(&*guard)
+    }
+
+    pub fn with_slice_mut<T>(&self, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        let mut guard = self.0.write();
+        f(&mut *guard)
+    }
+
+    // Mutation operations
+    pub fn set_contents(&self, new_contents: Box<[u8]>) {
+        *self.0.write() = new_contents;
+    }
+
+    pub fn clear(&self) {
+        *self.0.write() = Box::new([]);
+    }
+
+    // Comparison operations
+    pub fn eq_slice(&self, other: &[u8]) -> bool {
+        &**self.0.read() == other
+    }
+
+    // Convert to different formats
+    pub fn as_hex(&self) -> String {
+        let guard = self.0.read();
+        guard.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    // Chunking operations
+    pub fn chunks(&self, chunk_size: usize) -> Vec<Vec<u8>> {
+        let guard = self.0.read();
+        guard.chunks(chunk_size).map(|chunk| chunk.to_vec()).collect()
+    }
+}
+
+#[derive(Debug)]
 pub struct DataDescription {
-    pub contents: Box<[u8]>,
-    pub is_external: bool,
+    pub contents: AtomicContents,
+    pub is_external: AtomicBool,
+}
+
+impl DataDescription {
+    #[inline]
+    pub fn is_external(&self) -> bool {
+        self.is_external.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -388,15 +505,15 @@ impl Module {
 
     pub fn declare_data(&mut self, external: bool) -> DataId {
         self.datas.push(DataDescription {
-            contents: Box::new([]),
-            is_external: external,
+            contents: AtomicContents::new(Box::new([])),
+            is_external: external.into(),
         })
     }
 
-    pub fn define_data(&mut self, id: DataId, contents: Box<[u8]>) {
-        let data = &mut self.datas[id];
-        data.contents = contents;
-        data.is_external = false;
+    pub fn define_data(&self, id: DataId, contents: Box<[u8]>) {
+        let data = &self.datas[id];
+        *data.contents.write() = contents;
+        data.is_external.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn declare_global_value(&mut self, data: GlobalValueData) -> GlobalValue {
