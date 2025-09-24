@@ -754,6 +754,14 @@ define_opcodes! {
 
     CallExt(func_id: u32)          = 136,
     @ IData::CallExt { func_id, args, .. } => |results, chunk, inst_id| {
+        // 1) Move arguments to registers starting from r8.
+        for (i, &arg) in args.iter().enumerate() {
+            let arg_slot = self.ssa_to_reg[&arg];
+            chunk.append(Opcode::Mov);
+            chunk.append((i + 8) as u32); // dst
+            chunk.append(arg_slot);         // src
+        }
+
         // 2) Emit call
         chunk.append(Opcode::CallExt);
         chunk.append(func_id.index() as u32);
