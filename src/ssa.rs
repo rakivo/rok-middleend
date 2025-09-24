@@ -74,6 +74,8 @@ impl Type {
 pub struct Signature {
     pub params: Vec<Type>,
     pub returns: Vec<Type>,
+    // for codegen, debugging purposes only
+    pub is_var_arg: bool
 }
 
 /// Represents an intrinsic

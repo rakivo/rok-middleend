@@ -259,11 +259,11 @@ impl<'a> LoweringContext<'a> {
             self.ssa_to_reg.insert(arg_val, reg);
         }
 
-        #[cfg(debug_assertions)]
-        println!("Pre-assigned {} function arguments: {:?}",
-            function_args.len(),
-            function_args.iter().enumerate().map(|(i, v)| (v.index(), config.return_registers + i as u32)).collect::<Vec<_>>()
-        );
+        // #[cfg(debug_assertions)]
+        // println!("Pre-assigned {} function arguments: {:?}",
+        //     function_args.len(),
+        //     function_args.iter().enumerate().map(|(i, v)| (v.index(), config.return_registers + i as u32)).collect::<Vec<_>>()
+        // );
 
         // Update config with actual argument count
         let mut updated_config = config;
@@ -287,8 +287,8 @@ impl<'a> LoweringContext<'a> {
         }
 
         let stats = allocator.stats();
-        #[cfg(debug_assertions)]
-        println!("Register allocation stats: {:?}", stats);
+        // #[cfg(debug_assertions)]
+        // println!("Register allocation stats: {:?}", stats);
     }
 
     #[inline(always)]
@@ -674,8 +674,8 @@ impl SmartRegisterAllocator {
 
     /// Main entry point: allocate registers for the given liveness information
     pub fn allocate(&mut self, func: &SsaFunc) {
-        #[cfg(debug_assertions)]
-        println!("Starting register allocation with {} blocks", func.cfg.blocks.len());
+        // #[cfg(debug_assertions)]
+        // println!("Starting register allocation with {} blocks", func.cfg.blocks.len());
 
         for param in 0..func.signature.params.len() {
             let value = func.cfg.blocks[0].params[param];
@@ -685,8 +685,8 @@ impl SmartRegisterAllocator {
         // 1. Build live intervals from liveness analysis
         self.build_intervals(func);
 
-        #[cfg(debug_assertions)]
-        println!("Built {} intervals", self.intervals.len());
+        // #[cfg(debug_assertions)]
+        // println!("Built {} intervals", self.intervals.len());
 
         // 2. Calculate spill costs
         self.calculate_spill_costs();
@@ -696,31 +696,31 @@ impl SmartRegisterAllocator {
             self.coalesce_intervals(func);
         }
 
-        println!("PRE ASSIGNED: {:#?}", self.pre_assigned);
+        // println!("PRE ASSIGNED: {:#?}", self.pre_assigned);
 
         // 4. Sort intervals by start position
         self.intervals.sort_by_key(|i| i.start);
 
-        #[cfg(debug_assertions)]
-        {
-            println!("Live intervals:");
-            for (i, interval) in self.intervals.iter().enumerate() {
-                println!("  {}: v{} [{}, {}) cost={:.2}",
-                    i, interval.value.index(), interval.start, interval.end, interval.spill_cost);
-            }
-        }
+        // #[cfg(debug_assertions)]
+        // {
+        //     println!("Live intervals:");
+        //     for (i, interval) in self.intervals.iter().enumerate() {
+        //         println!("  {}: v{} [{}, {}) cost={:.2}",
+        //             i, interval.value.index(), interval.start, interval.end, interval.spill_cost);
+        //     }
+        // }
 
         // 5. Linear scan register allocation
         self.linear_scan();
 
-        #[cfg(debug_assertions)]
-        {
-            println!("Register assignments:");
-            for (value, reg) in &self.assignments {
-                println!("  v{} -> r{}", value.index(), reg);
-            }
-            println!("Spilled values: {:?}", self.spilled_values.iter().map(|v| v.index()).collect::<Vec<_>>());
-        }
+        // #[cfg(debug_assertions)]
+        // {
+        //     println!("Register assignments:");
+        //     for (value, reg) in &self.assignments {
+        //         println!("  v{} -> r{}", value.index(), reg);
+        //     }
+        //     println!("Spilled values: {:?}", self.spilled_values.iter().map(|v| v.index()).collect::<Vec<_>>());
+        // }
 
         // 6. Insert spill code where needed
         self.generate_spill_code();
