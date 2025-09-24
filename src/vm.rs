@@ -179,9 +179,12 @@ pub struct ExtFunc {
     pub addr: *const ()
 }
 
-pub struct VirtualMachine<'a> {
-    funcs: HashMap<FuncId, &'a BytecodeChunk>,
-    ext_funcs: HashMap<ExtFuncId, ExtFunc>,
+pub type VmFuncMap = HashMap<FuncId, Arc<BytecodeChunk>>;
+pub type VmExtFuncMap = HashMap<ExtFuncId, ExtFunc>;
+
+pub struct VirtualMachine {
+    funcs: VmFuncMap,
+    ext_funcs: VmExtFuncMap,
 
     call_stack: Vec<StackFrame>,
     pc: usize,
@@ -232,7 +235,7 @@ macro_rules! def_op_icmp {
     };
 }
 
-impl<'a> VirtualMachine<'a> {
+impl VirtualMachine {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
     #[must_use]
@@ -276,33 +279,47 @@ impl<'a> VirtualMachine<'a> {
         self.ext_funcs = ext_funcs;
     }
 
-    pub fn load_module_data(&mut self, datas: &Datas) {
-        let mut current_offset = 0;
-
-        let total_size = datas.values().map(|desc| {
-            desc.contents.len()
-        }).sum();
-
+    pub fn initialize_module_data(&mut self, datas: &Datas) {
+        let total_size = datas.values().map(|desc| desc.size as usize).sum();
         self.data_memory.reserve(total_size);
         self.data_offsets.reserve(datas.len());
 
+        let mut total_aligned_size = 0;
+        for data_desc in datas.values() {
+            if !data_desc.is_external() {
+                total_aligned_size = util::align_up(total_aligned_size, 8);
+                total_aligned_size += data_desc.size;
+            }
+        }
+
+        self.data_memory.resize(total_aligned_size as _, 0);
+
+        let mut current_offset = 0;
         for (data_id, data_desc) in datas.iter() {
             if !data_desc.is_external() {
-                // Align data appropriately (e.g., 8-byte alignment)
                 current_offset = util::align_up(current_offset, 8);
-
-                // Record where this data starts
                 self.data_offsets.insert(data_id, current_offset);
 
-                // Append the data contents
-                self.data_memory.extend_from_slice(&data_desc.contents.read());
-                current_offset += data_desc.contents.len() as u32;
+                if data_desc.contents.len() > 0 {
+                    let contents = data_desc.contents.read();
+                    let curr = current_offset as usize;
+                    self.data_memory[curr..curr + contents.len()].copy_from_slice(&contents);
+                } else {
+                    // leave placeholder zeroed out
+                }
+
+                current_offset += data_desc.size;
             }
         }
     }
 
+    pub fn patch_data(&mut self, data_id: DataId, contents: &[u8]) {
+        let offset = self.data_offsets[&data_id] as usize;
+        self.data_memory[offset..offset + contents.len()].copy_from_slice(contents);
+    }
+
     #[inline]
-    pub fn add_function(&mut self, func_id: FuncId, chunk: &'a BytecodeChunk) {
+    pub fn add_function(&mut self, func_id: FuncId, chunk: Arc<BytecodeChunk>) {
         self.funcs.insert(func_id, chunk);
     }
 
@@ -594,15 +611,6 @@ impl<'a> VirtualMachine<'a> {
                     let mut ffi_args = Vec::with_capacity(args.len());
                     let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
 
-                    if ext_func_id.as_u32() == 3 {
-                        let ptr = self.registers[8] as *const [u8; 5];
-                        let bytes = unsafe { ptr.read() };
-                        let s = unsafe {
-                            std::str::from_utf8_unchecked(&bytes)
-                        };
-                        println!("{s}")
-                    }
-
                     for (i, &ty) in args.iter().enumerate() {
                         match ty {
                             Type::I8 => {
@@ -704,8 +712,6 @@ impl<'a> VirtualMachine<'a> {
                     let data_id = DataId::from_u32(decoder.read_u32());
 
                     if let Some(&offset) = self.data_offsets.get(&data_id) {
-                        // Store the absolute address of the data in the register
-                        // In a real VM, this might be a virtual address
                         let data_ptr = self.data_memory.as_ptr() as u64 + offset as u64;
                         self.registers[dst] = data_ptr;
                     } else {
@@ -970,7 +976,7 @@ impl BytecodeBuilder {
     }
 }
 
-impl VirtualMachine<'_> {
+impl VirtualMachine {
     fn try_run<T>(f: impl FnOnce() -> Result<T, VMError>) -> Result<T, VMError> {
         let result = catch_unwind(AssertUnwindSafe(f));
 

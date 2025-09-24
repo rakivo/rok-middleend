@@ -458,6 +458,7 @@ impl AtomicContents {
 
 #[derive(Debug)]
 pub struct DataDescription {
+    pub size: u32,
     pub contents: AtomicContents,
     pub is_external: AtomicBool,
 }
@@ -503,8 +504,9 @@ impl Module {
         })
     }
 
-    pub fn declare_data(&mut self, external: bool) -> DataId {
+    pub fn declare_data(&mut self, size: u32, external: bool) -> DataId {
         self.datas.push(DataDescription {
+            size,
             contents: AtomicContents::new(Box::new([])),
             is_external: external.into(),
         })
