@@ -1,4 +1,6 @@
-use smallvec::{smallvec, SmallVec};
+// TODO(#14): Spill slots allocations/management is broken
+//   I think the lowerer overall works fine, its the
+//   register allocator thats broken
 
 use crate::entity::EntityRef;
 use crate::util::{self, reborrow};
@@ -21,6 +23,8 @@ use crate::ssa::{
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, BTreeMap};
+
+use smallvec::{smallvec, SmallVec};
 
 type ValueSet = HashSet<Value>;
 
