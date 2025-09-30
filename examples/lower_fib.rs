@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rok_bytecode::vm::VirtualMachine;
 use rok_bytecode::lower::{LoweringContext};
 use rok_bytecode::bytecode::disassemble_chunk;
@@ -9,6 +11,7 @@ fn main() {
     let sig = Signature {
         params: vec![Type::I64],
         returns: vec![Type::I64],
+        ..Default::default()
     };
     let fib_id = module.declare_function("fib", sig);
 
@@ -63,7 +66,8 @@ fn main() {
     disassemble_chunk(&lowered_func, &fib_func_name);
 
     let mut vm = VirtualMachine::new();
-    vm.add_function(fib_id, &lowered_func.chunk);
+    let chunk = Arc::new(lowered_func.chunk);
+    vm.add_function(fib_id, chunk);
     let ret = vm.call_function(fib_id, &[20]);
     println!("{ret:#?}");
 }
