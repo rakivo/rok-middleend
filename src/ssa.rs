@@ -1175,7 +1175,14 @@ impl InstBuilder<'_, '_> {
         ret_with_comment,
         #[inline]
         pub fn ret(&mut self, vals: &[Value]) {
-            self.insert_inst(InstructionData::Return { args: vals.into() });
+            let inst = self.insert_inst(InstructionData::Return {
+                args: vals.into()
+            });
+
+            for (i, &val) in vals.iter().enumerate() {
+                let ty = self.func.value_type(val);
+                self.make_inst_result(inst, ty, i as _);
+            }
         }
     }
 

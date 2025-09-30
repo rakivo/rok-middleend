@@ -10,7 +10,6 @@ use crate::ssa::{
     StackSlot,
     UnaryOp,
     Type,
-    Value,
     IntCC
 };
 use std::mem;
@@ -82,8 +81,8 @@ define_opcodes! {
     IAdd(dst: u32, a: u32, b: u32)           = 10,
     @ IData::Binary { binop: BinaryOp::IAdd, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IAdd);
         chunk.append(dst);
         chunk.append(a);
@@ -92,8 +91,8 @@ define_opcodes! {
     ISub(dst: u32, a: u32, b: u32)           = 11,
     @ IData::Binary { binop: BinaryOp::ISub, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::ISub);
         chunk.append(dst);
         chunk.append(a);
@@ -102,8 +101,8 @@ define_opcodes! {
     IMul(dst: u32, a: u32, b: u32)           = 12,
     @ IData::Binary { binop: BinaryOp::IMul, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IMul);
         chunk.append(dst);
         chunk.append(a);
@@ -112,8 +111,8 @@ define_opcodes! {
     IDiv(dst: u32, a: u32, b: u32)           = 13,
     @ IData::Binary { binop: BinaryOp::IDiv, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IDiv);
         chunk.append(dst);
         chunk.append(a);
@@ -123,8 +122,8 @@ define_opcodes! {
     And(dst: u32, a: u32, b: u32)            = 14,
     @ IData::Binary { binop: BinaryOp::And, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::And);
         chunk.append(dst);
         chunk.append(a);
@@ -133,8 +132,8 @@ define_opcodes! {
     Or(dst: u32, a: u32, b: u32)             = 15,
     @ IData::Binary { binop: BinaryOp::Or, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::Or);
         chunk.append(dst);
         chunk.append(a);
@@ -143,8 +142,8 @@ define_opcodes! {
     Xor(dst: u32, a: u32, b: u32)            = 16,
     @ IData::Binary { binop: BinaryOp::Xor, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::Xor);
         chunk.append(dst);
         chunk.append(a);
@@ -154,8 +153,8 @@ define_opcodes! {
     Ushr(dst: u32, a: u32, b: u32)            = 17,
     @ IData::Binary { binop: BinaryOp::Ushr, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::Ushr);
         chunk.append(dst);
         chunk.append(a);
@@ -165,8 +164,8 @@ define_opcodes! {
     Ishl(dst: u32, a: u32, b: u32)            = 18,
     @ IData::Binary { binop: BinaryOp::Ishl, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::Ishl);
         chunk.append(dst);
         chunk.append(a);
@@ -176,8 +175,8 @@ define_opcodes! {
     Band(dst: u32, a: u32, b: u32)            = 19,
     @ IData::Binary { binop: BinaryOp::Band, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::Band);
         chunk.append(dst);
         chunk.append(a);
@@ -187,8 +186,8 @@ define_opcodes! {
     Bor(dst: u32, a: u32, b: u32)             = 20,
     @ IData::Binary { binop: BinaryOp::Bor, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::Bor);
         chunk.append(dst);
         chunk.append(a);
@@ -199,8 +198,8 @@ define_opcodes! {
     IEq(dst: u32, a: u32, b: u32)            = 96,
     @ IData::Icmp { code: IntCC::Equal, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IEq);
         chunk.append(dst);
         chunk.append(a);
@@ -210,8 +209,8 @@ define_opcodes! {
     INe(dst: u32, a: u32, b: u32)            = 97,
     @ IData::Icmp { code: IntCC::NotEqual, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::INe);
         chunk.append(dst);
         chunk.append(a);
@@ -221,8 +220,8 @@ define_opcodes! {
     ISGt(dst: u32, a: u32, b: u32)           = 98,
     @ IData::Icmp { code: IntCC::SignedGreaterThan, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::ISGt);
         chunk.append(dst);
         chunk.append(a);
@@ -232,8 +231,8 @@ define_opcodes! {
     ISGe(dst: u32, a: u32, b: u32)           = 99,
     @ IData::Icmp { code: IntCC::SignedGreaterThanOrEqual, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::ISGe);
         chunk.append(dst);
         chunk.append(a);
@@ -243,8 +242,8 @@ define_opcodes! {
     ISLt(dst: u32, a: u32, b: u32)           = 100,
     @ IData::Icmp { code: IntCC::SignedLessThan, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::ISLt);
         chunk.append(dst);
         chunk.append(a);
@@ -254,8 +253,8 @@ define_opcodes! {
     ISLe(dst: u32, a: u32, b: u32)           = 101,
     @ IData::Icmp { code: IntCC::SignedLessThanOrEqual, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::ISLe);
         chunk.append(dst);
         chunk.append(a);
@@ -265,8 +264,8 @@ define_opcodes! {
     IUGt(dst: u32, a: u32, b: u32)           = 102,
     @ IData::Icmp { code: IntCC::UnsignedGreaterThan, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IUGt);
         chunk.append(dst);
         chunk.append(a);
@@ -276,8 +275,8 @@ define_opcodes! {
     IUGe(dst: u32, a: u32, b: u32)           = 103,
     @ IData::Icmp { code: IntCC::UnsignedGreaterThanOrEqual, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IUGe);
         chunk.append(dst);
         chunk.append(a);
@@ -287,8 +286,8 @@ define_opcodes! {
     IULt(dst: u32, a: u32, b: u32)           = 104,
     @ IData::Icmp { code: IntCC::UnsignedLessThan, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IULt);
         chunk.append(dst);
         chunk.append(a);
@@ -298,8 +297,8 @@ define_opcodes! {
     IULe(dst: u32, a: u32, b: u32)           = 105,
     @ IData::Icmp { code: IntCC::UnsignedLessThanOrEqual, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::IULe);
         chunk.append(dst);
         chunk.append(a);
@@ -309,8 +308,8 @@ define_opcodes! {
     FAdd(dst: u32, a: u32, b: u32)          = 22,
     @ IData::Binary { binop: BinaryOp::FAdd, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::FAdd);
         chunk.append(dst);
         chunk.append(a);
@@ -319,8 +318,8 @@ define_opcodes! {
     FSub(dst: u32, a: u32, b: u32)          = 23,
     @ IData::Binary { binop: BinaryOp::FSub, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::FSub);
         chunk.append(dst);
         chunk.append(a);
@@ -329,8 +328,8 @@ define_opcodes! {
     FMul(dst: u32, a: u32, b: u32)          = 24,
     @ IData::Binary { binop: BinaryOp::FMul, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::FMul);
         chunk.append(dst);
         chunk.append(a);
@@ -339,8 +338,8 @@ define_opcodes! {
     FDiv(dst: u32, a: u32, b: u32)          = 25,
     @ IData::Binary { binop: BinaryOp::FDiv, args } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let a = self.ssa_to_reg[&args[0]];
-        let b = self.ssa_to_reg[&args[1]];
+        let a = self.load_value(chunk, args[0]);
+        let b = self.load_value(chunk, args[1]);
         chunk.append(Opcode::FDiv);
         chunk.append(dst);
         chunk.append(a);
@@ -350,15 +349,15 @@ define_opcodes! {
     Jump16(offset: i32)        = 26,
     @ IData::Jump { destination, args, .. } => |_results, chunk| {
         let dest_block = &self.func.cfg.blocks[destination.index()];
-        for (i, &arg) in args.iter().enumerate() {
-            let arg_reg = self.ssa_to_reg[&arg];
-            let param_reg = self.ssa_to_reg[&dest_block.params[i]];
-            if arg_reg != param_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(param_reg);
-                chunk.append(arg_reg);
-            }
+
+        // Move SSA values into destination block parameters
+        for (i, &arg_value) in args.iter().enumerate() {
+            let arg_val = self.load_value(chunk, arg_value);
+            let param = dest_block.params[i];
+            self.store_value(chunk, param, arg_val);
         }
+
+        // Emit the jump
         chunk.append(Opcode::Jump16);
         self.append_jump_placeholder::<i16>(chunk, *destination);
     },
@@ -368,29 +367,21 @@ define_opcodes! {
 
         let true_dest_block = &self.func.cfg.blocks[t.index()];
         for (i, &arg_value) in args.iter().enumerate() {
-            let arg_reg = self.ssa_to_reg[&arg_value];
-            let param_reg = self.ssa_to_reg[&true_dest_block.params[i]];
-            if arg_reg != param_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(param_reg);
-                chunk.append(arg_reg);
-            }
+            let arg_reg = self.load_value(chunk, arg_value);
+            let param = true_dest_block.params[i];
+            self.store_value(chunk, param, arg_reg);
         }
 
-        let cond_slot = self.ssa_to_reg[arg];
+        let cond_slot = self.load_value(chunk, *arg);
         chunk.append(Opcode::BranchIf16);
         chunk.append(cond_slot);
         self.append_jump_placeholder::<i16>(chunk, t);
 
         let false_dest_block = &self.func.cfg.blocks[e.index()];
         for (i, &arg_value) in args.iter().enumerate() {
-            let arg_reg = self.ssa_to_reg[&arg_value];
-            let param_reg = self.ssa_to_reg[&false_dest_block.params[i]];
-            if arg_reg != param_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(param_reg);
-                chunk.append(arg_reg);
-            }
+            let arg_reg = self.load_value(chunk, arg_value);
+            let param = false_dest_block.params[i];
+            self.store_value(chunk, param, arg_reg);
         }
 
         // Unconditional jump for the false branch
@@ -400,13 +391,14 @@ define_opcodes! {
 
     Return()        = 28,
     @ IData::Return { args, .. } => |_results, chunk| {
+        println!("{}", self.func);
         // Move return values to the first N registers (r0, r1, ...).
         for (i, &arg) in args.iter().enumerate() {
-            let arg_slot = self.ssa_to_reg[&arg];
+            let arg_slot = self.load_value(chunk, arg);
             if arg_slot != i as u32 {
                 chunk.append(Opcode::Mov);
                 chunk.append(i as u32); // dst
-                chunk.append(arg_slot);      // src
+                chunk.append(arg_slot); // src
             }
         }
 
@@ -417,66 +409,22 @@ define_opcodes! {
 
     Call(func_id: u32)          = 29,
     @ IData::Call { func_id, args, .. } => |results, chunk, inst_id| {
-        // 0) Emit stores for spilled values live across this call
-        let l = self.liveness();
-        if let Some(vals) = l.live_across_call.get(&inst_id) {
-            for &v in vals {
-                if let Some(&spill_slot) = self.spill_slots.get(&v) {
-                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
-                    let src_reg = self.ssa_to_reg[&v];
-                    let opcode = Opcode::fp_store(allocation.ty.bits()).unwrap();
-                    chunk.append(opcode);
-                    chunk.append(allocation.offset as u32);
-                    chunk.append(src_reg);
-                }
-            }
-        }
-
         // 1) Move arguments to registers starting from r8.
         for (i, &arg) in args.iter().enumerate() {
-            let arg_slot = self.ssa_to_reg[&arg];
+            let arg_reg = self.load_value(chunk, arg);
             chunk.append(Opcode::Mov);
             chunk.append((i + 8) as u32); // dst
-            chunk.append(arg_slot);         // src
+            chunk.append(arg_reg);         // src
         }
 
         // 2) Emit call
         chunk.append(Opcode::Call);
         chunk.append(func_id.index() as u32);
 
-        // 3) Move result(s) from r0 to destination register(s) BEFORE reloading spills.
-        let mut result_vals: Vec<Value> = Vec::new();
+        // 3) Move result(s) from r0 to destination register(s).
         if let Some(results) = results {
-            if !results.is_empty() {
-                result_vals.push(results[0]);
-                let result_slot = self.ssa_to_reg[&results[0]];
-                if result_slot != 0 {
-                    chunk.append(Opcode::Mov);
-                    chunk.append(result_slot); // dst
-                    chunk.append(0u32);        // src (r0)
-                }
-            }
-        }
-
-        let result_regs = &result_vals.iter().map(|v| self.ssa_to_reg[v]).collect::<Vec<_>>()[..];
-
-        // 4) Reload spilled values, but skip values that are call results (we just wrote them).
-        let l = self.liveness();
-        if let Some(vals) = l.live_across_call.get(&inst_id) {
-            for &v in vals {
-                if result_vals.contains(&v) { continue; }
-                if let Some(&spill_slot) = self.spill_slots.get(&v) {
-                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
-                    let dst_reg = self.ssa_to_reg[&v];
-                    if result_regs.contains(&dst_reg) {
-                        eprintln!("clobber detected while lowering call");
-                        continue
-                    }
-                    let opcode = Opcode::fp_load(allocation.ty.bits()).unwrap();
-                    chunk.append(opcode);
-                    chunk.append(dst_reg);
-                    chunk.append(allocation.offset as u32);
-                }
+            for (i, result) in results.iter().enumerate() {
+                self.store_value(chunk, *result, i as u32);
             }
         }
     },
@@ -486,7 +434,7 @@ define_opcodes! {
         let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
         let bits = result_ty.bits() as u8;
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         chunk.append(Opcode::Ireduce);
         chunk.append(dst);
         chunk.append(src);
@@ -499,7 +447,7 @@ define_opcodes! {
         let from_bits = src_ty.bits() as u8;
         let to_bits = dst_ty.bits() as u8;
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         chunk.append(Opcode::Uextend);
         chunk.append(dst);
         chunk.append(src);
@@ -509,7 +457,7 @@ define_opcodes! {
     Sextend(dst: u32, src: u32) = 32,
     @ IData::Unary { unop: UnaryOp::Sextend, arg } => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         chunk.append(Opcode::Sextend);
         chunk.append(dst);
         chunk.append(src);
@@ -519,7 +467,7 @@ define_opcodes! {
     Load8(dst: u32, addr: u32)         = 40,
     @ IData::LoadNoOffset { ty, addr } if bits == 8 => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let addr = self.ssa_to_reg[addr];
+        let addr = self.load_value(chunk, *addr);
         chunk.append(Opcode::Load8);
         chunk.append(dst);
         chunk.append(addr);
@@ -527,7 +475,7 @@ define_opcodes! {
     Load16(dst: u32, addr: u32)        = 41,
     @ IData::LoadNoOffset { ty, addr } if bits == 16 => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let addr = self.ssa_to_reg[addr];
+        let addr = self.load_value(chunk, *addr);
         chunk.append(Opcode::Load16);
         chunk.append(dst);
         chunk.append(addr);
@@ -535,7 +483,7 @@ define_opcodes! {
     Load32(dst: u32, addr: u32)        = 42,
     @ IData::LoadNoOffset { ty, addr } if bits == 32 => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let addr = self.ssa_to_reg[addr];
+        let addr = self.load_value(chunk, *addr);
         chunk.append(Opcode::Load32);
         chunk.append(dst);
         chunk.append(addr);
@@ -543,7 +491,7 @@ define_opcodes! {
     Load64(dst: u32, addr: u32)        = 43,
     @ IData::LoadNoOffset { ty, addr } if bits == 64 => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let addr = self.ssa_to_reg[addr];
+        let addr = self.load_value(chunk, *addr);
         chunk.append(Opcode::Load64);
         chunk.append(dst);
         chunk.append(addr);
@@ -551,8 +499,8 @@ define_opcodes! {
 
     Store8(addr: u32, val: u32) = 44,
     @ IData::StoreNoOffset { args } if bits == 8 => |_results, chunk| {
-        let addr = self.ssa_to_reg[&args[0]];
-        let val = self.ssa_to_reg[&args[1]];
+        let addr = self.load_value(chunk, args[0]);
+        let val = self.load_value(chunk, args[1]);
         let opcode = Opcode::Store8;
         chunk.append(opcode);
         chunk.append(addr);
@@ -561,8 +509,8 @@ define_opcodes! {
 
     Store16(addr: u32, val: u32) = 45,
     @ IData::StoreNoOffset { args } if bits == 16 => |_results, chunk| {
-        let addr = self.ssa_to_reg[&args[0]];
-        let val = self.ssa_to_reg[&args[1]];
+        let addr = self.load_value(chunk, args[0]);
+        let val = self.load_value(chunk, args[1]);
         let opcode = Opcode::Store16;
         chunk.append(opcode);
         chunk.append(addr);
@@ -571,8 +519,8 @@ define_opcodes! {
 
     Store32(addr: u32, val: u32) = 47,
     @ IData::StoreNoOffset { args } if bits == 32 => |_results, chunk| {
-        let addr = self.ssa_to_reg[&args[0]];
-        let val = self.ssa_to_reg[&args[1]];
+        let addr = self.load_value(chunk, args[0]);
+        let val = self.load_value(chunk, args[1]);
         let opcode = Opcode::Store32;
         chunk.append(opcode);
         chunk.append(addr);
@@ -581,8 +529,8 @@ define_opcodes! {
 
     Store64(addr: u32, val: u32) = 47,
     @ IData::StoreNoOffset { args } if bits == 64 => |_results, chunk| {
-        let addr = self.ssa_to_reg[&args[0]];
-        let val = self.ssa_to_reg[&args[1]];
+        let addr = self.load_value(chunk, args[0]);
+        let val = self.load_value(chunk, args[1]);
         let opcode = Opcode::Store64;
         chunk.append(opcode);
         chunk.append(addr);
@@ -639,7 +587,7 @@ define_opcodes! {
     },
     FpStore8(offset: i32, src: u32)      = 74,
     @ IData::StackStore { slot, arg, .. } if bits == 8 => |_results, chunk| {
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore8;
         chunk.append(opcode);
@@ -648,7 +596,7 @@ define_opcodes! {
     },
     FpStore16(offset: i32, src: u32)     = 75,
     @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore16;
         chunk.append(opcode);
@@ -657,7 +605,7 @@ define_opcodes! {
     },
     FpStore32(offset: i32, src: u32)     = 76,
     @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore32;
         chunk.append(opcode);
@@ -666,7 +614,7 @@ define_opcodes! {
     },
     FpStore64(offset: i32, src: u32)     = 77,
     @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
-        let src = self.ssa_to_reg[arg];
+        let src = self.load_value(chunk, *arg);
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore64;
         chunk.append(opcode);
@@ -709,60 +657,22 @@ define_opcodes! {
 
     CallIntrin(intrinsic_id: u32) = 135,
     @ IData::CallIntrin { intrinsic_id, args } => |results, chunk, inst_id| {
-        // 0) Emit stores for spilled values live across this call
-        let l = self.liveness();
-        if let Some(vals) = l.live_across_call.get(&inst_id) {
-            for &v in vals {
-                if let Some(&spill_slot) = self.spill_slots.get(&v) {
-                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
-                    let src_reg = self.ssa_to_reg[&v];
-                    let opcode = Opcode::fp_store(allocation.ty.bits()).unwrap();
-                    chunk.append(opcode);
-                    chunk.append(allocation.offset as u32);
-                    chunk.append(src_reg);
-                }
-            }
-        }
-
         // 1) Move arguments to registers starting from r8.
         for (i, &arg) in args.iter().enumerate() {
-            let arg_slot = self.ssa_to_reg[&arg];
+            let arg_reg = self.load_value(chunk, arg);
             chunk.append(Opcode::Mov);
             chunk.append((i + 8) as u32); // dst
-            chunk.append(arg_slot);         // src
+            chunk.append(arg_reg);         // src
         }
 
         // 2) Emit call
         chunk.append(Opcode::CallIntrin);
         chunk.append(intrinsic_id.index() as u32);
 
-        // 3) Move result(s) from r0 to destination register(s) BEFORE reloading spills.
-        let mut result_vals: Vec<Value> = Vec::new();
+        // 3) Move result(s) from r0 to destination register(s).
         if let Some(results) = results {
             if !results.is_empty() {
-                result_vals.push(results[0]);
-                let result_slot = self.ssa_to_reg[&results[0]];
-                if result_slot != 0 {
-                    chunk.append(Opcode::Mov);
-                    chunk.append(result_slot); // dst
-                    chunk.append(0u32);       // src (r0)
-                }
-            }
-        }
-
-        // 4) Reload spilled values, but skip values that are call results (we just wrote them).
-        let l = self.liveness();
-        if let Some(vals) = l.live_across_call.get(&inst_id) {
-            for &v in vals {
-                if result_vals.contains(&v) { continue; }
-                if let Some(&spill_slot) = self.spill_slots.get(&v) {
-                    let allocation = &self.frame_info.slot_allocations[&spill_slot];
-                    let dst_reg = self.ssa_to_reg[&v];
-                    let opcode = Opcode::fp_load(allocation.ty.bits()).unwrap();
-                    chunk.append(opcode);
-                    chunk.append(dst_reg);
-                    chunk.append(allocation.offset as u32);
-                }
+                self.store_value(chunk, results[0], 0);
             }
         }
     },
@@ -771,10 +681,10 @@ define_opcodes! {
     @ IData::CallExt { func_id, args, .. } => |results, chunk, inst_id| {
         // 1) Move arguments to registers starting from r8.
         for (i, &arg) in args.iter().enumerate() {
-            let arg_slot = self.ssa_to_reg[&arg];
+            let arg_reg = self.load_value(chunk, arg);
             chunk.append(Opcode::Mov);
             chunk.append((i + 8) as u32); // dst
-            chunk.append(arg_slot);         // src
+            chunk.append(arg_reg);         // src
         }
 
         // 2) Emit call
@@ -1383,4 +1293,3 @@ pub fn disassemble_instruction(
         }
     }
 }
-

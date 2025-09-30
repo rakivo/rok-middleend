@@ -12,6 +12,7 @@ dynasm = "4.0.0"
 dynasmrt = "4.0.0"
 once_cell = "1.21.3"
 parking_lot = "0.12.4"
+regalloc2 = "0.13.2"
 
 [[example]]
 name = "lower_fib"

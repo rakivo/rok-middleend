@@ -40,4 +40,5 @@ pub mod lower;
 pub mod entity;
 pub mod primary;
 pub mod bytecode;
+pub mod regalloc2;
 pub mod boxed_slice;
