@@ -1244,6 +1244,24 @@ pub fn disassemble_instruction(
             print_aligned("CALL_INTRIN", &format!("INTRIN_{intrinsic_id}"));
             offset + 5
         }
+        Opcode::Bor => {
+            let dst =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src1 =
+                u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let src2 =
+                u32::from_le_bytes(lowered.chunk.code[offset + 9..offset + 13].try_into().unwrap());
+            print_aligned("BOR", &format!("v{dst}, v{src1}, v{src2}"));
+            offset + 13
+        }
+        Opcode::Uextend => {
+            let dst =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src =
+                u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            print_aligned("UEXTEND", &format!("v{dst}, v{src}"));
+            offset + 9
+        }
         Opcode::Mov => {
             let dst =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
