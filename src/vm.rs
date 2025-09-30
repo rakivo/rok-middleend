@@ -452,6 +452,24 @@ impl VirtualMachine {
                     def_op_binary!(self, decoder, wrapping_mul);
                 }
 
+                Opcode::Ireduce => {
+                    let dst = decoder.read_u32();
+                    let src = decoder.read_u32();
+                    let bits = decoder.read_u8();
+                    let val = self.reg_read(src as _);
+                    let mask = (1u64 << bits) - 1;
+                    self.reg_write(dst as _, val & mask);
+                }
+
+                Opcode::Uextend => {
+                    let dst = decoder.read_u32();
+                    let src = decoder.read_u32();
+                    let _from_bits = decoder.read_u8();
+                    let _to_bits = decoder.read_u8();
+                    let val = self.reg_read(src as _);
+                    self.reg_write(dst as _, val);
+                }
+
                 Opcode::IEq => {
                     def_op_icmp!(self, decoder, ==, u64);
                 }
@@ -479,6 +497,16 @@ impl VirtualMachine {
                 Opcode::IULt => {
                     def_op_icmp!(self, decoder, <, u64);
                 }
+
+                Opcode::Bor => {
+                    let dst = decoder.read_u32();
+                    let src1 = decoder.read_u32();
+                    let src2 = decoder.read_u32();
+                    let val1 = self.reg_read(src1 as _);
+                    let val2 = self.reg_read(src2 as _);
+                    self.reg_write(dst as _, val1 | val2);
+                }
+
                 Opcode::IULe => {
                     def_op_icmp!(self, decoder, <=, u64);
                 }

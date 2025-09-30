@@ -475,21 +475,30 @@ define_opcodes! {
         }
     },
 
-    Ireduce(dst: u32, src: u32) = 30,
+    Ireduce(dst: u32, src: u32, bits: u8) = 30,
     @ IData::Unary { unop: UnaryOp::Ireduce, arg } => |results, chunk| {
+        let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
+        let bits = result_ty.bits() as u8;
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let src = self.ssa_to_reg[arg];
         chunk.append(Opcode::Ireduce);
         chunk.append(dst);
         chunk.append(src);
+        chunk.append(bits);
     },
-    Uextend(dst: u32, src: u32) = 31,
+    Uextend(dst: u32, src: u32, from_bits: u8, to_bits: u8) = 31,
     @ IData::Unary { unop: UnaryOp::Uextend, arg } => |results, chunk| {
+        let src_ty = self.func.dfg.values[arg.index()].ty;
+        let dst_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
+        let from_bits = src_ty.bits() as u8;
+        let to_bits = dst_ty.bits() as u8;
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
         let src = self.ssa_to_reg[arg];
         chunk.append(Opcode::Uextend);
         chunk.append(dst);
         chunk.append(src);
+        chunk.append(from_bits);
+        chunk.append(to_bits);
     },
     Sextend(dst: u32, src: u32) = 32,
     @ IData::Unary { unop: UnaryOp::Sextend, arg } => |results, chunk| {
@@ -1254,13 +1263,24 @@ pub fn disassemble_instruction(
             print_aligned("BOR", &format!("v{dst}, v{src1}, v{src2}"));
             offset + 13
         }
+        Opcode::Ireduce => {
+            let dst =
+                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src =
+                u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let bits = lowered.chunk.code[offset + 9];
+            print_aligned("IREDUCE", &format!("v{dst}, v{src}, {bits}"));
+            offset + 10
+        }
         Opcode::Uextend => {
             let dst =
                 u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
             let src =
                 u32::from_le_bytes(lowered.chunk.code[offset + 5..offset + 9].try_into().unwrap());
-            print_aligned("UEXTEND", &format!("v{dst}, v{src}"));
-            offset + 9
+            let from_bits = lowered.chunk.code[offset + 9];
+            let to_bits = lowered.chunk.code[offset + 10];
+            print_aligned("UEXTEND", &format!("v{dst}, v{src}, {from_bits}, {to_bits}"));
+            offset + 11
         }
         Opcode::Mov => {
             let dst =
