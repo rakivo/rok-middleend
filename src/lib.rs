@@ -104,13 +104,6 @@
 //   which is not particularly correct, I suspect that the data offsets might overlap
 //   and cause this, because the data we insert into the `.datas` is 100% correct.
 // TODO(#3): extend/truncate operations
-// TODO(#1): VM callbacks (intrinsics)
-//   something like that:
-//   ```rust
-//       vm.add_callback(|vm, ..| unsafe {
-//           // do zero return registers
-//           ptr::write_bytes(self.registers.as_mut_ptr(), 0, 8);
-//       });
 //
 //       // in vm
 //       // id = parse [4 byte callback ID],
