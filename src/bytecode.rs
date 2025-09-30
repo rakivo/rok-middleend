@@ -453,10 +453,12 @@ define_opcodes! {
                 if result_slot != 0 {
                     chunk.append(Opcode::Mov);
                     chunk.append(result_slot); // dst
-                    chunk.append(0u32);       // src (r0)
+                    chunk.append(0u32);        // src (r0)
                 }
             }
         }
+
+        let result_regs = &result_vals.iter().map(|v| self.ssa_to_reg[v]).collect::<Vec<_>>()[..];
 
         // 4) Reload spilled values, but skip values that are call results (we just wrote them).
         let l = self.liveness();
@@ -466,6 +468,10 @@ define_opcodes! {
                 if let Some(&spill_slot) = self.spill_slots.get(&v) {
                     let allocation = &self.frame_info.slot_allocations[&spill_slot];
                     let dst_reg = self.ssa_to_reg[&v];
+                    if result_regs.contains(&dst_reg) {
+                        eprintln!("clobber detected while lowering call");
+                        continue
+                    }
                     let opcode = Opcode::fp_load(allocation.ty.bits()).unwrap();
                     chunk.append(opcode);
                     chunk.append(dst_reg);
