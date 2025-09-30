@@ -103,7 +103,6 @@
 //   ```
 //   which is not particularly correct, I suspect that the data offsets might overlap
 //   and cause this, because the data we insert into the `.datas` is 100% correct.
-// TODO(#3): extend/truncate operations
 //
 //       // in vm
 //       // id = parse [4 byte callback ID],
