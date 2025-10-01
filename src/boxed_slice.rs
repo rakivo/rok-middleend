@@ -1,3 +1,14 @@
+// Portions of this file are derived from the Cranelift project:
+// https://github.com/bytecodealliance/wasmtime/tree/main/cranelift
+//
+// Original license:
+// Licensed under either of
+//   * Apache License, Version 2.0 with LLVM exception
+//   * MIT license
+// at your option.
+//
+// See the top-level LICENSE-APACHE and LICENSE-MIT files for details.
+
 //! Boxed slices for `PrimaryMap`.
 
 use crate::entity::EntityRef;
@@ -53,16 +64,19 @@ where
     }
 
     /// Is this map completely empty?
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.elems.is_empty()
     }
 
     /// Get the total number of entity references created.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.elems.len()
     }
 
     /// Iterate over all the keys in this map.
+    #[must_use] 
     pub fn keys(&self) -> Keys<K> {
         Keys::with_len(self.elems.len())
     }
@@ -78,6 +92,7 @@ where
     }
 
     /// Iterate over all the keys and values in this map.
+    #[must_use] 
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter::new(self.elems.iter())
     }
@@ -88,6 +103,7 @@ where
     }
 
     /// Returns the last element that was inserted in the map.
+    #[must_use] 
     pub fn last(&self) -> Option<&V> {
         self.elems.last()
     }

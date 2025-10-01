@@ -1,22 +1,13 @@
-use crate::entity::EntityRef;
 use crate::ssa;
+use crate::entity::EntityRef;
 use crate::ssa::{Value, SsaFunc, InstructionData};
+
 use regalloc2::*;
-use std::collections::HashMap;
+use rustc_hash::{FxHashSet, FxHashMap};
 
-/// Physical register representation
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PReg(u8);
-
-impl PReg {
-    pub fn new(index: u8) -> Self {
-        assert!(index < 63);
-        Self(index)
-    }
-
-    pub fn index(self) -> u8 {
-        self.0
-    }
+#[inline(always)]
+const fn int_preg(index: u8) -> PReg {
+    PReg::new(index as usize, RegClass::Int)
 }
 
 /// Machine environment describing our register set
@@ -25,24 +16,25 @@ pub struct MachineEnv {
     pub non_preferred_regs_by_class: [Vec<PReg>; 1],
 }
 
+impl Default for MachineEnv {
+    #[inline]
+    fn default() -> Self { Self::new() }
+}
+
 impl MachineEnv {
     pub fn new() -> Self {
         // r0-r7 are return value registers (preferred for allocation)
-        let preferred: Vec<PReg> = (0..8).map(PReg::new).collect();
+        let preferred = (0..8).map(int_preg).collect();
 
-        // r8-r255 are general purpose registers (non-preferred)
-        let non_preferred: Vec<PReg> = (8..62).map(PReg::new).collect();
+        // r8-r63 are general purpose registers (non-preferred)
+        let non_preferred = (8..64).map(int_preg).collect();
+
+        // r64 is a reserved temp register for loads
 
         Self {
             preferred_regs_by_class: [preferred],
             non_preferred_regs_by_class: [non_preferred],
         }
-    }
-}
-
-impl Default for MachineEnv {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -56,6 +48,7 @@ pub struct RegAllocAdapter<'a> {
 }
 
 impl<'a> RegAllocAdapter<'a> {
+    #[must_use]
     pub fn new(func: &'a ssa::SsaFunc) -> Self {
         let mut adapter = Self {
             func,
@@ -71,20 +64,22 @@ impl<'a> RegAllocAdapter<'a> {
         adapter
     }
 
+    #[inline(always)]
+    fn value_to_vreg(value: Value) -> VReg {
+        VReg::new(value.index(), RegClass::Int)
+    }
+
     fn compute_block_order(&mut self) {
         // Traverse CFG starting from entry block
         if let Some(entry) = self.func.layout.block_entry {
-            let mut visited = std::collections::HashSet::new();
+            let mut visited = FxHashSet::default();
             let mut stack = vec![entry];
 
             while let Some(block) = stack.pop() {
-                if visited.contains(&block) {
-                    continue;
-                }
+                if visited.contains(&block) { continue }
                 visited.insert(block);
                 self.block_order.push(block);
 
-                // Find successors from terminator instruction
                 let block_data = &self.func.cfg.blocks[block.index()];
                 if let Some(&last_inst) = block_data.insts.last() {
                     match &self.func.dfg.insts[last_inst.index()] {
@@ -115,19 +110,18 @@ impl<'a> RegAllocAdapter<'a> {
         for (block_idx, &block) in self.block_order.iter().enumerate() {
             let block_data = &self.func.cfg.blocks[block.index()];
 
-            // Find successors from terminator
             if let Some(&last_inst) = block_data.insts.last() {
                 let succs = match &self.func.dfg.insts[last_inst.index()] {
-                    InstructionData::Jump { destination, .. } => vec![*destination],
+                    InstructionData::Jump   { destination, .. }  => vec![*destination],
                     InstructionData::Branch { destinations, .. } => destinations.to_vec(),
                     _ => vec![],
                 };
 
                 for succ in succs {
                     if let Some(succ_idx) = self.block_order.iter().position(|&b| b == succ) {
-                        let succ_block = regalloc2::Block::new(succ_idx);
+                        let succ_block = Block::new(succ_idx);
                         self.block_succs[block_idx].push(succ_block);
-                        self.block_preds[succ_idx].push(regalloc2::Block::new(block_idx));
+                        self.block_preds[succ_idx].push(Block::new(block_idx));
                     }
                 }
             }
@@ -145,7 +139,6 @@ impl<'a> RegAllocAdapter<'a> {
                 let inst_data = &self.func.dfg.insts[inst.index()];
                 let mut operands = Vec::new();
 
-                // Collect uses first
                 match inst_data {
                     InstructionData::Binary { args, .. } => {
                         operands.push(Operand::reg_use(Self::value_to_vreg(args[0])));
@@ -161,23 +154,23 @@ impl<'a> RegAllocAdapter<'a> {
                     InstructionData::Call { args, .. } |
                     InstructionData::CallExt { args, .. } |
                     InstructionData::CallIntrin { args, .. } => {
-                        for &arg in args.iter() {
+                        for &arg in args {
                             operands.push(Operand::reg_use(Self::value_to_vreg(arg)));
                         }
                     }
                     InstructionData::Return { args, .. } => {
-                        for &arg in args.iter() {
+                        for &arg in args {
                             operands.push(Operand::reg_use(Self::value_to_vreg(arg)));
                         }
                     }
                     InstructionData::Jump { args, .. } => {
-                        for &arg in args.iter() {
+                        for &arg in args {
                             operands.push(Operand::reg_use(Self::value_to_vreg(arg)));
                         }
                     }
                     InstructionData::Branch { arg, args, .. } => {
                         operands.push(Operand::reg_use(Self::value_to_vreg(*arg)));
-                        for &a in args.iter() {
+                        for &a in args {
                             operands.push(Operand::reg_use(Self::value_to_vreg(a)));
                         }
                     }
@@ -194,9 +187,8 @@ impl<'a> RegAllocAdapter<'a> {
                     _ => {}
                 }
 
-                // Then collect defs
                 if let Some(results) = self.func.dfg.inst_results.get(&inst) {
-                    for &result in results.iter() {
+                    for &result in results {
                         operands.push(Operand::reg_def(Self::value_to_vreg(result)));
                     }
                 }
@@ -205,50 +197,53 @@ impl<'a> RegAllocAdapter<'a> {
             }
         }
     }
-
-    fn value_to_vreg(value: Value) -> VReg {
-        VReg::new(value.index(), RegClass::Int)
-    }
 }
 
-impl<'a> Function for RegAllocAdapter<'a> {
+impl Function for RegAllocAdapter<'_> {
+    #[inline(always)]
     fn num_insts(&self) -> usize {
         self.func.dfg.insts.len()
     }
 
+    #[inline(always)]
     fn num_blocks(&self) -> usize {
         self.block_order.len()
     }
 
+    #[inline(always)]
     fn entry_block(&self) -> regalloc2::Block {
-        regalloc2::Block::new(0)
+        Block::new(0)
     }
 
+    #[inline]
     fn block_insns(&self, block: regalloc2::Block) -> InstRange {
         let our_block = self.block_order[block.index()];
         let block_data = &self.func.cfg.blocks[our_block.index()];
 
         if block_data.insts.is_empty() {
-            return InstRange::new(regalloc2::Inst::new(0), regalloc2::Inst::new(0));
+            return InstRange::new(Inst::new(0), Inst::new(0))
         }
 
         let first = block_data.insts[0].index();
         let last = block_data.insts.last().unwrap().index();
 
         InstRange::new(
-            regalloc2::Inst::new(first),
-            regalloc2::Inst::new(last + 1),
+            Inst::new(first),
+            Inst::new(last + 1),
         )
     }
 
+    #[inline(always)]
     fn block_succs(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
         &self.block_succs[block.index()]
     }
 
+    #[inline(always)]
     fn block_preds(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
         &self.block_preds[block.index()]
     }
 
+    #[inline]
     fn block_params(&self, block: regalloc2::Block) -> &[VReg] {
         let our_block = self.block_order[block.index()];
         let block_data = &self.func.cfg.blocks[our_block.index()];
@@ -260,24 +255,32 @@ impl<'a> Function for RegAllocAdapter<'a> {
         // This avoids allocation for every call
         unsafe {
             std::slice::from_raw_parts(
-                block_data.params.as_ptr() as *const VReg,
+                block_data.params.as_ptr().cast::<VReg>(),
                 block_data.params.len()
             )
         }
     }
 
+    #[inline(always)]
     fn is_ret(&self, insn: regalloc2::Inst) -> bool {
-        matches!(
+        matches!{
             self.func.dfg.insts[insn.index()],
             InstructionData::Return { .. }
-        )
+        }
     }
 
+    #[inline(always)]
     fn is_branch(&self, insn: regalloc2::Inst) -> bool {
         self.func.dfg.insts[insn.index()].is_terminator()
     }
 
-    fn branch_blockparams(&self, _block: regalloc2::Block, insn: regalloc2::Inst, _succ_idx: usize) -> &[VReg] {
+    #[inline]
+    fn branch_blockparams(
+        &self,
+        _block: Block,
+        insn: Inst,
+        _succ_idx: usize
+    ) -> &[VReg] {
         let inst_data = &self.func.dfg.insts[insn.index()];
 
         match inst_data {
@@ -285,7 +288,7 @@ impl<'a> Function for RegAllocAdapter<'a> {
                 // Same trick as block_params
                 unsafe {
                     std::slice::from_raw_parts(
-                        args.as_ptr() as *const VReg,
+                        args.as_ptr().cast::<VReg>(),
                         args.len()
                     )
                 }
@@ -293,7 +296,7 @@ impl<'a> Function for RegAllocAdapter<'a> {
             InstructionData::Branch { args, .. } => {
                 unsafe {
                     std::slice::from_raw_parts(
-                        args.as_ptr() as *const VReg,
+                        args.as_ptr().cast::<VReg>(),
                         args.len()
                     )
                 }
@@ -302,10 +305,12 @@ impl<'a> Function for RegAllocAdapter<'a> {
         }
     }
 
+    #[inline(always)]
     fn inst_operands(&self, insn: regalloc2::Inst) -> &[Operand] {
         &self.inst_operands_cache[insn.index()]
     }
 
+    #[inline(always)]
     fn inst_clobbers(&self, insn: regalloc2::Inst) -> PRegSet {
         // Calls clobber r0-r7 (return value registers)
         match self.func.dfg.insts[insn.index()] {
@@ -314,7 +319,7 @@ impl<'a> Function for RegAllocAdapter<'a> {
             InstructionData::CallIntrin { .. } => {
                 let mut set = PRegSet::default();
                 for i in 0..8 {
-                    set.add(regalloc2::PReg::new(i, RegClass::Int));
+                    set.add(int_preg(i));
                 }
                 set
             }
@@ -322,10 +327,12 @@ impl<'a> Function for RegAllocAdapter<'a> {
         }
     }
 
+    #[inline(always)]
     fn num_vregs(&self) -> usize {
         self.func.dfg.values.len()
     }
 
+    #[inline(always)]
     fn spillslot_size(&self, _regclass: regalloc2::RegClass) -> usize {
         8 // All our registers are 64-bit max
     }
@@ -333,56 +340,54 @@ impl<'a> Function for RegAllocAdapter<'a> {
 
 /// Result of register allocation
 #[derive(Debug)]
-pub struct RegAllocResult {
-    pub allocs: HashMap<Value, PReg>,
+pub struct RegAllocOutput {
+    pub allocs: FxHashMap<Value, PReg>,
     pub spills: Vec<(Value, SpillSlot)>,
 }
 
+type RegAllocResult = Result<(Vec<ssa::Block>, RegAllocOutput), RegAllocError>;
+
 /// Perform register allocation on a function
-pub fn allocate_registers(func: &SsaFunc) -> Result<(Vec<ssa::Block>, RegAllocResult), RegAllocError> {
+pub fn allocate_registers(func: &SsaFunc) -> RegAllocResult {
     let adapter = RegAllocAdapter::new(func);
     let machine_env = MachineEnv::new();
 
     // Create regalloc2 environment (3 register classes required by regalloc2)
-    let empty_vec: Vec<regalloc2::PReg> = Vec::new();
     let env = regalloc2::MachineEnv {
         preferred_regs_by_class: [
-            machine_env.preferred_regs_by_class[0]
-                .iter()
-                .map(|p| regalloc2::PReg::new(p.index() as usize, regalloc2::RegClass::Int))
-                .collect(),
-            empty_vec.clone(),
-            empty_vec.clone(),
+            machine_env.preferred_regs_by_class[0].clone(),
+            Vec::new(),
+            Vec::new(),
         ],
         non_preferred_regs_by_class: [
-            machine_env.non_preferred_regs_by_class[0]
-                .iter()
-                .map(|p| regalloc2::PReg::new(p.index() as usize, regalloc2::RegClass::Int))
-                .collect(),
-            empty_vec.clone(),
-            empty_vec,
+            machine_env.non_preferred_regs_by_class[0].clone(),
+            Vec::new(),
+            Vec::new(),
         ],
-        scratch_by_class: [None, None, None],
-        fixed_stack_slots: vec![],
+        scratch_by_class: [None; _],
+        fixed_stack_slots: Vec::new()
     };
 
-    // Run allocation
-    let output = regalloc2::run(&adapter, &env, &Default::default())?;
+    let output = regalloc2::run(
+        &adapter,
+        &env,
+        &RegallocOptions::default()
+    )?;
 
-    // Convert results
-    let mut allocs = HashMap::new();
-    let mut spills = Vec::new();
+    let mut allocs = FxHashMap::default();
+    allocs.reserve(output.allocs.len());
+
+    let mut spills = Vec::with_capacity(output.allocs.len());
 
     for (vreg_idx, alloc) in output.allocs.iter().enumerate() {
-        let value = Value::from_u32(vreg_idx as u32);
-
+        let value = Value::from_u32(vreg_idx as _);
         if let Some(preg) = alloc.as_reg() {
-            allocs.insert(value, PReg::new(preg.hw_enc() as u8));
+            allocs.insert(value, preg);
         } else if let Some(slot) = alloc.as_stack() {
             spills.push((value, slot));
         }
     }
 
-    let result = RegAllocResult { allocs, spills };
+    let result = RegAllocOutput { allocs, spills };
     Ok((adapter.block_order, result))
 }

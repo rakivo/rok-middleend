@@ -1,3 +1,14 @@
+// Portions of this file are derived from the Cranelift project:
+// https://github.com/bytecodealliance/wasmtime/tree/main/cranelift
+//
+// Original license:
+// Licensed under either of
+//   * Apache License, Version 2.0 with LLVM exception
+//   * MIT license
+// at your option.
+//
+// See the top-level LICENSE-APACHE and LICENSE-MIT files for details.
+
 //! Densely numbered entity references as mapping keys.
 use crate::entity::EntityRef;
 use crate::boxed_slice::BoxedSlice;
@@ -37,6 +48,7 @@ where
     K: EntityRef,
 {
     /// Create a new empty map.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             elems: Vec::new(),
@@ -45,6 +57,7 @@ where
     }
 
     /// Create a new empty map with the given capacity.
+    #[must_use] 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             elems: Vec::with_capacity(capacity),
@@ -68,16 +81,19 @@ where
     }
 
     /// Is this map completely empty?
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.elems.is_empty()
     }
 
     /// Get the total number of entity references created.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.elems.len()
     }
 
     /// Iterate over all the keys in this map.
+    #[must_use] 
     pub fn keys(&self) -> Keys<K> {
         Keys::with_len(self.elems.len())
     }
@@ -93,6 +109,7 @@ where
     }
 
     /// Iterate over all the keys and values in this map.
+    #[must_use] 
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter::new(self.elems.iter())
     }
@@ -104,10 +121,11 @@ where
 
     /// Remove all entries from this map.
     pub fn clear(&mut self) {
-        self.elems.clear()
+        self.elems.clear();
     }
 
     /// Get the key that will be assigned to the next pushed value.
+    #[must_use] 
     pub fn next_key(&self) -> K {
         K::new(self.elems.len())
     }
@@ -120,6 +138,7 @@ where
     }
 
     /// Returns the last element that was inserted in the map.
+    #[must_use] 
     pub fn last(&self) -> Option<(K, &V)> {
         let len = self.elems.len();
         let last = self.elems.last()?;
@@ -135,20 +154,21 @@ where
 
     /// Reserves capacity for at least `additional` more elements to be inserted.
     pub fn reserve(&mut self, additional: usize) {
-        self.elems.reserve(additional)
+        self.elems.reserve(additional);
     }
 
     /// Reserves the minimum capacity for exactly `additional` more elements to be inserted.
     pub fn reserve_exact(&mut self, additional: usize) {
-        self.elems.reserve_exact(additional)
+        self.elems.reserve_exact(additional);
     }
 
     /// Shrinks the capacity of the `PrimaryMap` as much as possible.
     pub fn shrink_to_fit(&mut self) {
-        self.elems.shrink_to_fit()
+        self.elems.shrink_to_fit();
     }
 
     /// Consumes this `PrimaryMap` and produces a `BoxedSlice`.
+    #[must_use] 
     pub fn into_boxed_slice(self) -> BoxedSlice<K, V> {
         unsafe { BoxedSlice::<K, V>::from_raw(Box::<[V]>::into_raw(self.elems.into_boxed_slice())) }
     }
@@ -161,7 +181,7 @@ where
         &mut self,
         indices: [K; N],
     ) -> Result<[&mut V; N], slice::GetDisjointMutError> {
-        self.elems.get_disjoint_mut(indices.map(|k| k.index()))
+        self.elems.get_disjoint_mut(indices.map(super::entity::EntityRef::index))
     }
 
     /// Performs a binary search on the values with a key extraction function.

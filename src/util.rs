@@ -6,25 +6,31 @@ use std::borrow::Cow;
 use smallvec::SmallVec;
 
 #[inline(always)]
+#[must_use]
 pub const fn align_up(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn align_down(value: i32, alignment: i32) -> i32 {
     value & !(alignment - 1)
 }
 
-/// SAFETY: Caller ensures that this is safe
+/// # Safety
+///
+/// Caller ensures that this is safe
 #[inline(always)]
 pub const unsafe fn reborrow<'a, T>(t: &T) -> &'a T {
-    unsafe { &*(t as *const T) }
+    unsafe { &*std::ptr::from_ref::<T>(t) }
 }
 
-/// SAFETY: Caller ensures that this is safe
+/// # Safety
+///
+/// Caller ensures that this is safe
 #[inline(always)]
 pub const unsafe fn reborrow_mut<'a, T>(t: &mut T) -> &'a mut T {
-    unsafe { &mut *(t as *mut T) }
+    unsafe { &mut *std::ptr::from_mut::<T>(t) }
 }
 
 /// Helper trait for converting T to bytes
@@ -37,7 +43,7 @@ pub trait IntoBytes<'a> {
     where
         Self: Sized
     {
-        dst.copy_from_slice(&self.into_bytes())
+        dst.copy_from_slice(&self.into_bytes());
     }
 }
 

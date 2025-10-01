@@ -1,3 +1,14 @@
+// Portions of this file are derived from the Cranelift project:
+// https://github.com/bytecodealliance/wasmtime/tree/main/cranelift
+//
+// Original license:
+// Licensed under either of
+//   * Apache License, Version 2.0 with LLVM exception
+//   * MIT license
+// at your option.
+//
+// See the top-level LICENSE-APACHE and LICENSE-MIT files for details.
+
 //! A double-ended iterator over entity references.
 //!
 //! When `core::iter::Step` is stabilized, `Keys` could be implemented as a wrapper around
@@ -15,6 +26,7 @@ pub struct Keys<K: EntityRef> {
 
 impl<K: EntityRef> Keys<K> {
     /// Create a `Keys` iterator that visits `len` entities starting from 0.
+    #[must_use] 
     pub fn with_len(len: usize) -> Self {
         Self {
             pos: 0,

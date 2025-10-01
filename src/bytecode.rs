@@ -12,13 +12,10 @@ use crate::ssa::{
     Type,
     IntCC
 };
+
 use std::mem;
 
 use indexmap::IndexMap;
-
-//-////////////////////////////////////////////////////////////////////
-// Bytecode Data Structures
-//
 
 define_opcodes! {
     self,
@@ -54,10 +51,10 @@ define_opcodes! {
     IConst64(dst: u32, val: i64)      = 3,
     @ IData::IConst { value, .. } if bits == 64 => |results, chunk| {
         let dst = self.ssa_to_reg[&results.unwrap()[0]];
-        let val = *value as i64;
+        let val = *value;
         chunk.append(Opcode::IConst64);
         chunk.append(dst);
-        chunk.append((val as u64));
+        chunk.append(val as u64);
     },
 
     FConst32(dst: u32, val: f32)      = 4,
@@ -391,7 +388,6 @@ define_opcodes! {
 
     Return()        = 28,
     @ IData::Return { args, .. } => |_results, chunk| {
-        println!("{}", self.func);
         // Move return values to the first N registers (r0, r1, ...).
         for (i, &arg) in args.iter().enumerate() {
             let arg_slot = self.load_value(chunk, arg);
@@ -670,11 +666,10 @@ define_opcodes! {
         chunk.append(intrinsic_id.index() as u32);
 
         // 3) Move result(s) from r0 to destination register(s).
-        if let Some(results) = results {
-            if !results.is_empty() {
+        if let Some(results) = results
+            && !results.is_empty() {
                 self.store_value(chunk, results[0], 0);
             }
-        }
     },
 
     CallExt(func_id: u32)          = 136,
@@ -699,6 +694,7 @@ define_opcodes! {
 }
 
 impl Opcode {
+    #[inline]
     #[must_use]
     pub const fn from_int_cc(cc: IntCC) -> Option<Self> {
         Some(match cc {
@@ -715,6 +711,7 @@ impl Opcode {
         })
     }
 
+    #[inline]
     #[must_use]
     pub const fn from_binary(op: BinaryOp) -> Option<Self> {
         Some(match op {
@@ -733,6 +730,7 @@ impl Opcode {
         })
     }
 
+    #[inline]
     #[must_use]
     pub const fn fp_load(bits: u32) -> Option<Self> {
         Some(match bits {
@@ -744,6 +742,7 @@ impl Opcode {
         })
     }
 
+    #[inline]
     #[must_use]
     pub const fn fp_store(bits: u32) -> Option<Self> {
         Some(match bits {
@@ -781,7 +780,7 @@ impl StackFrameInfo {
         // Allocate stack slots (growing upward)
         for (slot_idx, slot_data) in func.stack_slots.iter().enumerate() {
             let slot = StackSlot::from_u32(slot_idx as _);
-            let align = slot_data.ty.align_bytes() as u32;
+            let align = slot_data.ty.align_bytes();
 
             // Align current offset upward
             current_offset = util::align_up(current_offset, align);
@@ -798,7 +797,7 @@ impl StackFrameInfo {
         }
 
         // Total frame size (still aligned to 16 bytes for ABI)
-        frame_info.total_size = util::align_up(current_offset as u32, 16);
+        frame_info.total_size = util::align_up(current_offset, 16);
 
         frame_info
     }
@@ -902,18 +901,17 @@ pub fn disassemble_instruction(
     let offset_str = format!("{offset:05X} ");
 
     #[cfg(debug_assertions)]
-    if print_metadata {
-        if let Some(crate::lower::LoInstMeta { pc, inst, size }) =
+    if print_metadata
+        && let Some(crate::lower::LoInstMeta { pc, inst, size }) =
             lowered.context.pc_to_inst_meta.get(&offset)
         {
             // look up the block this instruction belongs to
-            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst) {
-                if Some(block) != *current_block {
+            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst)
+                && Some(block) != *current_block {
                     *current_block = Some(block);
                     println!();
                     println!("{offset_str} ; block({})", block.index());
                 }
-            }
 
             println!();
             println!("{offset_str};");
@@ -929,7 +927,6 @@ pub fn disassemble_instruction(
             println!("  pc={pc:?} inst_id={inst:?}, size={size}");
             println!("{offset_str};");
         }
-    }
 
     print!("{offset_str}");
 

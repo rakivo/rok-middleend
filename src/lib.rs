@@ -1,16 +1,15 @@
-//
-//       // in vm
-//       // id = parse [4 byte callback ID],
-//       // callback = vm.callback(id)
-//       // callback(vm)
-//   ```
-
 #![warn(
     clippy::all,
     clippy::pedantic,
     dead_code
 )]
 #![allow(
+    clippy::wildcard_imports,
+    clippy::missing_transmute_annotations,
+    clippy::items_after_statements,
+    clippy::cast_lossless,
+    clippy::cast_ptr_alignment,
+    clippy::inline_always,
     clippy::multiple_crate_versions,
     clippy::cast_possible_truncation,
     clippy::similar_names,

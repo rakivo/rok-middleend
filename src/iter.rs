@@ -1,3 +1,14 @@
+// Portions of this file are derived from the Cranelift project:
+// https://github.com/bytecodealliance/wasmtime/tree/main/cranelift
+//
+// Original license:
+// Licensed under either of
+//   * Apache License, Version 2.0 with LLVM exception
+//   * MIT license
+// at your option.
+//
+// See the top-level LICENSE-APACHE and LICENSE-MIT files for details.
+
 //! A double-ended iterator over entity references and entities.
 
 use crate::entity::EntityRef;
@@ -18,6 +29,7 @@ where
 impl<'a, K: EntityRef, V> Iter<'a, K, V> {
     /// Create an `Iter` iterator that visits the `PrimaryMap` keys and values
     /// of `iter`.
+    #[must_use] 
     pub fn new(iter: slice::Iter<'a, V>) -> Self {
         Self {
             enumerate: iter.enumerate(),
@@ -38,13 +50,13 @@ impl<'a, K: EntityRef, V> Iterator for Iter<'a, K, V> {
     }
 }
 
-impl<'a, K: EntityRef, V> DoubleEndedIterator for Iter<'a, K, V> {
+impl<K: EntityRef, V> DoubleEndedIterator for Iter<'_, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.enumerate.next_back().map(|(i, v)| (K::new(i), v))
     }
 }
 
-impl<'a, K: EntityRef, V> ExactSizeIterator for Iter<'a, K, V> {}
+impl<K: EntityRef, V> ExactSizeIterator for Iter<'_, K, V> {}
 
 /// Iterate over all keys in order.
 pub struct IterMut<'a, K: EntityRef, V>
@@ -58,6 +70,7 @@ where
 impl<'a, K: EntityRef, V> IterMut<'a, K, V> {
     /// Create an `IterMut` iterator that visits the `PrimaryMap` keys and values
     /// of `iter`.
+    #[must_use] 
     pub fn new(iter: slice::IterMut<'a, V>) -> Self {
         Self {
             enumerate: iter.enumerate(),
@@ -78,13 +91,13 @@ impl<'a, K: EntityRef, V> Iterator for IterMut<'a, K, V> {
     }
 }
 
-impl<'a, K: EntityRef, V> DoubleEndedIterator for IterMut<'a, K, V> {
+impl<K: EntityRef, V> DoubleEndedIterator for IterMut<'_, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.enumerate.next_back().map(|(i, v)| (K::new(i), v))
     }
 }
 
-impl<'a, K: EntityRef, V> ExactSizeIterator for IterMut<'a, K, V> {}
+impl<K: EntityRef, V> ExactSizeIterator for IterMut<'_, K, V> {}
 
 /// Iterate over all keys in order.
 pub struct IntoIter<K: EntityRef, V> {
@@ -95,6 +108,7 @@ pub struct IntoIter<K: EntityRef, V> {
 impl<K: EntityRef, V> IntoIter<K, V> {
     /// Create an `IntoIter` iterator that visits the `PrimaryMap` keys and values
     /// of `iter`.
+    #[must_use] 
     pub fn new(iter: vec::IntoIter<V>) -> Self {
         Self {
             enumerate: iter.enumerate(),

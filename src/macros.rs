@@ -14,14 +14,11 @@ macro_rules! define_opcodes {
             )?
         ),*
     ) => {
-        /// Opcodes for the VM.
         #[repr(u8)]
         #[non_exhaustive]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Opcode {
-            $(
-                $opcode,
-            )*
+            $( $opcode, )*
         }
 
         impl<'a> $crate::lower::LoweringContext<'a> {
@@ -30,9 +27,9 @@ macro_rules! define_opcodes {
                 inst_id: Inst,
                 chunk: &mut BytecodeChunk
             ) {
-                use crate::entity::EntityRef;
+                use $crate::entity::EntityRef;
 
-                let inst = unsafe { crate::util::reborrow(&$context.func.dfg.insts[inst_id.index()]) };
+                let inst = unsafe { $crate::util::reborrow(&$context.func.dfg.insts[inst_id.index()]) };
                 let results = $context.func.dfg.inst_results.get(&inst_id);
 
                 #[allow(unused, dead_code)]
@@ -51,22 +48,14 @@ macro_rules! define_opcodes {
                         )?
                     )*
 
-                    IData::IConst { .. }     => unreachable!("invalid bitwidth"),
-                    IData::FConst { .. }     => unreachable!("invalid bitwidth"),
-                    IData::LoadNoOffset { .. }  => unreachable!("invalid bitwidth"),
-                    IData::StoreNoOffset { .. }  => unreachable!("invalid bitwidth"),
-                    IData::StackLoad { .. }  => unreachable!("invalid bitwidth"),
+                    IData::IConst { .. }        |
+                    IData::FConst { .. }        |
+                    IData::LoadNoOffset { .. }  |
+                    IData::StoreNoOffset { .. } |
+                    IData::StackLoad { .. }     |
                     IData::StackStore { .. } => unreachable!("invalid bitwidth"),
                 }
             }
-        }
-
-        #[must_use]
-        pub fn generated_disassemble_instruction(
-            _lowered_func: &$crate::lower::LoweredSsaFunc,
-            _offset: usize
-        ) -> usize {
-            unimplemented!()
         }
     };
 }

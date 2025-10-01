@@ -1,27 +1,26 @@
-use crate::ssa::ExtFuncId;
-use crate::ssa::IntrinsicId;
-use crate::entity::EntityRef;
-use crate::ssa::Datas;
-use crate::ssa::Intrinsics;
-use crate::ssa::Signature;
-use crate::ssa::Type;
+#![cfg_attr(not(debug_assertions), allow(unused_imports))]
+
 use crate::util;
-use crate::bytecode::Opcode;
-use crate::bytecode::BytecodeChunk;
 use crate::primary::PrimaryMap;
-use crate::ssa::DataId;
-use crate::ssa::FuncId;
+use crate::entity::EntityRef;
+use crate::bytecode::{Opcode, BytecodeChunk};
+use crate::ssa::{
+    Type,
+    Datas,
+    DataId,
+    FuncId,
+    Signature,
+    ExtFuncId,
+    Intrinsics,
+    IntrinsicId,
+};
 
 use std::sync::Arc;
-use std::{fmt, ptr};
-use std::collections::HashMap;
+use std::{fmt, ptr, mem};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use smallvec::SmallVec;
-
-// ============================================================================
-// VM DATA STRUCTURES (OPTIMIZED)
-// ============================================================================
+use rustc_hash::FxHashMap;
 
 pub type VMCallback = Arc<dyn Fn(
     &mut VirtualMachine,
@@ -179,8 +178,8 @@ pub struct ExtFunc {
     pub addr: *const ()
 }
 
-pub type VmFuncMap = HashMap<FuncId, Arc<BytecodeChunk>>;
-pub type VmExtFuncMap = HashMap<ExtFuncId, ExtFunc>;
+pub type VmFuncMap = FxHashMap<FuncId, Arc<BytecodeChunk>>;
+pub type VmExtFuncMap = FxHashMap<ExtFuncId, ExtFunc>;
 
 pub struct VirtualMachine {
     funcs: VmFuncMap,
@@ -195,11 +194,16 @@ pub struct VirtualMachine {
     intrinsics: Intrinsics,
 
     data_memory: Vec<u8>,
-    data_offsets: HashMap<DataId, u32>,
+    data_offsets: FxHashMap<DataId, u32>,
 
-    registers: [u64; 256], // r0-r7: return values, r8+: general purpose/args
+    registers: [u64; 64], // r0-r7: return values, r8+: general purpose/args
 
     halted: bool,
+}
+
+impl Default for VirtualMachine {
+    #[inline]
+    fn default() -> Self { Self::new() }
 }
 
 macro_rules! def_op_binary {
@@ -238,6 +242,7 @@ macro_rules! def_op_icmp {
 impl VirtualMachine {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
+    #[inline]
     #[must_use]
     pub fn new() -> Self {
         let mut stack_memory = Vec::with_capacity(Self::STACK_SIZE);
@@ -249,33 +254,36 @@ impl VirtualMachine {
         VirtualMachine {
             intrinsics: PrimaryMap::new(),
             data_memory: Vec::new(),
-            data_offsets: HashMap::new(),
-            funcs: HashMap::new(),
-            ext_funcs: HashMap::new(),
+            data_offsets: FxHashMap::default(),
+            funcs: FxHashMap::default(),
+            ext_funcs: FxHashMap::default(),
             call_stack: Vec::with_capacity(32),
             pc: 0,
             stack_memory,
             stack_top: 0,
-            registers: [0; 256],
+            registers: [0; _],
             halted: false,
         }
     }
 
+    #[inline]
     pub fn reset(&mut self) {
         self.call_stack.clear();
         self.pc = 0;
-        // don't care about the memory
+        // don't care about the stack memory
         // self.stack_memory.clear();
         self.stack_top = 0;
-        self.registers = [0; 256];
+        self.registers = [0; _];
         self.halted = false;
     }
 
+    #[inline(always)]
     pub fn load_intrinsics(&mut self, intrinsics: Intrinsics) {
         self.intrinsics = intrinsics;
     }
 
-    pub fn load_ext_funcs(&mut self, ext_funcs: HashMap<ExtFuncId, ExtFunc>) {
+    #[inline(always)]
+    pub fn load_ext_funcs(&mut self, ext_funcs: FxHashMap<ExtFuncId, ExtFunc>) {
         self.ext_funcs = ext_funcs;
     }
 
@@ -295,17 +303,17 @@ impl VirtualMachine {
         self.data_memory.resize(total_aligned_size as _, 0);
 
         let mut current_offset = 0;
-        for (data_id, data_desc) in datas.iter() {
+        for (data_id, data_desc) in datas {
             if !data_desc.is_external() {
                 current_offset = util::align_up(current_offset, 8);
                 self.data_offsets.insert(data_id, current_offset);
 
-                if data_desc.contents.len() > 0 {
+                if data_desc.contents.is_empty() {
+                    // leave placeholder zeroed out
+                } else {
                     let contents = data_desc.contents.read();
                     let curr = current_offset as usize;
                     self.data_memory[curr..curr + contents.len()].copy_from_slice(&contents);
-                } else {
-                    // leave placeholder zeroed out
                 }
 
                 current_offset += data_desc.size;
@@ -313,12 +321,15 @@ impl VirtualMachine {
         }
     }
 
+    #[inline]
     pub fn patch_data(&mut self, data_id: DataId, contents: &[u8]) {
         let offset = self.data_offsets[&data_id] as usize;
-        self.data_memory[offset..offset + contents.len()].copy_from_slice(contents);
+        self.data_memory[
+            offset..offset + contents.len()
+        ].copy_from_slice(contents);
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn add_function(&mut self, func_id: FuncId, chunk: Arc<BytecodeChunk>) {
         self.funcs.insert(func_id, chunk);
     }
@@ -330,11 +341,12 @@ impl VirtualMachine {
         signature: Signature,
         addr: *const (),
     ) {
-        self.ext_funcs.insert(func_id, ExtFunc { addr, signature });
+        self.ext_funcs.insert(func_id, ExtFunc { signature, addr });
     }
 
     #[inline]
     #[track_caller]
+    #[must_use] 
     pub fn get_args(&self, count: usize) -> SmallVec<[u64; 8]> {
         let mut ret = SmallVec::with_capacity(count);
         for reg in 8..count+8 {
@@ -386,7 +398,7 @@ impl VirtualMachine {
         Ok(result)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn execute(&mut self) -> Result<(), VMError> {
         Self::try_run(|| self.execute_())
     }
@@ -401,7 +413,9 @@ impl VirtualMachine {
             decoder.set_pos(self.pc, chunk.code.as_ptr());
 
             let opcode_byte = decoder.read_u8();
-            let opcode = unsafe { std::mem::transmute(opcode_byte) };
+            let opcode: Opcode = unsafe {
+                mem::transmute(opcode_byte)
+            };
 
             match opcode {
                 Opcode::IConst8 => {
@@ -602,6 +616,12 @@ impl VirtualMachine {
                 }
 
                 Opcode::CallExt => {
+                    use libffi::middle::Arg;
+                    use libffi::middle::Cif;
+                    use libffi::middle::Type as FFIType;
+
+                    use std::os::raw::c_void;
+
                     let ext_func_id = ExtFuncId::from_u32(decoder.read_u32());
 
                     #[cfg(debug_assertions)]
@@ -609,11 +629,7 @@ impl VirtualMachine {
                         return Err(VMError::InvalidFuncId(ext_func_id.as_u32()));
                     }
 
-                    use libffi::middle::Arg;
-                    use libffi::middle::Cif;
-                    use libffi::middle::Type as FFIType;
-                    use std::os::raw::c_void;
-
+                    #[inline]
                     fn ty_to_ffi(ty: Type) -> FFIType {
                         match ty {
                             Type::Ptr => FFIType::pointer(),
@@ -643,14 +659,14 @@ impl VirtualMachine {
                         match ty {
                             Type::I8 => {
                                 // C ABI: i8 promoted to int
-                                let val = self.registers[8 + i] as i8 as i32; // sign-extend to int
+                                let val = i32::from(self.registers[8 + i] as i8); // sign-extend to int
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_int());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
                             }
                             Type::I16 => {
                                 // C ABI: i16 promoted to int
-                                let val = self.registers[8 + i] as i16 as i32; // sign-extend to int
+                                let val = i32::from(self.registers[8 + i] as i16); // sign-extend to int
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_int());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
@@ -670,26 +686,26 @@ impl VirtualMachine {
                             }
                             Type::U8 => {
                                 // C ABI: u8 promoted to unsigned int
-                                let val = self.registers[8 + i] as u64 as u8 as u32; // proper zero extension
+                                let val = u32::from(self.registers[8 + i] as u8); // proper zero extension
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_uint());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
                             }
                             Type::U16 => {
                                 // C ABI: u16 promoted to unsigned int
-                                let val = self.registers[8 + i] as u64 as u16 as u32; // proper zero extension
+                                let val = u32::from(self.registers[8 + i] as u16); // proper zero extension
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_uint());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
                             }
                             Type::U32 => {
-                                let val = self.registers[8 + i] as u64 as u32;
+                                let val = self.registers[8 + i] as u32;
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_uint());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
                             }
                             Type::U64 => {
-                                let val = self.registers[8 + i] as u64;
+                                let val = self.registers[8 + i];
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_ulonglong());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u64>().unwrap()));
@@ -706,7 +722,7 @@ impl VirtualMachine {
 
                     let rety = rety.copied().map_or(FFIType::void(), ty_to_ffi);
                     let cif = Cif::new(ffi_types, rety);
-                    let result: u64 = unsafe { cif.call(std::mem::transmute(addr), &mut ffi_args) };
+                    let result: u64 = unsafe { cif.call(mem::transmute(addr), &ffi_args) };
                     self.reg_write(0, result);
                 }
 
@@ -740,7 +756,7 @@ impl VirtualMachine {
                     let data_id = DataId::from_u32(decoder.read_u32());
 
                     if let Some(&offset) = self.data_offsets.get(&data_id) {
-                        let data_ptr = self.data_memory.as_ptr() as u64 + offset as u64;
+                        let data_ptr = self.data_memory.as_ptr() as u64 + u64::from(offset);
                         self.registers[dst] = data_ptr;
                     } else {
                         return Err(VMError::InvalidDataId(data_id.as_u32()));
@@ -758,7 +774,7 @@ impl VirtualMachine {
                     let addr_reg = decoder.read_u32();
                     let addr = self.reg_read(addr_reg as _) as *const u32;
                     let val = unsafe { ptr::read(addr) };
-                    self.reg_write(dst_reg as _, val as u64);
+                    self.reg_write(dst_reg as _, u64::from(val));
                 }
 
                 Opcode::Load64 => {
@@ -828,7 +844,7 @@ impl VirtualMachine {
                     let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
-                    self.reg_write(reg as _, v as u64);
+                    self.reg_write(reg as _, u64::from(v));
                 }
 
                 Opcode::FpLoad64 => {
@@ -860,7 +876,7 @@ impl VirtualMachine {
                     let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
-                    self.reg_write(reg as _, v as u64);
+                    self.reg_write(reg as _, u64::from(v));
                 }
 
                 Opcode::SpLoad64 => {
@@ -920,90 +936,6 @@ impl VirtualMachine {
     }
 }
 
-// ============================================================================
-// BYTECODE BUILDER HELPER (OPTIMIZED)
-// ============================================================================
-
-pub struct BytecodeBuilder {
-    bytes: Vec<u8>,
-}
-
-impl Default for BytecodeBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BytecodeBuilder {
-    #[must_use]
-    pub fn new() -> Self {
-        BytecodeBuilder { bytes: Vec::new() }
-    }
-
-    #[inline]
-    pub fn opcode(&mut self, op: Opcode) -> &mut Self {
-        self.bytes.push(op as u8);
-        self
-    }
-
-    #[inline]
-    pub fn u8(&mut self, val: u8) -> &mut Self {
-        self.bytes.push(val);
-        self
-    }
-
-    #[inline]
-    pub fn u16(&mut self, val: u16) -> &mut Self {
-        self.bytes.extend_from_slice(&val.to_le_bytes());
-        self
-    }
-
-    #[inline]
-    pub fn u32(&mut self, val: u32) -> &mut Self {
-        self.bytes.extend_from_slice(&val.to_le_bytes());
-        self
-    }
-
-    #[inline]
-    pub fn i32(&mut self, val: i32) -> &mut Self {
-        self.bytes.extend_from_slice(&val.to_le_bytes());
-        self
-    }
-
-    #[inline]
-    pub fn i64(&mut self, val: i64) -> &mut Self {
-        self.bytes.extend_from_slice(&val.to_le_bytes());
-        self
-    }
-
-    #[inline]
-    pub fn f32(&mut self, val: f32) -> &mut Self {
-        self.bytes.extend_from_slice(&val.to_bits().to_le_bytes());
-        self
-    }
-
-    #[inline]
-    pub fn f64(&mut self, val: f64) -> &mut Self {
-        self.bytes.extend_from_slice(&val.to_bits().to_le_bytes());
-        self
-    }
-
-    #[must_use]
-    pub fn build(self) -> Vec<u8> {
-        self.bytes
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.bytes.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-}
-
 impl VirtualMachine {
     fn try_run<T>(f: impl FnOnce() -> Result<T, VMError>) -> Result<T, VMError> {
         let result = catch_unwind(AssertUnwindSafe(f));
@@ -1013,7 +945,7 @@ impl VirtualMachine {
             Err(payload) => {
                 // Convert panic payload into string
                 let panic_msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                    s.to_string()
+                    (*s).to_string()
                 } else if let Some(s) = payload.downcast_ref::<String>() {
                     s.to_owned()
                 } else {
@@ -1029,12 +961,10 @@ impl VirtualMachine {
     fn reg_read(&self, index: usize) -> u64 {
         #[cfg(debug_assertions)]
         {
-            if index >= self.registers.len() {
-                panic!(
+            assert!((index < self.registers.len()), 
                     "reg_read out-of-bounds: idx={} len={} (pc={} frame={:?})",
                     index, self.registers.len(), self.pc, self.current_frame()
                 );
-            }
             self.registers[index]
         }
         #[cfg(not(debug_assertions))]
@@ -1047,12 +977,10 @@ impl VirtualMachine {
     fn reg_write(&mut self, index: usize, v: u64) {
         #[cfg(debug_assertions)]
         {
-            if index >= self.registers.len() {
-                panic!(
+            assert!((index < self.registers.len()), 
                     "reg_write out-of-bounds: idx={} len={} (pc={} frame={:?})",
                     index, self.registers.len(), self.pc, self.current_frame()
                 );
-            }
             self.registers[index] = v;
         }
         #[cfg(not(debug_assertions))]
@@ -1065,9 +993,7 @@ impl VirtualMachine {
     fn stack_read_u64(&self, addr: usize) -> u64 {
         #[cfg(debug_assertions)]
         {
-            if addr + 8 > self.stack_memory.len() {
-                panic!("stack_read_u64 OOB: addr={} len={}", addr, self.stack_memory.len());
-            }
+            assert!((addr + 8 <= self.stack_memory.len()), "stack_read_u64 OOB: addr={} len={}", addr, self.stack_memory.len());
             let mut b = [0u8; 8];
             b.copy_from_slice(&self.stack_memory[addr..addr + 8]);
             u64::from_le_bytes(b)
@@ -1082,9 +1008,7 @@ impl VirtualMachine {
     fn stack_write_u64(&mut self, addr: usize, v: u64) {
         #[cfg(debug_assertions)]
         {
-            if addr + 8 > self.stack_memory.len() {
-                panic!("stack_write_u64 OOB: addr={} len={}", addr, self.stack_memory.len());
-            }
+            assert!((addr + 8 <= self.stack_memory.len()), "stack_write_u64 OOB: addr={} len={}", addr, self.stack_memory.len());
             let b = v.to_le_bytes();
             self.stack_memory[addr..addr + 8].copy_from_slice(&b);
         }
@@ -1098,9 +1022,7 @@ impl VirtualMachine {
     fn stack_read_u32(&self, addr: usize) -> u32 {
         #[cfg(debug_assertions)]
         {
-            if addr + 4 > self.stack_memory.len() {
-                panic!("stack_read_u32 OOB: addr={} len={}", addr, self.stack_memory.len());
-            }
+            assert!((addr + 4 <= self.stack_memory.len()), "stack_read_u32 OOB: addr={} len={}", addr, self.stack_memory.len());
             let mut b = [0u8; 4];
             b.copy_from_slice(&self.stack_memory[addr..addr + 4]);
             u32::from_le_bytes(b)
@@ -1115,9 +1037,7 @@ impl VirtualMachine {
     fn stack_write_u32(&mut self, addr: usize, v: u32) {
         #[cfg(debug_assertions)]
         {
-            if addr + 4 > self.stack_memory.len() {
-                panic!("stack_write_u32 OOB: addr={} len={}", addr, self.stack_memory.len());
-            }
+            assert!((addr + 4 <= self.stack_memory.len()), "stack_write_u32 OOB: addr={} len={}", addr, self.stack_memory.len());
             let b = v.to_le_bytes();
             self.stack_memory[addr..addr + 4].copy_from_slice(&b);
         }

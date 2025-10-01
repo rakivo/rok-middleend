@@ -1,3 +1,14 @@
+// Portions of this file are derived from the Cranelift project:
+// https://github.com/bytecodealliance/wasmtime/tree/main/cranelift
+//
+// Original license:
+// Licensed under either of
+//   * Apache License, Version 2.0 with LLVM exception
+//   * MIT license
+// at your option.
+//
+// See the top-level LICENSE-APACHE and LICENSE-MIT files for details.
+
 /// A type wrapping a small integer index should implement `EntityRef` so it can be used as the key
 /// of an `SecondaryMap` or `SparseMap`.
 pub trait EntityRef: Copy + Eq {

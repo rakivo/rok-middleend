@@ -2,9 +2,11 @@
 //   I think the lowerer overall works fine, its the
 //   register allocator thats broken
 
+#![cfg_attr(not(debug_assertions), allow(unused_imports))]
+
+use crate::util;
 use crate::entity::EntityRef;
-use crate::regalloc2::RegAllocResult;
-use crate::util::{self};
+use crate::regalloc2::RegAllocOutput;
 use crate::bytecode::{
     StackFrameInfo,
     StackSlotAllocation,
@@ -20,7 +22,7 @@ use crate::ssa::{
     Value
 };
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Represents a function that has been lowered to bytecode.
 pub struct LoweredSsaFunc<'a> {
@@ -41,11 +43,11 @@ pub struct LoInstMeta {
 //
 pub struct LoweringContext<'a> {
     pub func: &'a SsaFunc,
-    pub ssa_to_reg: HashMap<Value, u32>,
+    pub ssa_to_reg: FxHashMap<Value, u32>,
 
     next_stack_slot: StackSlot,
 
-    block_offsets: HashMap<Block, u32>,
+    block_offsets: FxHashMap<Block, u32>,
 
     /// For patching jumps.
     jump_placeholders: Vec<(usize, Block)>,
@@ -53,15 +55,15 @@ pub struct LoweringContext<'a> {
     /// Stack frame information
     pub frame_info: StackFrameInfo,
 
-    regalloc: RegAllocResult,
+    regalloc: RegAllocOutput,
 
     order: Vec<Block>,
 
     /// Map from Value -> spill `StackSlot` (allocated in `frame_info`)
-    pub spill_slots: HashMap<Value, StackSlot>,
+    pub spill_slots: FxHashMap<Value, StackSlot>,
 
     #[cfg(debug_assertions)]
-    pub pc_to_inst_meta: HashMap<usize, LoInstMeta>,  // index == inst index in lowered list
+    pub pc_to_inst_meta: FxHashMap<usize, LoInstMeta>,  // index == inst index in lowered list
 }
 
 /// The context for lowering a single function.
@@ -69,6 +71,7 @@ pub struct LoweringContext<'a> {
 impl<'a> LoweringContext<'a> {
     pub const RETURN_VALUES_REGISTERS_COUNT: u32 = 8;
 
+    #[must_use] 
     pub fn new(func: &'a SsaFunc) -> Self {
         let (
             order,
@@ -80,13 +83,13 @@ impl<'a> LoweringContext<'a> {
             regalloc: result,
             next_stack_slot: StackSlot::from_u32(func.stack_slots.len() as _),
             #[cfg(debug_assertions)]
-            pc_to_inst_meta: HashMap::new(),
+            pc_to_inst_meta: FxHashMap::default(),
             frame_info: StackFrameInfo::calculate_layout(func),
             func,
-            ssa_to_reg: HashMap::default(),
-            block_offsets: HashMap::default(),
+            ssa_to_reg: FxHashMap::default(),
+            block_offsets: FxHashMap::default(),
             jump_placeholders: Vec::default(),
-            spill_slots: HashMap::default(),
+            spill_slots: FxHashMap::default(),
         }
     }
 
@@ -140,7 +143,7 @@ impl<'a> LoweringContext<'a> {
     /// Returns the `StackSlot` handle.
     fn allocate_spill_slot(&mut self, ty: Type) -> StackSlot {
         let size = ty.bytes() as i32;
-        let align = ty.align_bytes() as u32;
+        let align = ty.align_bytes();
 
         // compute new offset above existing frame
         let mut offset = self.frame_info.total_size;
@@ -156,7 +159,7 @@ impl<'a> LoweringContext<'a> {
 
         // update total_size
         self.frame_info.total_size = util::align_up(
-            offset as u32 + size as u32,
+            offset + size as u32,
             16
         );
 
@@ -196,6 +199,7 @@ impl<'a> LoweringContext<'a> {
             self.block_offsets.insert(block_id, chunk.code.len() as u32);
 
             let n = self.func.cfg.blocks[block_id.index()].insts.len();
+
             #[cfg(debug_assertions)]
             self.pc_to_inst_meta.reserve(n);
             for i in 0..n {

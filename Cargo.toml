@@ -2,25 +2,25 @@
 name = "rok-bytecode"
 version = "0.1.0"
 edition = "2024"
+authors = ["Mark Tyrkba <marktyrkba456@gmail.com>"]
+readme = "README.md"
+license = "MIT OR APACHE"
+repository = "https://github.com/rakivo/rok-bytecode"
+keywords = ["bytecode", "compiler", "interpreter", "vm", "assembly", "codegen"]
+description = "An experimental bytecode format for (`rok`) compiler"
+categories = ["development-tools", "programming-languages", "virtual-machines"]
+exclude = ["assets/*", "README.md"]
 
 [dependencies]
-smallvec = "1.13.2"
-cfg-if = "1.0.3"
-indexmap = "2.11.1"
-libffi = "4.1.2"
-dynasm = "4.0.0"
-dynasmrt = "4.0.0"
-once_cell = "1.21.3"
-parking_lot = "0.12.4"
-regalloc2 = "0.13.2"
-
-[[example]]
-name = "lower_fib"
-path = "examples/lower_fib.rs"
-
-[[example]]
-name = "call_intrin"
-path = "examples/call_intrin.rs"
+smallvec    = { version = "1.13.2", features = [] }
+cfg-if      = { version = "1.0.3",  features = [] }
+indexmap    = { version = "2.11.1", features = [] }
+libffi      = { version = "4.1.2",  features = [] }
+once_cell   = { version = "1.21.3", features = [] }
+parking_lot = { version = "0.12.4", features = [] }
+regalloc2   = { version = "0.13.2", features = [] }
+rustc-hash  = { version = "2.1.1",  features = [] }
+itertools   = { version = "0.14.0", features = [] }
 
 [profile.release]
 opt-level = 3
