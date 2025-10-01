@@ -1,6 +1,3 @@
-// TODO(#14): Spill slots allocations/management is broken
-//   I think the lowerer overall works fine, its the
-//   register allocator thats broken
 
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
