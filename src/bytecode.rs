@@ -1,3 +1,5 @@
+// TODO(#15): Encode registers as u8's and not u32's
+
 use crate::entity::EntityRef;
 use crate::lower::LoweredSsaFunc;
 use crate::util::{self, IntoBytes};
