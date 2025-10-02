@@ -5,13 +5,21 @@ use crate::ssa::{Value, SsaFunc, InstructionData};
 use regalloc2::*;
 use rustc_hash::{FxHashSet, FxHashMap};
 
+pub const SCRATCH_REG: u8 = 63;
+
 #[inline(always)]
 const fn int_preg(index: u8) -> PReg {
     PReg::new(index as usize, RegClass::Int)
 }
 
+#[inline(always)]
+const fn int_vreg(index: usize) -> VReg {
+    VReg::new(index as usize, RegClass::Int)
+}
+
 /// Machine environment describing our register set
 pub struct MachineEnv {
+    pub scratch_by_class: [Option<PReg>; 1],
     pub preferred_regs_by_class: [Vec<PReg>; 1],
     pub non_preferred_regs_by_class: [Vec<PReg>; 1],
 }
@@ -26,12 +34,11 @@ impl MachineEnv {
         // r0-r7 are return value registers (preferred for allocation)
         let preferred = (0..8).map(int_preg).collect();
 
-        // r8-r63 are general purpose registers (non-preferred)
-        let non_preferred = (8..64).map(int_preg).collect();
-
-        // r64 is a reserved temp register for loads
+        // r8-r62 are general purpose registers (non-preferred)
+        let non_preferred = (8..63).map(int_preg).collect();
 
         Self {
+            scratch_by_class: [Some(int_preg(SCRATCH_REG))],
             preferred_regs_by_class: [preferred],
             non_preferred_regs_by_class: [non_preferred],
         }
@@ -253,12 +260,8 @@ impl Function for RegAllocAdapter<'_> {
         // 2. VReg::new just wraps the index, which is what Value contains
         // 3. We're only reading, not writing
         // This avoids allocation for every call
-        unsafe {
-            std::slice::from_raw_parts(
-                block_data.params.as_ptr().cast::<VReg>(),
-                block_data.params.len()
-            )
-        }
+        let v = block_data.params.iter().map(|a| int_vreg(a.index())).collect::<Vec<_>>();
+        Box::leak(v.into_boxed_slice())
     }
 
     #[inline(always)]
@@ -285,21 +288,12 @@ impl Function for RegAllocAdapter<'_> {
 
         match inst_data {
             InstructionData::Jump { args, .. } => {
-                // Same trick as block_params
-                unsafe {
-                    std::slice::from_raw_parts(
-                        args.as_ptr().cast::<VReg>(),
-                        args.len()
-                    )
-                }
+                let v = args.iter().map(|a| int_vreg(a.index())).collect::<Vec<_>>();
+                Box::leak(v.into_boxed_slice())
             }
             InstructionData::Branch { args, .. } => {
-                unsafe {
-                    std::slice::from_raw_parts(
-                        args.as_ptr().cast::<VReg>(),
-                        args.len()
-                    )
-                }
+                let v = args.iter().map(|a| int_vreg(a.index())).collect::<Vec<_>>();
+                Box::leak(v.into_boxed_slice())
             }
             _ => &[],
         }
@@ -364,7 +358,11 @@ pub fn allocate_registers(func: &SsaFunc) -> RegAllocResult {
             Vec::new(),
             Vec::new(),
         ],
-        scratch_by_class: [None; _],
+        scratch_by_class: [
+            machine_env.scratch_by_class[0],
+            None,
+            None
+        ],
         fixed_stack_slots: Vec::new()
     };
 

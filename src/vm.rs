@@ -346,7 +346,7 @@ impl VirtualMachine {
 
     #[inline]
     #[track_caller]
-    #[must_use] 
+    #[must_use]
     pub fn get_args(&self, count: usize) -> SmallVec<[u64; 8]> {
         let mut ret = SmallVec::with_capacity(count);
         for reg in 8..count+8 {
@@ -617,12 +617,19 @@ impl VirtualMachine {
 
                 Opcode::CallExt => {
                     use libffi::middle::Arg;
-                    use libffi::middle::Cif;
                     use libffi::middle::Type as FFIType;
+                    use libffi::low::prep_cif_var;
+                    use libffi::raw::{
+                        ffi_call,
+                        ffi_cif,
+                        ffi_abi_FFI_DEFAULT_ABI,
+                    };
 
                     use std::os::raw::c_void;
 
-                    let ext_func_id = ExtFuncId::from_u32(decoder.read_u32());
+                    let ext_func_id = ExtFuncId::from_u32(
+                        decoder.read_u32()
+                    );
 
                     #[cfg(debug_assertions)]
                     if ext_func_id.index() >= self.ext_funcs.len() {
@@ -633,16 +640,16 @@ impl VirtualMachine {
                     fn ty_to_ffi(ty: Type) -> FFIType {
                         match ty {
                             Type::Ptr => FFIType::pointer(),
-                            Type::I32 => FFIType::c_int(),
-                            Type::I64 => FFIType::c_longlong(),
-                            // C ABI promotion rules: smaller types promoted to int/unsigned int
-                            Type::I8 => FFIType::c_int(),  // promoted to int
-                            Type::I16 => FFIType::c_int(), // promoted to int
-                            Type::U8 => FFIType::c_uint(), // promoted to unsigned int
-                            Type::U16 => FFIType::c_uint(), // promoted to unsigned int
-                            Type::U32 => FFIType::c_uint(),
-                            Type::U64 => FFIType::c_ulonglong(),
-                            _ => todo!()
+                            Type::I8  => FFIType::i8 (),
+                            Type::U8  => FFIType::u8 (),
+                            Type::I16 => FFIType::i16(),
+                            Type::U16 => FFIType::u16(),
+                            Type::I32 => FFIType::i32(),
+                            Type::U32 => FFIType::u32(),
+                            Type::I64 => FFIType::i64(),
+                            Type::U64 => FFIType::u64(),
+                            Type::F32 => FFIType::f32(),
+                            Type::F64 => FFIType::f64(),
                         }
                     }
 
@@ -721,8 +728,31 @@ impl VirtualMachine {
                     }
 
                     let rety = rety.copied().map_or(FFIType::void(), ty_to_ffi);
-                    let cif = Cif::new(ffi_types, rety);
-                    let result: u64 = unsafe { cif.call(mem::transmute(addr), &ffi_args) };
+
+                    let mut cif: ffi_cif = unsafe { mem::zeroed() };
+
+                    unsafe {
+                        prep_cif_var(
+                            &mut cif,
+                            ffi_abi_FFI_DEFAULT_ABI,
+                            signature.is_var_arg.map(Into::into).unwrap_or(ffi_args.len()),
+                            ffi_args.len(),
+                            &rety as *const _ as *mut _,
+                            ffi_types.as_mut_ptr() as *mut _
+                        ).expect("bad typedef");
+                    };
+
+                    let mut result = 0u64;
+
+                    unsafe {
+                        ffi_call(
+                            &mut cif,
+                            mem::transmute(addr),
+                            &mut result as *mut _ as *mut _,
+                            ffi_args.as_mut_ptr() as *mut _
+                        );
+                    }
+
                     self.reg_write(0, result);
                 }
 
@@ -961,7 +991,7 @@ impl VirtualMachine {
     fn reg_read(&self, index: usize) -> u64 {
         #[cfg(debug_assertions)]
         {
-            assert!((index < self.registers.len()), 
+            assert!((index < self.registers.len()),
                     "reg_read out-of-bounds: idx={} len={} (pc={} frame={:?})",
                     index, self.registers.len(), self.pc, self.current_frame()
                 );
@@ -977,7 +1007,7 @@ impl VirtualMachine {
     fn reg_write(&mut self, index: usize, v: u64) {
         #[cfg(debug_assertions)]
         {
-            assert!((index < self.registers.len()), 
+            assert!((index < self.registers.len()),
                     "reg_write out-of-bounds: idx={} len={} (pc={} frame={:?})",
                     index, self.registers.len(), self.pc, self.current_frame()
                 );

@@ -70,7 +70,15 @@ pub struct Signature {
     pub params: Vec<Type>,
     pub returns: Vec<Type>,
     // for codegen and debugging purposes only
-    pub is_var_arg: bool
+    /// The amount of fixed arguments in a var-args def
+    pub is_var_arg: Option<u8>
+}
+
+impl Signature {
+    #[inline]
+    pub fn is_var_arg(&self) -> bool {
+        self.is_var_arg.is_some()
+    }
 }
 
 /// Represents an intrinsic

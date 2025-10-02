@@ -3,7 +3,7 @@
 
 use crate::util;
 use crate::entity::EntityRef;
-use crate::regalloc2::RegAllocOutput;
+use crate::regalloc2::{RegAllocOutput, SCRATCH_REG};
 use crate::bytecode::{
     StackFrameInfo,
     StackSlotAllocation,
@@ -68,7 +68,7 @@ pub struct LoweringContext<'a> {
 impl<'a> LoweringContext<'a> {
     pub const RETURN_VALUES_REGISTERS_COUNT: u32 = 8;
 
-    #[must_use] 
+    #[must_use]
     pub fn new(func: &'a SsaFunc) -> Self {
         let (
             order,
@@ -237,7 +237,7 @@ impl<'a> LoweringContext<'a> {
             let allocation = &self.frame_info.slot_allocations[slot];
             let ty = self.func.dfg.values[value.index()].ty;
             let opcode = Opcode::fp_load(ty.bits()).unwrap();
-            let temp_reg = 63;
+            let temp_reg = SCRATCH_REG as u32;
             chunk.append(opcode);
             chunk.append(temp_reg);
             chunk.append(allocation.offset);
