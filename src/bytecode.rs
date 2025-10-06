@@ -390,39 +390,57 @@ define_opcodes! {
 
     Return()        = 28,
     @ IData::Return { args, .. } => |_results, chunk| {
-        // Move return values to the first N registers (r0, r1, ...).
-        for (i, &arg) in args.iter().enumerate() {
-            let arg_slot = self.load_value(chunk, arg);
-            if arg_slot != i as u32 {
+        // Move return values to r0-r7
+        for (i, &arg) in args.iter().take(8).enumerate() {
+            let arg_reg = self.load_value(chunk, arg);
+            let target_reg = i as u32; // r0, r1, r2, ... r7
+
+            // Only emit move if source != destination
+            if arg_reg != target_reg {
                 chunk.append(Opcode::Mov);
-                chunk.append(i as u32); // dst
-                chunk.append(arg_slot); // src
+                chunk.append(target_reg); // dst
+                chunk.append(arg_reg);    // src
             }
         }
 
-        // Emit frame teardown before return
+        // Teardown stack frame
         self.emit_frame_teardown(chunk);
+
+        // Emit return instruction
         chunk.append(Opcode::Return);
     },
 
     Call(func_id: u32)          = 29,
     @ IData::Call { func_id, args, .. } => |results, chunk, inst_id| {
-        // 1) Move arguments to registers starting from r8.
-        for (i, &arg) in args.iter().enumerate() {
+        // 1) Move arguments to r0-r7 (up to 8 args)
+        for (i, &arg) in args.iter().take(8).enumerate() {
             let arg_reg = self.load_value(chunk, arg);
-            chunk.append(Opcode::Mov);
-            chunk.append((i + 8) as u32); // dst
-            chunk.append(arg_reg);         // src
+            let target_reg = i as u32; // r0, r1, r2, ... r7
+
+            // Only emit move if source != destination
+            if arg_reg != target_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(target_reg); // dst
+                chunk.append(arg_reg);    // src
+            }
         }
 
-        // 2) Emit call
+        // TODO: If more than 8 args, push extras onto stack
+        // For now, assume <= 8 arguments
+        if args.len() > 8 {
+            panic!("Functions with more than 8 arguments not yet supported");
+        }
+
+        // 2) Emit call instruction
         chunk.append(Opcode::Call);
         chunk.append(func_id.index() as u32);
 
-        // 3) Move result(s) from r0 to destination register(s).
+        // 3) Move result(s) from r0-r7 to destination register(s)
+        // Results are already in r0-r7, just need to map them
         if let Some(results) = results {
             for (i, result) in results.iter().enumerate() {
-                self.store_value(chunk, *result, i as u32);
+                let return_reg = i as u32; // r0, r1, r2, ... r7
+                self.store_value(chunk, *result, return_reg);
             }
         }
     },
@@ -655,36 +673,57 @@ define_opcodes! {
 
     CallIntrin(intrinsic_id: u32) = 135,
     @ IData::CallIntrin { intrinsic_id, args } => |results, chunk, inst_id| {
-        // 1) Move arguments to registers starting from r8.
-        for (i, &arg) in args.iter().enumerate() {
+        // 1) Move arguments to r0-r7 (up to 8 args)
+        for (i, &arg) in args.iter().take(8).enumerate() {
             let arg_reg = self.load_value(chunk, arg);
-            chunk.append(Opcode::Mov);
-            chunk.append((i + 8) as u32); // dst
-            chunk.append(arg_reg);         // src
+            let target_reg = i as u32; // r0, r1, r2, ... r7
+
+            // Only emit move if source != destination
+            if arg_reg != target_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(target_reg); // dst
+                chunk.append(arg_reg);    // src
+            }
         }
 
-        // 2) Emit call
+        // TODO: If more than 8 args, push extras onto stack
+        // For now, assume <= 8 arguments
+        if args.len() > 8 {
+            panic!("Functions with more than 8 arguments not yet supported");
+        }
+
+        // 2) Emit call instruction
         chunk.append(Opcode::CallIntrin);
         chunk.append(intrinsic_id.index() as u32);
 
         // 3) Move result(s) from r0 to destination register(s).
-        if let Some(results) = results
-            && !results.is_empty() {
-                self.store_value(chunk, results[0], 0);
-            }
+        if let Some(results) = results && !results.is_empty() {
+            self.store_value(chunk, results[0], 0);
+        }
     },
 
     CallExt(func_id: u32)          = 136,
     @ IData::CallExt { func_id, args, .. } => |results, chunk, inst_id| {
-        // 1) Move arguments to registers starting from r8.
-        for (i, &arg) in args.iter().enumerate() {
+        // 1) Move arguments to r0-r7 (up to 8 args)
+        for (i, &arg) in args.iter().take(8).enumerate() {
             let arg_reg = self.load_value(chunk, arg);
-            chunk.append(Opcode::Mov);
-            chunk.append((i + 8) as u32); // dst
-            chunk.append(arg_reg);         // src
+            let target_reg = i as u32; // r0, r1, r2, ... r7
+
+            // Only emit move if source != destination
+            if arg_reg != target_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(target_reg); // dst
+                chunk.append(arg_reg);    // src
+            }
         }
 
-        // 2) Emit call
+        // TODO: If more than 8 args, push extras onto stack
+        // For now, assume <= 8 arguments
+        if args.len() > 8 {
+            panic!("Functions with more than 8 arguments not yet supported");
+        }
+
+        // 2) Emit call instruction
         chunk.append(Opcode::CallExt);
         chunk.append(func_id.index() as u32);
     },
@@ -835,7 +874,7 @@ impl BytecodeChunk {
 //
 
 pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
-    let print_metadata = false;
+    let print_metadata = true;
 
     println!("== {name} ==");
     println!("Frame size: {} bytes", lowered_func.chunk.frame_info.total_size);

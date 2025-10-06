@@ -5,7 +5,8 @@ use crate::ssa::{Value, SsaFunc, InstructionData};
 use regalloc2::*;
 use rustc_hash::{FxHashSet, FxHashMap};
 
-pub const SCRATCH_REG: u8 = 63;
+pub const REG_COUNT   : u8 = 64;
+pub const SCRATCH_REG : u8 = 63;
 
 #[inline(always)]
 const fn int_preg(index: u8) -> PReg {
@@ -18,6 +19,9 @@ const fn int_vreg(index: usize) -> VReg {
 }
 
 /// Machine environment describing our register set
+/// Convention: r0-r7 are arg/return registers (caller-saved)
+///            r8-r62 are general purpose registers
+///            r63 is scratch register
 pub struct MachineEnv {
     pub scratch_by_class: [Option<PReg>; 1],
     pub preferred_regs_by_class: [Vec<PReg>; 1],
@@ -31,11 +35,13 @@ impl Default for MachineEnv {
 
 impl MachineEnv {
     pub fn new() -> Self {
-        // r0-r7 are return value registers (preferred for allocation)
-        let preferred = (0..8).map(int_preg).collect();
+        // r8-r62 are general purpose registers (preferred for allocation)
+        // These are preferred because they're not clobbered by calls
+        let preferred = (8..63).map(int_preg).collect();
 
-        // r8-r62 are general purpose registers (non-preferred)
-        let non_preferred = (8..63).map(int_preg).collect();
+        // r0-r7 are argument/return registers (non-preferred)
+        // Available for allocation but clobbered by calls
+        let non_preferred = (0..8).map(int_preg).collect();
 
         Self {
             scratch_by_class: [Some(int_preg(SCRATCH_REG))],
@@ -52,6 +58,8 @@ pub struct RegAllocAdapter<'a> {
     block_succs: Vec<Vec<regalloc2::Block>>,
     block_preds: Vec<Vec<regalloc2::Block>>,
     inst_operands_cache: Vec<Vec<Operand>>,
+    /// Maps entry block parameters to their fixed physical registers (r0-r7)
+    pub entry_param_pregs: FxHashMap<Value, PReg>,
 }
 
 impl<'a> RegAllocAdapter<'a> {
@@ -63,10 +71,12 @@ impl<'a> RegAllocAdapter<'a> {
             block_succs: Vec::new(),
             block_preds: Vec::new(),
             inst_operands_cache: Vec::new(),
+            entry_param_pregs: FxHashMap::default(),
         };
 
         adapter.compute_block_order();
         adapter.compute_cfg_edges();
+        adapter.compute_entry_params();
         adapter.compute_operands();
         adapter
     }
@@ -135,6 +145,26 @@ impl<'a> RegAllocAdapter<'a> {
         }
     }
 
+    /// Map entry block parameters to their physical registers (r0-r7)
+    fn compute_entry_params(&mut self) {
+        if let Some(entry) = self.func.layout.block_entry {
+            let block_data = &self.func.cfg.blocks[entry.index()];
+
+            // First 8 parameters are in r0-r7 by calling convention
+            for (i, &param) in block_data.params.iter().enumerate().take(8) {
+                self.entry_param_pregs.insert(param, int_preg(i as u8));
+            }
+
+            // TODO: Parameters beyond the 8th would need to be on the stack
+            // For now, we assume <= 8 parameters
+            if block_data.params.len() > 8 {
+                // This should be handled at a higher level (SSA construction)
+                // by loading from stack slots
+                todo!()
+            }
+        }
+    }
+
     fn compute_operands(&mut self) {
         let total_insts = self.func.dfg.insts.len();
         self.inst_operands_cache = vec![Vec::new(); total_insts];
@@ -166,6 +196,9 @@ impl<'a> RegAllocAdapter<'a> {
                         }
                     }
                     InstructionData::Return { args, .. } => {
+                        // Return values should go in r0-r7
+                        // We mark them as uses here; the lowering phase will
+                        // ensure they end up in the right registers
                         for &arg in args {
                             operands.push(Operand::reg_use(Self::value_to_vreg(arg)));
                         }
@@ -199,6 +232,13 @@ impl<'a> RegAllocAdapter<'a> {
                         operands.push(Operand::reg_def(Self::value_to_vreg(result)));
                     }
                 }
+
+            eprintln!("Inst {:?} (index {}): {:?}", inst, inst.index(), inst_data);
+            if let Some(results) = self.func.dfg.inst_results.get(&inst) {
+                eprintln!("  Results: {:?}", results);
+            }
+            eprintln!("  Operands: {:?}", operands);
+            eprintln!();
 
                 self.inst_operands_cache[inst.index()] = operands;
             }
@@ -255,11 +295,8 @@ impl Function for RegAllocAdapter<'_> {
         let our_block = self.block_order[block.index()];
         let block_data = &self.func.cfg.blocks[our_block.index()];
 
-        // SAFETY: We're casting &[Value] to &[VReg]. This is safe because:
-        // 1. Value and VReg have the same memory layout (both are u32 wrappers)
-        // 2. VReg::new just wraps the index, which is what Value contains
-        // 3. We're only reading, not writing
-        // This avoids allocation for every call
+        // SAFETY: We're leaking memory here for simplicity. In production code,
+        // you'd want to cache these allocations or use a different approach.
         let v = block_data.params.iter().map(|a| int_vreg(a.index())).collect::<Vec<_>>();
         Box::leak(v.into_boxed_slice())
     }
@@ -306,7 +343,7 @@ impl Function for RegAllocAdapter<'_> {
 
     #[inline(always)]
     fn inst_clobbers(&self, insn: regalloc2::Inst) -> PRegSet {
-        // Calls clobber r0-r7 (return value registers)
+        // Calls clobber r0-r7 (argument/return registers are caller-saved)
         match self.func.dfg.insts[insn.index()] {
             InstructionData::Call { .. } |
             InstructionData::CallExt { .. } |
@@ -335,8 +372,12 @@ impl Function for RegAllocAdapter<'_> {
 /// Result of register allocation
 #[derive(Debug)]
 pub struct RegAllocOutput {
+    /// Map from SSA values to physical registers
     pub allocs: FxHashMap<Value, PReg>,
+    /// Values that were spilled to stack slots
     pub spills: Vec<(Value, SpillSlot)>,
+    /// Entry block parameters are fixed to r0-r7 (not in allocs map)
+    pub entry_param_pregs: FxHashMap<Value, PReg>,
 }
 
 type RegAllocResult = Result<(Vec<ssa::Block>, RegAllocOutput), RegAllocError>;
@@ -379,6 +420,12 @@ pub fn allocate_registers(func: &SsaFunc) -> RegAllocResult {
 
     for (vreg_idx, alloc) in output.allocs.iter().enumerate() {
         let value = Value::from_u32(vreg_idx as _);
+
+        // Skip entry parameters - they're handled separately
+        if adapter.entry_param_pregs.contains_key(&value) {
+            continue;
+        }
+
         if let Some(preg) = alloc.as_reg() {
             allocs.insert(value, preg);
         } else if let Some(slot) = alloc.as_stack() {
@@ -386,6 +433,11 @@ pub fn allocate_registers(func: &SsaFunc) -> RegAllocResult {
         }
     }
 
-    let result = RegAllocOutput { allocs, spills };
+    let result = RegAllocOutput {
+        allocs,
+        spills,
+        entry_param_pregs: adapter.entry_param_pregs.clone(),
+    };
+
     Ok((adapter.block_order, result))
 }

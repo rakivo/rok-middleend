@@ -66,7 +66,8 @@ pub struct LoweringContext<'a> {
 /// The context for lowering a single function.
 #[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
 impl<'a> LoweringContext<'a> {
-    pub const RETURN_VALUES_REGISTERS_COUNT: u32 = 8;
+    pub const ARG_REGISTERS_COUNT           : u32 = 8;
+    pub const RETURN_VALUES_REGISTERS_COUNT : u32 = 8;
 
     #[must_use]
     pub fn new(func: &'a SsaFunc) -> Self {
@@ -94,6 +95,13 @@ impl<'a> LoweringContext<'a> {
     #[must_use]
     pub fn lower(mut self) -> LoweredSsaFunc<'a> {
         self.ssa_to_reg.reserve(self.regalloc.allocs.len());
+
+        // Map entry parameters to their fixed registers (r0-r7)
+        for (&param_value, &preg) in &self.regalloc.entry_param_pregs {
+            self.ssa_to_reg.insert(param_value, preg.index() as u32);
+        }
+
+        // Map all other allocated values
         for (&v, p) in &self.regalloc.allocs {
             self.ssa_to_reg.insert(v, p.index() as u32);
         }

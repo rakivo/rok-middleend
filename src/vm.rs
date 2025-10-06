@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
+use crate::regalloc2::REG_COUNT;
 use crate::util;
 use crate::primary::PrimaryMap;
 use crate::entity::EntityRef;
@@ -369,9 +370,9 @@ impl VirtualMachine {
             // Clear return registers for new function call
             ptr::write_bytes(self.registers.as_mut_ptr(), 0, 8);
 
-            // Set up arguments in registers r8+
-            let dst = self.registers.as_mut_ptr().add(8); // start at r8
-            for (i, &arg) in args.iter().enumerate().take(256 - 8) {
+            // Set up arguments in registers
+            let dst = self.registers.as_mut_ptr();
+            for (i, &arg) in args.iter().enumerate().take(8) {
                 ptr::write(dst.add(i), arg);
             }
         }
@@ -581,7 +582,7 @@ impl VirtualMachine {
                     }
 
                     let save_start = self.stack_top;
-                    let save_size = (256 - 8) * 8; // 248 registers * 8 bytes each
+                    let save_size = (REG_COUNT as usize) * 8; // 64 registers * 8 bytes each
 
                     #[cfg(debug_assertions)]
                     if save_start + save_size >= self.stack_memory.len() {
@@ -666,59 +667,59 @@ impl VirtualMachine {
                         match ty {
                             Type::I8 => {
                                 // C ABI: i8 promoted to int
-                                let val = i32::from(self.registers[8 + i] as i8); // sign-extend to int
+                                let val = i32::from(self.registers[i] as i8); // sign-extend to int
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_int());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
                             }
                             Type::I16 => {
                                 // C ABI: i16 promoted to int
-                                let val = i32::from(self.registers[8 + i] as i16); // sign-extend to int
+                                let val = i32::from(self.registers[i] as i16); // sign-extend to int
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_int());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
                             }
                             Type::I32 => {
                                 // C ABI: i32 stays as i32 (no promotion needed)
-                                let val = self.registers[8 + i] as i32;
+                                let val = self.registers[i] as i32;
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_int());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
                             }
                             Type::I64 => {
-                                let val = self.registers[8 + i] as i64;
+                                let val = self.registers[i] as i64;
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_longlong());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i64>().unwrap()));
                             }
                             Type::U8 => {
                                 // C ABI: u8 promoted to unsigned int
-                                let val = u32::from(self.registers[8 + i] as u8); // proper zero extension
+                                let val = u32::from(self.registers[i] as u8); // proper zero extension
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_uint());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
                             }
                             Type::U16 => {
                                 // C ABI: u16 promoted to unsigned int
-                                let val = u32::from(self.registers[8 + i] as u16); // proper zero extension
+                                let val = u32::from(self.registers[i] as u16); // proper zero extension
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_uint());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
                             }
                             Type::U32 => {
-                                let val = self.registers[8 + i] as u32;
+                                let val = self.registers[i] as u32;
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_uint());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
                             }
                             Type::U64 => {
-                                let val = self.registers[8 + i];
+                                let val = self.registers[i];
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::c_ulonglong());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u64>().unwrap()));
                             }
                             Type::Ptr => {
-                                let val = self.registers[8 + i] as *mut std::ffi::c_void;
+                                let val = self.registers[i] as *mut std::ffi::c_void;
                                 arg_storage.push(Box::new(val));
                                 ffi_types.push(FFIType::pointer());
                                 ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<*mut c_void>().unwrap()));
@@ -772,7 +773,7 @@ impl VirtualMachine {
                         continue;
                     }
 
-                    let save_size = (256 - 8) * 8;
+                    let save_size = (REG_COUNT as usize) * 8;
                     let save_start = old_frame.fp - save_size;
 
                     self.stack_top = save_start;

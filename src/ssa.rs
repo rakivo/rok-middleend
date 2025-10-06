@@ -9,7 +9,6 @@ use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{Ordering, AtomicBool};
 
-use itertools::Itertools;
 use smallvec::{smallvec, SmallVec};
 use rustc_hash::{FxHashSet, FxHashMap};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -1278,80 +1277,38 @@ impl SsaFunc {
 
     pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
         let inst = &self.dfg.insts[inst_id.index()];
-
-        // Print results if any
-        if let Some(results) = self.dfg.inst_results.get(&inst_id)
-            && !results.is_empty() {
-            write!(f, "{} = ",
-                results.iter()
-                    .map(|r| self.fmt_value(*r))
-                    .join(", ")
-            )?;
+        let mut s = String::new();
+        if let Some(results) = self.dfg.inst_results.get(&inst_id) {
+            if !results.is_empty() {
+                s.push_str(&results.iter().map(|r| self.fmt_value(*r)).collect::<Vec<_>>().join(", "));
+                s.push_str(" = ");
+            }
         }
-
         match inst {
-            InstructionData::Binary { binop: opcode, args } => {
-                write!(f, "{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))?;
-            }
-            InstructionData::Icmp { code, args } => {
-                write!(f, "icmp_{:?} {}, {}", code, self.fmt_value(args[0]), self.fmt_value(args[1]))?;
-            }
-            InstructionData::Unary { unop, arg } => {
-                write!(f, "{:?} {}", unop, self.fmt_value(*arg))?;
-            }
-            InstructionData::IConst { value } => write!(f, "iconst {value}")?,
-            InstructionData::FConst { value } => write!(f, "fconst {value}")?,
-            InstructionData::Jump { destination, args } => {
-                write!(f, "jump {}({})", destination,
-                    args.iter().map(|a| self.fmt_value(*a)).join(", ")
-                )?;
-            }
-            InstructionData::Branch { destinations, arg, args } => {
-                write!(f, "brif {}, {}, {}({})",
-                    self.fmt_value(*arg),
-                    destinations[0],
-                    destinations[1],
-                    args.iter().map(|a| self.fmt_value(*a)).join(", ")
-                )?;
-            }
-            InstructionData::Call { func_id, args } => {
-                write!(f, "call {} ({})", func_id,
-                    args.iter().map(|a| self.fmt_value(*a)).join(", ")
-                )?;
-            }
-            InstructionData::CallIntrin { intrinsic_id, args } => {
-                write!(f, "call_intrin {} ({})", intrinsic_id,
-                    args.iter().map(|a| self.fmt_value(*a)).join(", ")
-                )?;
-            }
-            InstructionData::CallExt { func_id, args } => {
-                write!(f, "call_ext {} ({})", func_id,
-                    args.iter().map(|a| self.fmt_value(*a)).join(", ")
-                )?;
-            }
-            InstructionData::Return { args } => {
-                write!(f, "return {}", args.iter().map(|v| self.fmt_value(*v)).join(", "))?;
-            }
-            InstructionData::StackAddr { slot } => write!(f, "stack_addr {slot}")?,
-            InstructionData::StackLoad { slot } => write!(f, "stack_load {slot}")?,
-            InstructionData::StackStore { slot, arg } => {
-                write!(f, "stack_store {}, {}", slot, self.fmt_value(*arg))?;
-            }
-            InstructionData::LoadNoOffset { ty, addr } => {
-                write!(f, "load_no_offset {}:{:?}", self.fmt_value(*addr), ty)?;
-            }
-            InstructionData::StoreNoOffset { args } => {
-                write!(f, "store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))?;
-            }
-            InstructionData::DataAddr { data_id } => write!(f, "data_addr {data_id}")?,
-            InstructionData::Unreachable => write!(f, "unreachable")?,
-            InstructionData::Nop => write!(f, "nop")?,
+            InstructionData::Binary { binop: opcode, args } => s.push_str(&format!("{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::Icmp { code, args } => s.push_str(&format!("icmp_{:?} {}, {}", code, self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::Unary { unop, arg } => s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg))),
+            InstructionData::IConst { value } => s.push_str(&format!("iconst {value}")),
+            InstructionData::FConst { value } => s.push_str(&format!("fconst {value}")),
+            InstructionData::Jump { destination, args } => s.push_str(&format!("jump {}({})", destination, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Call { func_id, args } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallIntrin { intrinsic_id, args } => s.push_str(&format!("call_intrin {} ({})", intrinsic_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Return { args } => s.push_str(&format!("return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
+            InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
+            InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
+            InstructionData::StackStore { slot, arg } => s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg))),
+            InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!("load_no_offset {}:{:?}", self.fmt_value(*addr), ty)),
+            InstructionData::StoreNoOffset { args } => s.push_str(&format!("store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {}", data_id)),
+            // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
+            InstructionData::Unreachable => s.push_str("unreachable"),
+            InstructionData::Nop => s.push_str("nop"),
         }
 
-        // Pad to 70 chars
-        write!(f, "  {:<70}", "")?;
+        write!(f, "  {s:<70}")?;
 
-        // Optional comment
         if let Some(comment) = self.metadata.comments.get(&inst_id) {
             write!(f, "; {comment}")?;
         }
