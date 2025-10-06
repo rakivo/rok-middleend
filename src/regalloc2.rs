@@ -160,7 +160,7 @@ impl<'a> RegAllocAdapter<'a> {
             if block_data.params.len() > 8 {
                 // This should be handled at a higher level (SSA construction)
                 // by loading from stack slots
-                todo!()
+                unimplemented!()
             }
         }
     }
@@ -232,13 +232,6 @@ impl<'a> RegAllocAdapter<'a> {
                         operands.push(Operand::reg_def(Self::value_to_vreg(result)));
                     }
                 }
-
-            eprintln!("Inst {:?} (index {}): {:?}", inst, inst.index(), inst_data);
-            if let Some(results) = self.func.dfg.inst_results.get(&inst) {
-                eprintln!("  Results: {:?}", results);
-            }
-            eprintln!("  Operands: {:?}", operands);
-            eprintln!();
 
                 self.inst_operands_cache[inst.index()] = operands;
             }
@@ -364,7 +357,7 @@ impl Function for RegAllocAdapter<'_> {
     }
 
     #[inline(always)]
-    fn spillslot_size(&self, _regclass: regalloc2::RegClass) -> usize {
+    fn spillslot_size(&self, _regclass: RegClass) -> usize {
         8 // All our registers are 64-bit max
     }
 }
@@ -432,6 +425,8 @@ pub fn allocate_registers(func: &SsaFunc) -> RegAllocResult {
             spills.push((value, slot));
         }
     }
+
+    debug_assert_eq!(output.edits.len(), 0);
 
     let result = RegAllocOutput {
         allocs,

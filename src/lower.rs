@@ -1,4 +1,3 @@
-
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
 use crate::util;
@@ -40,7 +39,7 @@ pub struct LoInstMeta {
 //
 pub struct LoweringContext<'a> {
     pub func: &'a SsaFunc,
-    pub ssa_to_reg: FxHashMap<Value, u32>,
+    pub ssa_to_preg: FxHashMap<Value, u8>,
 
     next_stack_slot: StackSlot,
 
@@ -84,7 +83,7 @@ impl<'a> LoweringContext<'a> {
             pc_to_inst_meta: FxHashMap::default(),
             frame_info: StackFrameInfo::calculate_layout(func),
             func,
-            ssa_to_reg: FxHashMap::default(),
+            ssa_to_preg: FxHashMap::default(),
             block_offsets: FxHashMap::default(),
             jump_placeholders: Vec::default(),
             spill_slots: FxHashMap::default(),
@@ -94,16 +93,16 @@ impl<'a> LoweringContext<'a> {
     /// Lower the function to a bytecode chunk.
     #[must_use]
     pub fn lower(mut self) -> LoweredSsaFunc<'a> {
-        self.ssa_to_reg.reserve(self.regalloc.allocs.len());
+        self.ssa_to_preg.reserve(self.regalloc.allocs.len());
 
         // Map entry parameters to their fixed registers (r0-r7)
         for (&param_value, &preg) in &self.regalloc.entry_param_pregs {
-            self.ssa_to_reg.insert(param_value, preg.index() as u32);
+            self.ssa_to_preg.insert(param_value, preg.index() as u8);
         }
 
         // Map all other allocated values
         for (&v, p) in &self.regalloc.allocs {
-            self.ssa_to_reg.insert(v, p.index() as u32);
+            self.ssa_to_preg.insert(v, p.index() as u8);
         }
 
         self.spill_slots.reserve(self.regalloc.spills.len());
@@ -196,7 +195,7 @@ impl<'a> LoweringContext<'a> {
     #[must_use]
     #[inline(always)]
     pub fn num_regs(&self) -> usize {
-        self.ssa_to_reg.len()
+        self.ssa_to_preg.len()
     }
 
     fn emit_blocks(&mut self, chunk: &mut BytecodeChunk) {
@@ -238,27 +237,27 @@ impl<'a> LoweringContext<'a> {
     }
 
     #[track_caller]
-    pub fn load_value(&self, chunk: &mut BytecodeChunk, value: Value) -> u32 {
-        if let Some(reg) = self.ssa_to_reg.get(&value) {
+    pub fn load_value(&self, chunk: &mut BytecodeChunk, value: Value) -> u8 {
+        if let Some(reg) = self.ssa_to_preg.get(&value) {
             *reg
         } else if let Some(slot) = self.spill_slots.get(&value) {
             let allocation = &self.frame_info.slot_allocations[slot];
             let ty = self.func.dfg.values[value.index()].ty;
             let opcode = Opcode::fp_load(ty.bits()).unwrap();
-            let temp_reg = SCRATCH_REG as u32;
+            let temp_reg = SCRATCH_REG;
             chunk.append(opcode);
             chunk.append(temp_reg);
             chunk.append(allocation.offset);
             temp_reg
         } else {
-            panic!("Value not found: {:?}\n{:#?}", value, self.func);
+            panic!("Value not found: {value:?}");
         }
     }
 
-    pub fn store_value(&self, chunk: &mut BytecodeChunk, value: Value, reg: u32) {
-        if self.ssa_to_reg.contains_key(&value) {
+    pub fn store_value(&self, chunk: &mut BytecodeChunk, value: Value, reg: u8) {
+        if self.ssa_to_preg.contains_key(&value) {
             // It's a register, so we just move it
-            let dst_reg = self.ssa_to_reg[&value];
+            let dst_reg = self.ssa_to_preg[&value];
             if dst_reg != reg {
                 chunk.append(Opcode::Mov);
                 chunk.append(dst_reg);

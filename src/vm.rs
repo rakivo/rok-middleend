@@ -209,9 +209,9 @@ impl Default for VirtualMachine {
 
 macro_rules! def_op_binary {
     ($self:expr, $decoder:expr, $op:ident) => {
-        let dst = $decoder.read_u32();
-        let src1 = $decoder.read_u32();
-        let src2 = $decoder.read_u32();
+        let dst = $decoder.read_u8();
+        let src1 = $decoder.read_u8();
+        let src2 = $decoder.read_u8();
         let val1 = $self.reg_read(src1 as _);
         let val2 = $self.reg_read(src2 as _);
         $self.reg_write(dst as _, val1.$op(val2) as u64);
@@ -220,9 +220,9 @@ macro_rules! def_op_binary {
 
 macro_rules! def_op_binary_f {
     ($self:expr, $decoder:expr, $op:tt) => {
-        let dst = $decoder.read_u32();
-        let src1 = $decoder.read_u32();
-        let src2 = $decoder.read_u32();
+        let dst = $decoder.read_u8();
+        let src1 = $decoder.read_u8();
+        let src2 = $decoder.read_u8();
         let val1 = f64::from_bits($self.reg_read(src1 as _));
         let val2 = f64::from_bits($self.reg_read(src2 as _));
         $self.reg_write(dst as _, (val1 $op val2).to_bits());
@@ -231,9 +231,9 @@ macro_rules! def_op_binary_f {
 
 macro_rules! def_op_icmp {
     ($self:expr, $decoder:expr, $op:tt, $ty:ty) => {
-        let dst = $decoder.read_u32();
-        let src1 = $decoder.read_u32();
-        let src2 = $decoder.read_u32();
+        let dst = $decoder.read_u8();
+        let src1 = $decoder.read_u8();
+        let src2 = $decoder.read_u8();
         let val1 = $self.reg_read(src1 as _) as $ty;
         let val2 = $self.reg_read(src2 as _) as $ty;
         $self.reg_write(dst as _, (val1 $op val2) as u64);
@@ -420,37 +420,37 @@ impl VirtualMachine {
 
             match opcode {
                 Opcode::IConst8 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let value = i64::from(decoder.read_u8() as i8) as u64;
                     self.reg_write(reg as _, value);
                 }
 
                 Opcode::IConst16 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let value = i64::from(decoder.read_u16() as i16) as u64;
                     self.reg_write(reg as _, value);
                 }
 
                 Opcode::IConst32 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let value = i64::from(decoder.read_i32()) as u64;
                     self.reg_write(reg as _, value);
                 }
 
                 Opcode::IConst64 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let value = decoder.read_i64() as u64;
                     self.reg_write(reg as _, value);
                 }
 
                 Opcode::FConst32 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let value = u64::from(decoder.read_f32().to_bits());
                     self.reg_write(reg as _, value);
                 }
 
                 Opcode::FConst64 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let value = decoder.read_f64().to_bits();
                     self.reg_write(reg as _, value);
                 }
@@ -468,8 +468,8 @@ impl VirtualMachine {
                 }
 
                 Opcode::Ireduce => {
-                    let dst = decoder.read_u32();
-                    let src = decoder.read_u32();
+                    let dst = decoder.read_u8();
+                    let src = decoder.read_u8();
                     let bits = decoder.read_u8();
                     let val = self.reg_read(src as _);
                     let mask = (1u64 << bits) - 1;
@@ -477,8 +477,8 @@ impl VirtualMachine {
                 }
 
                 Opcode::Uextend => {
-                    let dst = decoder.read_u32();
-                    let src = decoder.read_u32();
+                    let dst = decoder.read_u8();
+                    let src = decoder.read_u8();
                     let _from_bits = decoder.read_u8();
                     let _to_bits = decoder.read_u8();
                     let val = self.reg_read(src as _);
@@ -514,9 +514,9 @@ impl VirtualMachine {
                 }
 
                 Opcode::Bor => {
-                    let dst = decoder.read_u32();
-                    let src1 = decoder.read_u32();
-                    let src2 = decoder.read_u32();
+                    let dst = decoder.read_u8();
+                    let src1 = decoder.read_u8();
+                    let src2 = decoder.read_u8();
                     let val1 = self.reg_read(src1 as _);
                     let val2 = self.reg_read(src2 as _);
                     self.reg_write(dst as _, val1 | val2);
@@ -550,7 +550,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::BranchIf16 => {
-                    let cond_reg = decoder.read_u32();
+                    let cond_reg = decoder.read_u8();
                     let offset = i32::from(decoder.read_u16() as i16);
                     let cond = self.reg_read(cond_reg as _);
                     if cond != 0 {
@@ -783,7 +783,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::LoadDataAddr => {
-                    let dst = decoder.read_u32() as usize;
+                    let dst = decoder.read_u8() as usize;
                     let data_id = DataId::from_u32(decoder.read_u32());
 
                     if let Some(&offset) = self.data_offsets.get(&data_id) {
@@ -795,54 +795,54 @@ impl VirtualMachine {
                 }
 
                 Opcode::Mov => {
-                    let dst = decoder.read_u32();
-                    let src = decoder.read_u32();
+                    let dst = decoder.read_u8();
+                    let src = decoder.read_u8();
                     self.reg_write(dst as _, self.reg_read(src as _));
                 }
 
                 Opcode::Load32 => {
-                    let dst_reg = decoder.read_u32();
-                    let addr_reg = decoder.read_u32();
+                    let dst_reg = decoder.read_u8();
+                    let addr_reg = decoder.read_u8();
                     let addr = self.reg_read(addr_reg as _) as *const u32;
                     let val = unsafe { ptr::read(addr) };
                     self.reg_write(dst_reg as _, u64::from(val));
                 }
 
                 Opcode::Load64 => {
-                    let dst_reg = decoder.read_u32();
-                    let addr_reg = decoder.read_u32();
+                    let dst_reg = decoder.read_u8();
+                    let addr_reg = decoder.read_u8();
                     let addr = self.reg_read(addr_reg as _) as *const u64;
                     let val = unsafe { ptr::read(addr) };
                     self.reg_write(dst_reg as _, val);
                 }
 
                 Opcode::Store8 => {
-                    let addr_reg = decoder.read_u32();
-                    let val_reg = decoder.read_u32();
+                    let addr_reg = decoder.read_u8();
+                    let val_reg = decoder.read_u8();
                     let addr = self.reg_read(addr_reg as _) as *mut u8;
                     let val = self.reg_read(val_reg as _) as u8;
                     unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::Store16 => {
-                    let addr_reg = decoder.read_u32();
-                    let val_reg = decoder.read_u32();
+                    let addr_reg = decoder.read_u8();
+                    let val_reg = decoder.read_u8();
                     let addr = self.reg_read(addr_reg as _) as *mut u16;
                     let val = self.reg_read(val_reg as _) as u16;
                     unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::Store32 => {
-                    let addr_reg = decoder.read_u32();
-                    let val_reg = decoder.read_u32();
+                    let addr_reg = decoder.read_u8();
+                    let val_reg = decoder.read_u8();
                     let addr = self.reg_read(addr_reg as _) as *mut u32;
                     let val = self.reg_read(val_reg as _) as u32;
                     unsafe { ptr::write(addr, val); }
                 }
 
                 Opcode::Store64 => {
-                    let addr_reg = decoder.read_u32();
-                    let val_reg = decoder.read_u32();
+                    let addr_reg = decoder.read_u8();
+                    let val_reg = decoder.read_u8();
                     let addr = self.reg_read(addr_reg as _) as *mut u64;
                     let val = self.reg_read(val_reg as _);
                     unsafe { ptr::write(addr, val); }
@@ -871,7 +871,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::FpLoad32 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
@@ -879,7 +879,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::FpLoad64 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
@@ -888,7 +888,7 @@ impl VirtualMachine {
 
                 Opcode::FpStore32 => {
                     let offset = decoder.read_i32();
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u32(addr, v as u32);
@@ -896,14 +896,14 @@ impl VirtualMachine {
 
                 Opcode::FpStore64 => {
                     let offset = decoder.read_i32();
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u64(addr, v);
                 }
 
                 Opcode::SpLoad32 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u32(addr);
@@ -911,7 +911,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::SpLoad64 => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
@@ -920,7 +920,7 @@ impl VirtualMachine {
 
                 Opcode::SpStore32 => {
                     let offset = decoder.read_i32();
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u32(addr, v as u32);
@@ -928,14 +928,14 @@ impl VirtualMachine {
 
                 Opcode::SpStore64 => {
                     let offset = decoder.read_i32();
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let addr = (frame.sp as i32 + offset) as usize;
                     let v = self.reg_read(reg as _);
                     self.stack_write_u64(addr, v);
                 }
 
                 Opcode::FpAddr => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
                     let addr = (frame.fp as i32 + offset) as usize;
                     let addr = unsafe { self.stack_memory.as_ptr().add(addr) as _ };
@@ -943,7 +943,7 @@ impl VirtualMachine {
                 }
 
                 Opcode::SpAddr => {
-                    let reg = decoder.read_u32();
+                    let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
                     let addr = (frame.sp as i32 + offset) as u64;
                     self.reg_write(reg as _, addr);
