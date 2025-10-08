@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
-use crate::regalloc2::REG_COUNT;
+use crate::regalloc::REG_COUNT;
 use crate::util;
 use crate::primary::PrimaryMap;
 use crate::entity::EntityRef;
@@ -197,7 +197,12 @@ pub struct VirtualMachine {
     data_memory: Vec<u8>,
     data_offsets: FxHashMap<DataId, u32>,
 
-    registers: [u64; 64], // r0-r7: return values, r8+: general purpose/args
+    //
+    // r0-r7:   return values,
+    // r8-r254: general purpose/args
+    //    r255: scratch reg
+    //
+    registers: [u64; REG_COUNT as usize],
 
     halted: bool,
 }
@@ -582,7 +587,7 @@ impl VirtualMachine {
                     }
 
                     let save_start = self.stack_top;
-                    let save_size = (REG_COUNT as usize) * 8; // 64 registers * 8 bytes each
+                    let save_size = (REG_COUNT as usize) * 8; // reg count registers * 8 bytes each
 
                     #[cfg(debug_assertions)]
                     if save_start + save_size >= self.stack_memory.len() {

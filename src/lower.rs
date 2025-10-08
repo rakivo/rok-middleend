@@ -2,7 +2,8 @@
 
 use crate::util;
 use crate::entity::EntityRef;
-use crate::regalloc2::{RegAllocOutput, SCRATCH_REG};
+// use crate::regalloc2::{RegAllocOutput, SCRATCH_REG};
+use crate::regalloc::{RegAllocOutput, SCRATCH_REG};
 use crate::bytecode::{
     StackFrameInfo,
     StackSlotAllocation,
@@ -73,7 +74,7 @@ impl<'a> LoweringContext<'a> {
         let (
             order,
             result
-        ) = crate::regalloc2::allocate_registers(func).unwrap();
+        ) = crate::regalloc::allocate_registers_custom(func).unwrap();
 
         Self {
             order,
