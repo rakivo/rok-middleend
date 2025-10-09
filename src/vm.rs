@@ -355,7 +355,7 @@ impl VirtualMachine {
     #[must_use]
     pub fn get_args(&self, count: usize) -> SmallVec<[u64; 8]> {
         let mut ret = SmallVec::with_capacity(count);
-        for reg in 8..count+8 {
+        for reg in 0..count {
             ret.push(self.reg_read(reg));
         }
 
@@ -1010,7 +1010,7 @@ impl VirtualMachine {
     }
 
     #[inline(always)]
-    fn reg_write(&mut self, index: usize, v: u64) {
+    pub fn reg_write(&mut self, index: usize, v: u64) {
         #[cfg(debug_assertions)]
         {
             assert!((index < self.registers.len()),
