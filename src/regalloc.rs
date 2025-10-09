@@ -6,8 +6,8 @@ use rustc_hash::{FxHashSet, FxHashMap};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-pub const REG_COUNT: u8 = 255;
-pub const SCRATCH_REG: u8 = REG_COUNT - 1;
+pub const REG_COUNT   : u8 = 63;
+pub const SCRATCH_REG : u8 = REG_COUNT + 1;
 
 #[inline(always)]
 const fn int_preg(index: u8) -> PReg {
@@ -44,7 +44,7 @@ pub struct MachineEnv {
 impl MachineEnv {
     pub fn new() -> Self {
         Self {
-            preferred_regs: (8..63).map(int_preg).collect(),
+            preferred_regs: (8..REG_COUNT).map(int_preg).collect(),
             non_preferred_regs: (0..8).map(int_preg).collect(),
         }
     }
