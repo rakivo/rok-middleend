@@ -715,7 +715,7 @@ define_opcodes! {
             }
         }
 
-        // TODO: CallExt: If more than 8 args, push extras onto stack
+        // TODO(#17): CallExt: If more than 8 args, push extras onto stack
         // For now, assume <= 8 arguments
         if args.len() > 8 {
             panic!("Functions with more than 8 arguments not yet supported");
@@ -1271,4 +1271,3 @@ pub fn disassemble_instruction(
         }
     }
 }
-     
