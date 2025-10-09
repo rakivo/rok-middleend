@@ -759,7 +759,18 @@ impl VirtualMachine {
                         );
                     }
 
-                    self.reg_write(0, result);
+                    let _r = result;
+
+                    // @QUICKFIX
+                    // TODO(#19): ExtCall register clobber
+                    //   In cases when a function called right after
+                    //   an external function call that returns something,
+                    //   the first argument is going to be clobbered.
+                    //   Logically, spill should be inserted instead.
+                    //
+                    // if !signature.returns.is_empty() {
+                    //     self.reg_write(0, result);
+                    // }
                 }
 
                 Opcode::Nop => {}
