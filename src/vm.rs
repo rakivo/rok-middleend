@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
-use crate::regalloc::REG_COUNT;
+use crate::regalloc::{REG_COUNT, SCRATCH_REG};
 use crate::util;
 use crate::primary::PrimaryMap;
 use crate::entity::EntityRef;
@@ -189,7 +189,7 @@ pub struct VirtualMachine {
     call_stack: Vec<StackFrame>,
     pc: usize,
 
-    stack_memory: Vec<u8>,
+    stack_memory: Box<[u8]>,
     stack_top: usize,
 
     intrinsics: Intrinsics,
@@ -197,19 +197,9 @@ pub struct VirtualMachine {
     data_memory: Vec<u8>,
     data_offsets: FxHashMap<DataId, u32>,
 
-    //
-    // r0-r7:   return values,
-    // r8-r254: general purpose/args
-    //    r255: scratch reg
-    //
-    registers: [u64; REG_COUNT as usize],
+    registers: [u64; SCRATCH_REG as usize + 1],
 
     halted: bool,
-}
-
-impl Default for VirtualMachine {
-    #[inline]
-    fn default() -> Self { Self::new() }
 }
 
 macro_rules! def_op_binary {
@@ -219,7 +209,7 @@ macro_rules! def_op_binary {
         let src2 = $decoder.read_u8();
         let val1 = $self.reg_read(src1 as _);
         let val2 = $self.reg_read(src2 as _);
-        $self.reg_write(dst as _, val1.$op(val2) as u64);
+        $self.reg_write(dst as _, val1.$op(val2 as _) as _);
     };
 }
 
@@ -256,6 +246,7 @@ impl VirtualMachine {
         unsafe {
             stack_memory.set_len(Self::STACK_SIZE);
         }
+        let stack_memory = stack_memory.into_boxed_slice();
 
         VirtualMachine {
             intrinsics: PrimaryMap::new(),
@@ -470,6 +461,10 @@ impl VirtualMachine {
 
                 Opcode::IMul => {
                     def_op_binary!(self, decoder, wrapping_mul);
+                }
+
+                Opcode::Ishl => {
+                    def_op_binary!(self, decoder, wrapping_shl);
                 }
 
                 Opcode::Ireduce => {
@@ -759,18 +754,14 @@ impl VirtualMachine {
                         );
                     }
 
-                    let _r = result;
-
-                    // @QUICKFIX
                     // TODO(#19): ExtCall register clobber
                     //   In cases when a function called right after
                     //   an external function call that returns something,
                     //   the first argument is going to be clobbered.
                     //   Logically, spill should be inserted instead.
-                    //
-                    // if !signature.returns.is_empty() {
-                    //     self.reg_write(0, result);
-                    // }
+                    if !signature.returns.is_empty() {
+                        self.reg_write(0, result);
+                    }
                 }
 
                 Opcode::Nop => {}
@@ -790,7 +781,7 @@ impl VirtualMachine {
                     }
 
                     let save_size = (REG_COUNT as usize) * 8;
-                    let save_start = old_frame.fp - save_size;
+                    let save_start = old_frame.fp.saturating_sub(save_size);
 
                     self.stack_top = save_start;
                     self.pc = old_frame.ret_pc;
@@ -886,6 +877,14 @@ impl VirtualMachine {
                     frame.sp = (frame.sp as i32 - offset) as usize;
                 }
 
+                Opcode::FpLoad8 => {
+                    let reg = decoder.read_u8();
+                    let offset = decoder.read_i32();
+                    let addr = (frame.fp as i32 + offset) as usize;
+                    let v = self.stack_read_u8(addr);
+                    self.reg_write(reg as _, u64::from(v));
+                }
+
                 Opcode::FpLoad32 => {
                     let reg = decoder.read_u8();
                     let offset = decoder.read_i32();
@@ -900,6 +899,14 @@ impl VirtualMachine {
                     let addr = (frame.fp as i32 + offset) as usize;
                     let v = self.stack_read_u64(addr);
                     self.reg_write(reg as _, v);
+                }
+
+                Opcode::FpStore8 => {
+                    let offset = decoder.read_i32();
+                    let reg = decoder.read_u8();
+                    let addr = (frame.fp as i32 + offset) as usize;
+                    let v = self.reg_read(reg as _);
+                    self.stack_write_u8(addr, v as u8);
                 }
 
                 Opcode::FpStore32 => {
@@ -970,7 +977,8 @@ impl VirtualMachine {
                     break;
                 }
 
-                _ => {
+                other => {
+                    println!("{other:#?}");
                     return Err(VMError::InvalidOpcode(opcode_byte));
                 }
             }
@@ -1004,6 +1012,7 @@ impl VirtualMachine {
     }
 
     // ---- tiny accessor helpers ----
+    #[track_caller]
     #[inline(always)]
     fn reg_read(&self, index: usize) -> u64 {
         #[cfg(debug_assertions)]
@@ -1020,6 +1029,7 @@ impl VirtualMachine {
         }
     }
 
+    #[track_caller]
     #[inline(always)]
     pub fn reg_write(&mut self, index: usize, v: u64) {
         #[cfg(debug_assertions)]
@@ -1077,6 +1087,33 @@ impl VirtualMachine {
         #[cfg(not(debug_assertions))]
         {
             unsafe { ptr::read_unaligned(self.stack_memory.as_ptr().add(addr).cast::<u32>()) }
+        }
+    }
+
+    #[inline(always)]
+    fn stack_read_u8(&mut self, addr: usize) -> u8 {
+        #[cfg(debug_assertions)]
+        {
+            assert!((addr + 1 <= self.stack_memory.len()), "stack_read_u8 OOB: addr={} len={}", addr, self.stack_memory.len());
+            self.stack_memory[addr]
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { ptr::read_unaligned(self.stack_memory.as_ptr().add(addr).cast::<u8>()) }
+        }
+    }
+
+    #[inline(always)]
+    fn stack_write_u8(&mut self, addr: usize, v: u8) {
+        #[cfg(debug_assertions)]
+        {
+            assert!((addr + 1 <= self.stack_memory.len()), "stack_write_u8 oob: addr={} len={}", addr, self.stack_memory.len());
+            let b = v.to_le_bytes();
+            self.stack_memory[addr..addr + 1].copy_from_slice(&b);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { ptr::write_unaligned(self.stack_memory.as_mut_ptr().add(addr).cast::<u8>(), v) }
         }
     }
 

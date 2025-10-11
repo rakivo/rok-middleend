@@ -4,6 +4,7 @@ use crate::util::{self, IntoBytes};
 use crate::ssa::{
     Inst,
     Block,
+    DataId,
     InstructionData as IData,
     SsaFunc,
     BinaryOp,
@@ -23,11 +24,13 @@ define_opcodes! {
     // Constants
     IConst8(dst: u8, val: i8)       = 0,
     @ IData::IConst { value, .. } if bits == 8 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let val = *value as i8;
-        chunk.append(Opcode::IConst8);
-        chunk.append(dst);
-        chunk.append(val);
+        let val = *value;
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::IConst8);
+            chunk.append(dst);
+            chunk.append(val as i8);
+        });
     },
 
     IConst16(dst: u8, val: i16)      = 1,
@@ -50,11 +53,13 @@ define_opcodes! {
 
     IConst64(dst: u8, val: i64)      = 3,
     @ IData::IConst { value, .. } if bits == 64 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
         let val = *value;
-        chunk.append(Opcode::IConst64);
-        chunk.append(dst);
-        chunk.append(val as u64);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::IConst64);
+            chunk.append(dst);
+            chunk.append(val as u64);
+        });
     },
 
     FConst32(dst: u8, val: f32)      = 4,
@@ -343,7 +348,7 @@ define_opcodes! {
         chunk.append(b);
     },
 
-    Jump16(offset: i32)        = 26,
+    Jump16(offset: i16)        = 26,
     @ IData::Jump { destination, args, .. } => |_results, chunk| {
         let dest_block = &self.func.cfg.blocks[destination.index()];
 
@@ -358,7 +363,7 @@ define_opcodes! {
         chunk.append(Opcode::Jump16);
         self.append_jump_placeholder::<i16>(chunk, *destination);
     },
-    BranchIf16(cond: u8, offset: i32)    = 27,
+    BranchIf16(cond: u8, offset: i16)    = 27,
     @ IData::Branch { arg, destinations, args, .. } => |_results, chunk| {
         let [t, e] = *destinations;
 
@@ -496,19 +501,23 @@ define_opcodes! {
     },
     Load32(dst: u8, addr: u8)        = 42,
     @ IData::LoadNoOffset { ty, addr } if bits == 32 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
         let addr = self.load_value(chunk, *addr);
-        chunk.append(Opcode::Load32);
-        chunk.append(dst);
-        chunk.append(addr);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::Load32);
+            chunk.append(dst);
+            chunk.append(addr);
+        });
     },
     Load64(dst: u8, addr: u8)        = 43,
     @ IData::LoadNoOffset { ty, addr } if bits == 64 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
         let addr = self.load_value(chunk, *addr);
-        chunk.append(Opcode::Load64);
-        chunk.append(dst);
-        chunk.append(addr);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::Load64);
+            chunk.append(dst);
+            chunk.append(addr);
+        });
     },
 
     Store8(addr: u8, val: u8) = 44,
@@ -555,7 +564,7 @@ define_opcodes! {
     Mov(dst: u8, src: u8)           = 50,
 
     // Stack frame management
-    FrameSetup()    = 60,
+    FrameSetup(size: u32)    = 60,
     FrameTeardown() = 61,
 
     // Direct stack pointer operations
@@ -649,21 +658,24 @@ define_opcodes! {
     // Address calculation
     FpAddr(dst: u8, offset: i32)        = 90,
     @ IData::StackAddr { slot, .. } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let allocation = &self.frame_info.slot_allocations[slot];
-
-        chunk.append(Opcode::FpAddr);
-        chunk.append(dst);
-        chunk.append(allocation.offset);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |l, chunk, dst| {
+            chunk.append(Opcode::FpAddr);
+            chunk.append(dst);
+            let allocation = &l.frame_info.slot_allocations[slot];
+            chunk.append(allocation.offset);
+        });
     },
     SpAddr(dst: u8, offset: i32)        = 91,
 
     LoadDataAddr(dst: u8, data_id: DataId) = 95,
     @ IData::DataAddr { data_id } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        chunk.append(Opcode::LoadDataAddr);
-        chunk.append(dst);
-        chunk.append(*data_id);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::LoadDataAddr);
+            chunk.append(dst);
+            chunk.append(*data_id);
+        });
     },
 
     Nop() = 128,
@@ -871,9 +883,11 @@ impl BytecodeChunk {
 // Bytecode Disassembler
 //
 
-pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
-    let print_metadata = true;
-
+pub fn disassemble_chunk(
+    lowered_func: &LoweredSsaFunc,
+    name: &str,
+    print_metadata_: bool
+) {
     println!("== {name} ==");
     println!("Frame size: {} bytes", lowered_func.chunk.frame_info.total_size);
 
@@ -887,11 +901,17 @@ pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
     let mut offset = 0;
     let mut curr_block: Option<Block> = None;
     while offset < lowered_func.chunk.code.len() {
+        if print_metadata_ {
+            print_metadata(
+                lowered_func,
+                offset,
+                &mut curr_block
+            );
+        }
+
         offset = disassemble_instruction(
-            lowered_func,
+            &lowered_func.chunk,
             offset,
-            &mut curr_block,
-            print_metadata
         );
 
         if offset == 0 {
@@ -899,6 +919,43 @@ pub fn disassemble_chunk(lowered_func: &LoweredSsaFunc, name: &str) {
             break
         }
     }
+}
+
+fn print_metadata(
+    lowered: &LoweredSsaFunc,
+    offset: usize,
+    curr_block: &mut Option<Block>,
+) {
+    let offset_str = format!("{offset:05X} ");
+
+    #[cfg(debug_assertions)]
+    if let Some(crate::lower::LoInstMeta {
+        pc, inst, size
+    }) = lowered.context.pc_to_inst_meta.get(&offset) {
+        // look up the block this instruction belongs to
+        if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst)
+            && Some(block) != *curr_block {
+                *curr_block = Some(block);
+                println!();
+                println!("{offset_str} ; block({})", block.index());
+            }
+
+        println!();
+        println!("{offset_str};");
+        println!("{offset_str}; original SSA instruction:");
+        println!("{offset_str}; {inst}", inst = lowered.context.func.pretty_print_inst(*inst));
+        if let Some(comment) = lowered.context.func.metadata.comments.get(inst) {
+            println!("{offset_str};");
+            println!("{offset_str}; comment:");
+            println!("{offset_str}; {comment}");
+        }
+        println!("{offset_str};");
+        print!("{offset_str};");
+        println!("  pc={pc:?} inst_id={inst:?}, size={size}");
+        println!("{offset_str};");
+    }
+
+    print!("{offset_str}");
 }
 
 fn print_aligned(name: &str, operands: &str) {
@@ -932,135 +989,105 @@ fn print_aligned(name: &str, operands: &str) {
 #[must_use]
 #[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
 pub fn disassemble_instruction(
-    lowered: &LoweredSsaFunc,
+    chunk: &BytecodeChunk,
     offset: usize,
-    current_block: &mut Option<Block>,
-    print_metadata: bool,
 ) -> usize {
     let offset_str = format!("{offset:05X} ");
 
-    #[cfg(debug_assertions)]
-    if print_metadata
-        && let Some(crate::lower::LoInstMeta { pc, inst, size }) =
-            lowered.context.pc_to_inst_meta.get(&offset)
-        {
-            // look up the block this instruction belongs to
-            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst)
-                && Some(block) != *current_block {
-                    *current_block = Some(block);
-                    println!();
-                    println!("{offset_str} ; block({})", block.index());
-                }
-
-            println!();
-            println!("{offset_str};");
-            println!("{offset_str}; original SSA instruction:");
-            println!("{offset_str}; {inst}", inst = lowered.context.func.pretty_print_inst(*inst));
-            if let Some(comment) = lowered.context.func.metadata.comments.get(inst) {
-                println!("{offset_str};");
-                println!("{offset_str}; comment:");
-                println!("{offset_str}; {comment}");
-            }
-            println!("{offset_str};");
-            print!("{offset_str};");
-            println!("  pc={pc:?} inst_id={inst:?}, size={size}");
-            println!("{offset_str};");
-        }
-
     print!("{offset_str}");
 
-    let opcode_byte = lowered.chunk.code[offset];
+    let opcode_byte = chunk.code[offset];
     let opcode: Opcode = unsafe { std::mem::transmute(opcode_byte) };
 
     match opcode {
         Opcode::LoadDataAddr => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let data_id =
-                u32::from_le_bytes(lowered.chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
             print_aligned("LOAD_DATA_ADDR", &format!("v{dst}, D{data_id}"));
             offset + 6
         }
         Opcode::IConst8 => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let val =
-                i8::from_le_bytes(lowered.chunk.code[offset + 2..offset + 3].try_into().unwrap());
+                i8::from_le_bytes(chunk.code[offset + 2..offset + 3].try_into().unwrap());
             print_aligned("ICONST8", &format!("v{dst}, {val}_i8"));
             offset + 3
         }
         Opcode::IConst32 => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let val =
-                u32::from_le_bytes(lowered.chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
             print_aligned("ICONST32", &format!("v{dst}, {val}_i32"));
             offset + 6
         }
         Opcode::IConst64 => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let val =
-                u64::from_le_bytes(lowered.chunk.code[offset + 2..offset + 10].try_into().unwrap());
+                u64::from_le_bytes(chunk.code[offset + 2..offset + 10].try_into().unwrap());
             print_aligned("ICONST64", &format!("v{dst}, {val}_i64"));
             offset + 10
         }
         Opcode::FConst64 => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let val =
-                f64::from_le_bytes(lowered.chunk.code[offset + 2..offset + 10].try_into().unwrap());
+                f64::from_le_bytes(chunk.code[offset + 2..offset + 10].try_into().unwrap());
             print_aligned("FCONST64", &format!("v{dst}, {val}_f64"));
             offset + 10
         }
         Opcode::IAdd => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("IADD", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::ISub => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("ISUB", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::IMul => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("IMUL", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::IDiv => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("IDIV", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::And => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("AND", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::Or => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("OR", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::Xor => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             print_aligned("XOR", &format!("v{dst}, v{a}, v{b}"));
             offset + 4
         }
         Opcode::IEq | Opcode::INe | Opcode::ISGt | Opcode::ISGe | Opcode::ISLt | Opcode::ISLe | Opcode::IUGt | Opcode::IUGe | Opcode::IULt | Opcode::IULe => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             let name = match opcode {
                 Opcode::IEq => "IEQ",
                 Opcode::INe => "INE",
@@ -1078,9 +1105,9 @@ pub fn disassemble_instruction(
             offset + 4
         }
         Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv => {
-            let dst = lowered.chunk.code[offset + 1];
-            let a = lowered.chunk.code[offset + 2];
-            let b = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
             let op_name = match opcode {
                 Opcode::FAdd => "FADD",
                 Opcode::FSub => "FSUB",
@@ -1092,38 +1119,38 @@ pub fn disassemble_instruction(
             offset + 4
         }
         Opcode::Load32 => {
-            let dst = lowered.chunk.code[offset + 1];
-            let addr = lowered.chunk.code[offset + 2];
+            let dst = chunk.code[offset + 1];
+            let addr = chunk.code[offset + 2];
             print_aligned("LOAD32", &format!("v{dst}, v{addr}"));
             offset + 3
         }
         Opcode::Load64 => {
-            let dst = lowered.chunk.code[offset + 1];
-            let addr = lowered.chunk.code[offset + 2];
+            let dst = chunk.code[offset + 1];
+            let addr = chunk.code[offset + 2];
             print_aligned("LOAD64", &format!("v{dst}, v{addr}"));
             offset + 3
         }
         Opcode::Store8 => {
-            let addr = lowered.chunk.code[offset + 1];
-            let val = lowered.chunk.code[offset + 2];
+            let addr = chunk.code[offset + 1];
+            let val = chunk.code[offset + 2];
             print_aligned("STORE8", &format!("v{addr}, v{val}"));
             offset + 3
         }
         Opcode::Store32 => {
-            let addr = lowered.chunk.code[offset + 1];
-            let val = lowered.chunk.code[offset + 2];
+            let addr = chunk.code[offset + 1];
+            let val = chunk.code[offset + 2];
             print_aligned("STORE32", &format!("v{addr}, v{val}"));
             offset + 3
         }
         Opcode::Store64 => {
-            let addr = lowered.chunk.code[offset + 1];
-            let val = lowered.chunk.code[offset + 2];
+            let addr = chunk.code[offset + 1];
+            let val = chunk.code[offset + 2];
             print_aligned("STORE64", &format!("v{addr}, v{val}"));
             offset + 3
         }
         Opcode::Jump16 => {
             let jmp =
-                i16::from_le_bytes(lowered.chunk.code[offset + 1..offset + 3].try_into().unwrap());
+                i16::from_le_bytes(chunk.code[offset + 1..offset + 3].try_into().unwrap());
             let sign = if jmp < 0 { "-" } else { "+" };
             let target_addr = offset as i16 + 3 + jmp;
             print_aligned(
@@ -1133,9 +1160,9 @@ pub fn disassemble_instruction(
             offset + 3
         }
         Opcode::BranchIf16 => {
-            let cond = lowered.chunk.code[offset + 1];
+            let cond = chunk.code[offset + 1];
             let jmp =
-                i16::from_le_bytes(lowered.chunk.code[offset + 2..offset + 4].try_into().unwrap());
+                i16::from_le_bytes(chunk.code[offset + 2..offset + 4].try_into().unwrap());
             let target_addr = offset as i16 + 4 + jmp;
             let sign = if jmp < 0 { "-" } else { "+" };
             print_aligned(
@@ -1146,47 +1173,47 @@ pub fn disassemble_instruction(
         }
         Opcode::Call => {
             let func_id =
-                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("CALL", &format!("FUNC_{func_id}"));
             offset + 5
         }
         Opcode::CallExt => {
             let func_id =
-                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("CALL_EXT", &format!("EXT_{func_id}"));
             offset + 5
         }
         Opcode::CallIntrin => {
             let intrinsic_id =
-                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("CALL_INTRIN", &format!("INTRIN_{intrinsic_id}"));
             offset + 5
         }
         Opcode::Bor => {
-            let dst = lowered.chunk.code[offset + 1];
-            let src1 = lowered.chunk.code[offset + 2];
-            let src2 = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let src1 = chunk.code[offset + 2];
+            let src2 = chunk.code[offset + 3];
             print_aligned("BOR", &format!("v{dst}, v{src1}, v{src2}"));
             offset + 4
         }
         Opcode::Ireduce => {
-            let dst = lowered.chunk.code[offset + 1];
-            let src = lowered.chunk.code[offset + 2];
-            let bits = lowered.chunk.code[offset + 3];
+            let dst = chunk.code[offset + 1];
+            let src = chunk.code[offset + 2];
+            let bits = chunk.code[offset + 3];
             print_aligned("IREDUCE", &format!("v{dst}, v{src}, {bits}"));
             offset + 4
         }
         Opcode::Uextend => {
-            let dst = lowered.chunk.code[offset + 1];
-            let src = lowered.chunk.code[offset + 2];
-            let from_bits = lowered.chunk.code[offset + 3];
-            let to_bits = lowered.chunk.code[offset + 4];
+            let dst = chunk.code[offset + 1];
+            let src = chunk.code[offset + 2];
+            let from_bits = chunk.code[offset + 3];
+            let to_bits = chunk.code[offset + 4];
             print_aligned("UEXTEND", &format!("v{dst}, v{src}, {from_bits}, {to_bits}"));
             offset + 5
         }
         Opcode::Mov => {
-            let dst = lowered.chunk.code[offset + 1];
-            let src = lowered.chunk.code[offset + 2];
+            let dst = chunk.code[offset + 1];
+            let src = chunk.code[offset + 2];
             print_aligned("MOV", &format!("v{dst}, v{src}"));
             offset + 3
         }
@@ -1198,7 +1225,7 @@ pub fn disassemble_instruction(
         // New stack frame operations
         Opcode::FrameSetup => {
             let size =
-                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("FRAME_SETUP", &format!("{size}"));
             offset + 5
         }
@@ -1208,38 +1235,66 @@ pub fn disassemble_instruction(
         }
 
         // Frame pointer relative operations
-        Opcode::FpLoad32 => {
-            let dst = lowered.chunk.code[offset + 1];
+        Opcode::FpLoad8 => {
+            let dst = chunk.code[offset + 1];
             let fp_offset =
-                i32::from_le_bytes(lowered.chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
+            print_aligned("FP_LOAD8", &format!("v{dst}, FP{fp_offset:+}"));
+            offset + 6
+        }
+        Opcode::FpLoad16 => {
+            let dst = chunk.code[offset + 1];
+            let fp_offset =
+                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
+            print_aligned("FP_LOAD16", &format!("v{dst}, FP{fp_offset:+}"));
+            offset + 6
+        }
+        Opcode::FpLoad32 => {
+            let dst = chunk.code[offset + 1];
+            let fp_offset =
+                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
             print_aligned("FP_LOAD32", &format!("v{dst}, FP{fp_offset:+}"));
             offset + 6
         }
         Opcode::FpLoad64 => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let fp_offset =
-                i32::from_le_bytes(lowered.chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
             print_aligned("FP_LOAD64", &format!("v{dst}, FP{fp_offset:+}"));
+            offset + 6
+        }
+        Opcode::FpStore8 => {
+            let fp_offset =
+                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = chunk.code[offset + 5];
+            print_aligned("FP_STORE8", &format!("FP{fp_offset:+}, v{src}"));
+            offset + 6
+        }
+        Opcode::FpStore16 => {
+            let fp_offset =
+                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = chunk.code[offset + 5];
+            print_aligned("FP_STORE16", &format!("FP{fp_offset:+}, v{src}"));
             offset + 6
         }
         Opcode::FpStore32 => {
             let fp_offset =
-                i32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = lowered.chunk.code[offset + 5];
+                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = chunk.code[offset + 5];
             print_aligned("FP_STORE32", &format!("FP{fp_offset:+}, v{src}"));
             offset + 6
         }
         Opcode::FpStore64 => {
             let fp_offset =
-                i32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = lowered.chunk.code[offset + 5];
+                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = chunk.code[offset + 5];
             print_aligned("FP_STORE64", &format!("FP{fp_offset:+}, v{src}"));
             offset + 6
         }
         Opcode::FpAddr => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let fp_offset =
-                i32::from_le_bytes(lowered.chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
             print_aligned("FP_ADDR", &format!("v{dst}, FP{fp_offset:+}"));
             offset + 6
         }
@@ -1247,27 +1302,30 @@ pub fn disassemble_instruction(
         // Stack pointer operations
         Opcode::SpAdd => {
             let sp_offset =
-                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("SP_ADD", &format!("{sp_offset}"));
             offset + 5
         }
         Opcode::SpSub => {
             let sp_offset =
-                u32::from_le_bytes(lowered.chunk.code[offset + 1..offset + 5].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("SP_SUB", &format!("{sp_offset}"));
             offset + 5
         }
         Opcode::SpAddr => {
-            let dst = lowered.chunk.code[offset + 1];
+            let dst = chunk.code[offset + 1];
             let sp_offset =
-                i32::from_le_bytes(lowered.chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
             print_aligned("SP_ADDR", &format!("v{dst}, SP{sp_offset:+}"));
             offset + 6
         }
+        Opcode::Halt => {
+            print_aligned("HALT", "");
+            offset + 1
+        }
 
         _ => {
-            println!("not implemented print: {opcode:?}");
-            0
+            unimplemented!("not implemented print: {opcode:?}");
         }
     }
 }

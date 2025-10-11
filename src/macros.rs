@@ -13,12 +13,33 @@ macro_rules! define_opcodes {
                 $emitter_body:block
             )?
         ),*
-    ) => {
+    ) => { paste::paste!{
         #[repr(u8)]
         #[non_exhaustive]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Opcode {
             $( $opcode, )*
+        }
+
+        impl Opcode {
+            $(
+                pub const fn [< $opcode:snake:lower _ size >]() -> usize {
+                    #[allow(unused_mut)]
+                    let mut size = 0;
+                    $(
+                        size += core::mem::size_of::<$arg_type>();
+                    )*
+                    size
+                }
+            )*
+
+            pub const fn size(self) -> usize {
+                match self {
+                    $(
+                        Opcode::$opcode => 1 + Self::[< $opcode:snake:lower _size >](),
+                    )*
+                }
+            }
         }
 
         impl<'a> $crate::lower::LoweringContext<'a> {
@@ -57,5 +78,5 @@ macro_rules! define_opcodes {
                 }
             }
         }
-    };
+    }};
 }
