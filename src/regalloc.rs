@@ -2,10 +2,11 @@ use crate::util;
 use crate::entity::EntityRef;
 use crate::ssa::{self, Value, SsaFunc, InstructionData, Block as SsaBlock, FuncId};
 
-use rustc_hash::{FxHashSet, FxHashMap};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+
 use smallvec::SmallVec;
+use rustc_hash::{FxHashSet, FxHashMap};
 
 pub const REG_COUNT   : u8 = 63;
 pub const SCRATCH_REG : u8 = REG_COUNT + 1;
@@ -64,13 +65,13 @@ pub struct PReg {
 }
 
 impl EntityRef for PReg {
+    #[inline(always)]
     fn new(index: usize) -> Self {
         Self { index: index as _ }
     }
 
-    fn index(self) -> usize {
-        self.index as _
-    }
+    #[inline(always)]
+    fn index(self) -> usize { self.index as _ }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,6 +86,7 @@ pub struct MachineEnv {
 }
 
 impl MachineEnv {
+    #[inline(always)]
     pub fn new() -> Self {
         Self {
             preferred_regs: (8..REG_COUNT).map(int_preg).collect(),
@@ -125,10 +127,10 @@ impl<'a> CustomAllocAdapter<'a> {
             call_arg_map: Vec::new(),
         };
 
-        eprintln!{
-            "[regalloc] allocating registers for {name}",
-            name = func.name
-        };
+        // eprintln!{
+        //     "[regalloc] allocating registers for {name}",
+        //     name = func.name
+        // };
 
         adapter.compute_block_order();
         adapter.compute_entry_params();
@@ -343,7 +345,11 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
     let mut intervals = Vec::new();
     let mut spill_slot_index = 0;
 
-    let mut call_positions: Vec<u32> = adapter.is_call.iter().filter(|&(_, &is)| is).map(|(idx, _)| adapter.inst_positions[idx]).collect();
+    let mut call_positions = adapter.is_call.iter()
+        .filter(|&(_, &is)| is)
+        .map(|(idx, _)| adapter.inst_positions[idx])
+        .collect::<Vec<_>>();
+
     call_positions.sort_unstable();
 
     for (value, def_loc) in &adapter.value_defs {
@@ -410,8 +416,14 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
     intervals.sort_by_key(|i| (i.start, Reverse(i.use_count)));
 
     let mut active = BinaryHeap::new();
-    let mut free_preferred = machine_env.preferred_regs.iter().cloned().collect::<FxHashSet<_>>();
-    let mut free_non_preferred = machine_env.non_preferred_regs.iter().cloned().collect::<FxHashSet<_>>();
+    let mut free_preferred = machine_env.preferred_regs.iter()
+        .cloned()
+        .collect::<FxHashSet<_>>();
+
+    let mut free_non_preferred = machine_env.non_preferred_regs.iter()
+        .cloned()
+        .collect::<FxHashSet<_>>();
+
     let mut allocs = FxHashMap::default();
     let mut spills = Vec::new();
 
@@ -429,7 +441,8 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
         }
 
         let must_spill = if let Some(fixed_reg) = interval.fixed_reg {
-            interval.crosses_call && machine_env.non_preferred_regs.contains(&fixed_reg)
+            interval.crosses_call &&
+            machine_env.non_preferred_regs.contains(&fixed_reg)
         } else {
             false
         };
@@ -440,141 +453,6 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             Some(fixed)
         } else if interval.crosses_call {
             // Only use regs not clobbered by any crossed call and not conflicting with arg regs
-            let forbidden = interval.clobber_union.union(interval.arg_conflict_mask);
-            if let Some(&reg) = free_preferred.iter().find(|r| !forbidden.contains(r.index as u8)) {
-                free_preferred.remove(&reg);
-                Some(reg)
-            } else if let Some(&reg) = free_non_preferred.iter().find(|r| !forbidden.contains(r.index as u8)) {
-                free_non_preferred.remove(&reg);
-                Some(reg)
-            } else {
-                None
-            }
-        } else {
-            if !free_preferred.is_empty() {
-                let reg = free_preferred.iter().next().cloned().unwrap();
-                free_preferred.remove(&reg);
-                Some(reg)
-            } else if !free_non_preferred.is_empty() {
-                let reg = free_non_preferred.iter().next().cloned().unwrap();
-                free_non_preferred.remove(&reg);
-                Some(reg)
-            } else {
-                None
-            }
-        };
-
-        if let Some(reg) = assigned {
-            allocs.insert(interval.value, reg);
-            active.push(Reverse((interval.end, reg)));
-        } else {
-            let slot = SpillSlot { index: spill_slot_index };
-            spill_slot_index += 1;
-            spills.push((interval.value, slot));
-        }
-    }
-
-    let output = RegAllocOutput {
-        allocs,
-        spills,
-        entry_param_pregs: adapter.entry_param_pregs,
-    };
-
-    Ok((adapter.block_order, output))
-}
-
-pub fn allocate_registers_with_masks<'a>(func: &'a SsaFunc, masks: &'a RegMaskMap) -> RegAllocResult {
-    let adapter = CustomAllocAdapter::new(func, masks);
-    let machine_env = MachineEnv::new();
-
-    let mut intervals = Vec::new();
-    let mut spill_slot_index = 0;
-
-    let mut call_positions: Vec<u32> = adapter.is_call.iter().filter(|&(_, &is)| is).map(|(idx, _)| adapter.inst_positions[idx]).collect();
-    call_positions.sort_unstable();
-
-    for (value, def_loc) in &adapter.value_defs {
-        let uses = adapter.value_uses.get(value).cloned().unwrap_or_default();
-
-        let start = if adapter.block_positions.contains_key(def_loc) {
-            adapter.block_positions[def_loc]
-        } else {
-            adapter.inst_positions[def_loc] + 1
-        };
-
-        let end = if uses.is_empty() {
-            start
-        } else {
-            uses.iter().map(|&u| adapter.inst_positions[&u]).max().unwrap() + 1
-        };
-
-        let mut crosses = false;
-        let mut clobber_union = RegMask::empty();
-        let mut arg_conflict_mask = RegMask::empty();
-        for &(p, m) in &adapter.call_masks {
-            if p > start && p < end {
-                crosses = true;
-                clobber_union = clobber_union.union(m);
-            }
-        }
-
-        // Build arg-conflict mask
-        for &(p, ref vec) in &adapter.call_arg_map {
-            if p > start && p < end {
-                for &(arg_val, reg_idx) in vec {
-                    if arg_val == *value {
-                        arg_conflict_mask.set(reg_idx);
-                    }
-                }
-            }
-        }
-
-        let fixed_reg = adapter.entry_param_pregs.get(value).cloned();
-
-        intervals.push(Interval {
-            value: *value,
-            start,
-            end,
-            fixed_reg,
-            use_count: uses.len(),
-            crosses_call: crosses,
-            clobber_union,
-            arg_conflict_mask,
-        });
-    }
-
-    intervals.sort_by_key(|i| (i.start, Reverse(i.use_count)));
-
-    let mut active = BinaryHeap::new();
-    let mut free_preferred = machine_env.preferred_regs.iter().cloned().collect::<FxHashSet<_>>();
-    let mut free_non_preferred = machine_env.non_preferred_regs.iter().cloned().collect::<FxHashSet<_>>();
-    let mut allocs = FxHashMap::default();
-    let mut spills = Vec::new();
-
-    for interval in intervals {
-        while let Some(Reverse((end, _))) = active.peek() {
-            if *end > interval.start {
-                break;
-            }
-            let Reverse((_, reg)) = active.pop().unwrap();
-            if machine_env.preferred_regs.contains(&reg) {
-                free_preferred.insert(reg);
-            } else {
-                free_non_preferred.insert(reg);
-            }
-        }
-
-        let must_spill = if let Some(fixed_reg) = interval.fixed_reg {
-            interval.crosses_call && machine_env.non_preferred_regs.contains(&fixed_reg)
-        } else {
-            false
-        };
-
-        let assigned = if must_spill {
-            None
-        } else if let Some(fixed) = interval.fixed_reg {
-            Some(fixed)
-        } else if interval.crosses_call {
             let forbidden = interval.clobber_union.union(interval.arg_conflict_mask);
             if let Some(&reg) = free_preferred.iter().find(|r| !forbidden.contains(r.index as u8)) {
                 free_preferred.remove(&reg);

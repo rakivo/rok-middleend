@@ -332,6 +332,7 @@ pub enum UnaryOp {
     Ireduce,
     Uextend,
     Sextend,
+    Bitcast,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -971,6 +972,53 @@ impl InstBuilder<'_, '_> {
         pub fn sextend(&mut self, ty: Type, arg: Value) -> Value {
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Sextend, arg });
             self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        bitcast_with_comment,
+        #[inline]
+        #[track_caller]
+        pub fn bitcast(&mut self, ty: Type, arg: Value) -> Value {
+            debug_assert_eq!{
+                self.func.value_type(arg).bits(),
+                ty.bits(),
+                "bitcasting value to a type with a different size"
+            };
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Bitcast, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        ptrtoint_with_comment,
+        #[inline]
+        #[track_caller]
+        pub fn ptrtoint(&mut self, ty: Type, arg: Value) -> Value {
+            let val = self.bitcast(Type::I64, arg);
+
+            if ty.bits() < Type::I64.bits() {
+                self.ireduce(ty, val)
+            } else {
+                val
+            }
+        }
+    }
+
+    with_comment! {
+        inttoptr_with_comment,
+        #[inline]
+        #[track_caller]
+        pub fn inttoptr(&mut self, ty: Type, arg: Value) -> Value {
+            let arg_ty = self.func.value_type(arg);
+
+            let val = if arg_ty.bits() < Type::I64.bits() {
+                self.uextend(Type::I64, arg)
+            } else {
+                arg
+            };
+
+            self.bitcast(ty, val)
         }
     }
 

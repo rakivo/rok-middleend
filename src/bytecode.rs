@@ -482,6 +482,17 @@ define_opcodes! {
         chunk.append(src);
     },
 
+    Bitcast(dst: u8, src: u8, ty: u8) = 33,
+    @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
+        let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
+        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let src = self.load_value(chunk, *arg);
+        chunk.append(Opcode::Bitcast);
+        chunk.append(dst);
+        chunk.append(src);
+        chunk.append(result_ty.bits() as u8);
+    },
+
     // Memory
     Load8(dst: u8, addr: u8)         = 40,
     @ IData::LoadNoOffset { ty, addr } if bits == 8 => |results, chunk| {
@@ -1210,6 +1221,13 @@ pub fn disassemble_instruction(
             let to_bits = chunk.code[offset + 4];
             print_aligned("UEXTEND", &format!("v{dst}, v{src}, {from_bits}, {to_bits}"));
             offset + 5
+        }
+        Opcode::Bitcast => {
+            let dst = chunk.code[offset + 1];
+            let src = chunk.code[offset + 2];
+            let ty = chunk.code[offset + 3];
+            print_aligned("BITCAST", &format!("v{dst}, v{src}, {ty}"));
+            offset + 4
         }
         Opcode::Mov => {
             let dst = chunk.code[offset + 1];

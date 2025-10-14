@@ -32,6 +32,7 @@ pub type VMCallback = Arc<dyn Fn(
 /// VM execution errors
 #[derive(Debug, Clone)]
 pub enum VMError {
+    FFIError,
     EmptyCallStack,
     InvalidOpcode(u8),
     InvalidDataId(u32),
@@ -50,6 +51,7 @@ pub enum VMError {
 impl fmt::Display for VMError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            VMError::FFIError => write!(f, "FFIError"),
             VMError::EmptyCallStack => write!(f, "Empty call stack"),
             VMError::InvalidOpcode(op) => write!(f, "Invalid opcode: {op}"),
             VMError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
@@ -485,6 +487,14 @@ impl VirtualMachine {
                     self.reg_write(dst as _, val);
                 }
 
+                Opcode::Bitcast => {
+                    let dst = decoder.read_u8();
+                    let src = decoder.read_u8();
+                    let _ty = decoder.read_u8();
+                    let val = self.reg_read(src as _);
+                    self.reg_write(dst as _, val);
+                }
+
                 Opcode::IEq => {
                     def_op_icmp!(self, decoder, ==, u64);
                 }
@@ -626,8 +636,6 @@ impl VirtualMachine {
                         ffi_abi_FFI_DEFAULT_ABI,
                     };
 
-                    use std::os::raw::c_void;
-
                     let ext_func_id = ExtFuncId::from_u32(
                         decoder.read_u32()
                     );
@@ -659,88 +667,54 @@ impl VirtualMachine {
                     let rety = signature.returns.first();
                     let args = &signature.params;
 
-                    let mut ffi_types = Vec::with_capacity(args.len());
-                    let mut ffi_args = Vec::with_capacity(args.len());
-                    let mut arg_storage: Vec<Box<dyn std::any::Any>> = Vec::new();
+                    // Store all values directly (not boxed) - must be stack-allocated before we reference them
+                    let mut arg_values: Vec<u64> = Vec::with_capacity(args.len());
+                    let mut ffi_types: Vec<FFIType> = Vec::with_capacity(args.len());
 
                     for (i, &ty) in args.iter().enumerate() {
-                        match ty {
-                            Type::I8 => {
-                                // C ABI: i8 promoted to int
-                                let val = i32::from(self.registers[i] as i8); // sign-extend to int
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_int());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
-                            }
-                            Type::I16 => {
-                                // C ABI: i16 promoted to int
-                                let val = i32::from(self.registers[i] as i16); // sign-extend to int
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_int());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
-                            }
-                            Type::I32 => {
-                                // C ABI: i32 stays as i32 (no promotion needed)
-                                let val = self.registers[i] as i32;
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_int());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i32>().unwrap()));
-                            }
-                            Type::I64 => {
-                                let val = self.registers[i] as i64;
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_longlong());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<i64>().unwrap()));
-                            }
-                            Type::U8 => {
-                                // C ABI: u8 promoted to unsigned int
-                                let val = u32::from(self.registers[i] as u8); // proper zero extension
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_uint());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
-                            }
-                            Type::U16 => {
-                                // C ABI: u16 promoted to unsigned int
-                                let val = u32::from(self.registers[i] as u16); // proper zero extension
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_uint());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
-                            }
-                            Type::U32 => {
-                                let val = self.registers[i] as u32;
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_uint());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u32>().unwrap()));
-                            }
-                            Type::U64 => {
-                                let val = self.registers[i];
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::c_ulonglong());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<u64>().unwrap()));
-                            }
-                            Type::Ptr => {
-                                let val = self.registers[i] as *mut std::ffi::c_void;
-                                arg_storage.push(Box::new(val));
-                                ffi_types.push(FFIType::pointer());
-                                ffi_args.push(Arg::new(arg_storage.last().unwrap().downcast_ref::<*mut c_void>().unwrap()));
-                            }
-                            _ => todo!(),
-                        }
+                        ffi_types.push(ty_to_ffi(ty));
+                        arg_values.push(self.registers[i] as _);
                     }
 
-                    let rety = rety.copied().map_or(FFIType::void(), ty_to_ffi);
+                    // Now create Arg references - these point into arg_values which is stable
+                    let mut ffi_args: Vec<Arg> = arg_values
+                        .iter()
+                        .map(|v| Arg::new(v))
+                        .collect();
+
+                    let mut rety = rety.copied().map_or(FFIType::void(), ty_to_ffi);
 
                     let mut cif: ffi_cif = unsafe { mem::zeroed() };
 
+                    // Check if this is actually a variadic function
+                    let is_variadic = signature.is_var_arg.is_some();
+
                     unsafe {
-                        prep_cif_var(
-                            &mut cif,
-                            ffi_abi_FFI_DEFAULT_ABI,
-                            signature.is_var_arg.map(Into::into).unwrap_or(ffi_args.len()),
-                            ffi_args.len(),
-                            &rety as *const _ as *mut _,
-                            ffi_types.as_mut_ptr() as *mut _
-                        ).expect("bad typedef");
+                        let status = if is_variadic {
+                            let nfixedargs = signature.is_var_arg.unwrap() as usize;
+                            prep_cif_var(
+                                &mut cif,
+                                ffi_abi_FFI_DEFAULT_ABI,
+                                nfixedargs,
+                                ffi_args.len(),
+                                &rety as *const _ as *mut _,
+                                ffi_types.as_mut_ptr() as *mut _,
+                            )
+                        } else {
+                            // Use regular prep_cif for non-variadic functions
+                            use libffi::low::prep_cif;
+                            prep_cif(
+                                &mut cif,
+                                ffi_abi_FFI_DEFAULT_ABI,
+                                ffi_args.len(),
+                                &mut rety as *mut _ as *mut _,
+                                ffi_types.as_mut_ptr() as *mut _,
+                            )
+                        };
+
+                        if let Err(e) = status {
+                            panic!("FFI call preparation failed: {:?}", e);
+                        }
                     };
 
                     let mut result = 0u64;
@@ -750,15 +724,10 @@ impl VirtualMachine {
                             &mut cif,
                             mem::transmute(addr),
                             &mut result as *mut _ as *mut _,
-                            ffi_args.as_mut_ptr() as *mut _
+                            ffi_args.as_mut_ptr() as *mut _,
                         );
                     }
 
-                    // TODO(#19): ExtCall register clobber
-                    //   In cases when a function called right after
-                    //   an external function call that returns something,
-                    //   the first argument is going to be clobbered.
-                    //   Logically, spill should be inserted instead.
                     if !signature.returns.is_empty() {
                         self.reg_write(0, result);
                     }
