@@ -164,4 +164,82 @@ macro_rules! with_comment {
             res
         }
     };
+
+    (
+        $ir_builder:ident,
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident
+        $(<$($generics:tt),*>)?
+        (
+            &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)*
+        ) $(-> $ret:ty)? $body:block
+    ) => {
+        $(#[$meta])*
+        $vis fn $name
+        $(<$($generics),*>)?
+        (&mut $self $(, $param_name: $param_type)*)
+        $(-> $ret)?
+        $body
+
+        $(#[$meta])*
+        #[inline(always)]
+        #[allow(unused_attributes)]
+        $vis fn $comment_name
+        $(<$($generics),*>)?
+        (
+            &mut $self
+            $(, $param_name: $param_type)*,
+            #[cfg_attr(not(debug_assertions), allow(unused))]
+            comment: impl Into<Box<str>>
+        )
+        $(-> $ret)?
+        {
+            let res = $self.$name($($param_name),*);
+            #[cfg(debug_assertions)] {
+                let inserted_inst = $ir_builder.get_last_inst().unwrap();
+                $ir_builder.insert_comment(inserted_inst, comment);
+            }
+            res
+        }
+    };
+
+    (
+        $ir_builder:ident,
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident
+        $(<$($generics:tt),*>)?
+        (
+            &$self:ident $(, $param_name:ident: $param_type:ty $(,)?)*
+        ) $(-> $ret:ty)? $body:block
+    ) => {
+        $(#[$meta])*
+        $vis fn $name
+        $(<$($generics),*>)?
+        (&$self $(, $param_name: $param_type)*)
+        $(-> $ret)?
+        $body
+
+        $(#[$meta])*
+        #[inline(always)]
+        #[allow(unused_attributes)]
+        $vis fn $comment_name
+        $(<$($generics),*>)?
+        (
+            &mut $self
+            $(, $param_name: $param_type)*,
+            #[cfg_attr(not(debug_assertions), allow(unused))]
+            comment: impl Into<Box<str>>
+        )
+        $(-> $ret)?
+        {
+            let res = $self.$name($($param_name),*);
+            #[cfg(debug_assertions)] {
+                let inserted_inst = $ir_builder.get_last_inst().unwrap();
+                $ir_builder.insert_comment(inserted_inst, comment);
+            }
+            res
+        }
+    };
 }

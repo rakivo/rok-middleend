@@ -3,7 +3,6 @@ use crate::lower::LoweredSsaFunc;
 use crate::util::{self, IntoBytes};
 use crate::ssa::{
     Inst,
-    Block,
     DataId,
     InstructionData as IData,
     SsaFunc,
@@ -910,9 +909,12 @@ pub fn disassemble_chunk(
     println!();
 
     let mut offset = 0;
-    let mut curr_block: Option<Block> = None;
+
+    #[cfg(debug_assertions)]
+    let mut curr_block = None;
     while offset < lowered_func.chunk.code.len() {
         if print_metadata_ {
+            #[cfg(debug_assertions)]
             print_metadata(
                 lowered_func,
                 offset,
@@ -932,14 +934,14 @@ pub fn disassemble_chunk(
     }
 }
 
+#[cfg(debug_assertions)]
 fn print_metadata(
     lowered: &LoweredSsaFunc,
     offset: usize,
-    curr_block: &mut Option<Block>,
+    curr_block: &mut Option<crate::ssa::Block>,
 ) {
     let offset_str = format!("{offset:05X} ");
 
-    #[cfg(debug_assertions)]
     if let Some(crate::lower::LoInstMeta {
         pc, inst, size
     }) = lowered.context.pc_to_inst_meta.get(&offset) {

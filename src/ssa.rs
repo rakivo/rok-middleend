@@ -9,7 +9,7 @@ use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{Ordering, AtomicBool};
 
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use rustc_hash::{FxHashSet, FxHashMap};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -360,6 +360,184 @@ pub struct Module {
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
 
+impl Module {
+    #[must_use]
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[inline(always)]
+    pub fn import_function(&mut self, data: ExtFuncData) -> ExtFuncId {
+        self.ext_funcs.push(data)
+    }
+
+    #[inline(always)]
+    pub fn add_intrinsic(&mut self, intrin_data: IntrinData) -> IntrinsicId {
+        self.intrinsics.push(intrin_data)
+    }
+
+    #[inline]
+    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
+        self.funcs.push(SsaFunc {
+            name: name.as_ref().into(),
+            signature,
+            metadata: FunctionMetadata {
+                is_external: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[inline]
+    pub fn declare_data(&mut self, size: u32, external: bool) -> DataId {
+        self.datas.push(DataDescription {
+            size,
+            contents: AtomicContents::new(Box::new([])),
+            is_external: external.into(),
+        })
+    }
+
+    #[inline]
+    pub fn define_data(&self, id: DataId, contents: Box<[u8]>) {
+        let data = &self.datas[id];
+        *data.contents.write() = contents;
+        data.is_external.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[inline(always)]
+    pub fn declare_global_value(&mut self, data: GlobalValueData) -> GlobalValue {
+        self.global_values.push(data)
+    }
+
+    #[inline(always)]
+    pub fn define_function(&mut self, id: FuncId) {
+        let func = self.get_func_mut(id);
+        func.metadata.is_external = false;
+    }
+
+    #[inline(always)]
+    pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
+        &mut self.funcs[id]
+    }
+
+    with_comment! {
+        ir_builder,
+        call_intrin_with_comment,
+        #[inline]
+        pub fn call_intrin(
+            &self,
+            intrinsic_id: IntrinsicId,
+            args: &[Value],
+            ir_builder: &mut InstBuilder<'_, '_>
+        ) -> Value {
+            let result_ty = self.intrinsics[intrinsic_id].signature.returns[0];
+            let inst = ir_builder.insert_inst(InstructionData::CallIntrin {
+                intrinsic_id,
+                args: args.into()
+            });
+            ir_builder.make_inst_result(inst, result_ty, 0)
+        }
+    }
+
+    with_comment! {
+        ir_builder,
+        call_ext_with_comment,
+        #[inline]
+        pub fn call_ext(
+            &self,
+            func_id: ExtFuncId,
+            args: &[Value],
+            ir_builder: &mut InstBuilder<'_, '_>
+        ) -> Value {
+            let result_ty = self.ext_funcs[func_id].signature.returns[0];
+            let inst = ir_builder.insert_inst(InstructionData::CallExt {
+                func_id, args: args.into()
+            });
+            ir_builder.make_inst_result(inst, result_ty, 0)
+        }
+    }
+
+    with_comment! {
+        ir_builder,
+        call_with_comment,
+        #[inline]
+        pub fn call(
+            &self,
+            func_id: FuncId,
+            args: &[Value],
+            ir_builder: &mut InstBuilder<'_, '_>
+        ) -> Value {
+            let result_ty = self.funcs[func_id].signature.returns[0];
+            let inst = ir_builder.insert_inst(InstructionData::Call {
+                func_id, args: args.into()
+            });
+            ir_builder.make_inst_result(inst, result_ty, 0)
+        }
+    }
+
+    with_comment! {
+        ir_builder,
+        call_memcpy_with_comment,
+        #[inline]
+        pub fn call_memcpy(
+            &mut self,
+            dest: Value,
+            src: Value,
+            size: Value,
+            ir_builder: &mut InstBuilder<'_, '_>
+        ) {
+            let libc_memcpy = self.import_function(ExtFuncData {
+                name: "memcpy".into(),
+                signature: Signature {
+                    params: vec![Type::Ptr, Type::Ptr, Type::I64],
+                    ..Default::default()
+                }
+            });
+
+            ir_builder.call_ext(Type::Ptr, libc_memcpy, &[dest, src, size]);
+        }
+    }
+
+    with_comment! {
+        ir_builder,
+        call_memset_with_comment,
+        #[inline]
+        pub fn call_memset(
+            &mut self,
+            dest: Value,
+            c: Value,
+            n: Value,
+            ir_builder: &mut InstBuilder<'_, '_>
+        ) {
+            let libc_memset = self.import_function(ExtFuncData {
+                name: "memset".into(),
+                signature: Signature {
+                    params: vec![Type::Ptr, Type::I32, Type::I64],
+                    ..Default::default()
+                }
+            });
+
+            ir_builder.call_ext(Type::Ptr, libc_memset, &[dest, c, n]);
+        }
+    }
+
+    with_comment! {
+        ir_builder,
+        call_abort_with_comment,
+        #[inline]
+        pub fn call_abort(&mut self, ir_builder: &mut InstBuilder<'_, '_>) {
+            let libc_abort = self.import_function(ExtFuncData {
+                name: "abort".into(),
+                signature: Signature::default()
+            });
+
+            ir_builder.call_ext(Type::I8, libc_abort, &[]);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AtomicContents(pub RwLock<Box<[u8]>>);
 
@@ -522,68 +700,6 @@ impl DataDescription {
 pub struct GlobalValueData {
     pub name: Box<str>,
     pub ty: Type,
-}
-
-impl Module {
-    #[must_use]
-    #[inline(always)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[inline(always)]
-    pub fn import_function(&mut self, data: ExtFuncData) -> ExtFuncId {
-        self.ext_funcs.push(data)
-    }
-
-    #[inline(always)]
-    pub fn add_intrinsic(&mut self, intrin_data: IntrinData) -> IntrinsicId {
-        self.intrinsics.push(intrin_data)
-    }
-
-    #[inline]
-    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
-        self.funcs.push(SsaFunc {
-            name: name.as_ref().into(),
-            signature,
-            metadata: FunctionMetadata {
-                is_external: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-    }
-
-    #[inline]
-    pub fn declare_data(&mut self, size: u32, external: bool) -> DataId {
-        self.datas.push(DataDescription {
-            size,
-            contents: AtomicContents::new(Box::new([])),
-            is_external: external.into(),
-        })
-    }
-
-    #[inline] pub fn define_data(&self, id: DataId, contents: Box<[u8]>) {
-        let data = &self.datas[id];
-        *data.contents.write() = contents;
-        data.is_external.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    #[inline(always)]
-    pub fn declare_global_value(&mut self, data: GlobalValueData) -> GlobalValue {
-        self.global_values.push(data)
-    }
-
-    #[inline(always)]
-    pub fn define_function(&mut self, id: FuncId) {
-        let func = self.get_func_mut(id);
-        func.metadata.is_external = false;
-    }
-
-    #[inline(always)]
-    pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
-        &mut self.funcs[id]
-    }
 }
 
 //-////////////////////////////////////////////////////////////////////
@@ -1188,35 +1304,49 @@ impl InstBuilder<'_, '_> {
     with_comment! {
         call_with_comment,
         #[inline]
-        pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
-            let inst = self.insert_inst(InstructionData::Call { func_id, args: args.into() });
-            let result_ty = Type::I64; // TODO(#2): Get from function signature
-            let result = self.make_inst_result(inst, result_ty, 0);
-            smallvec![result]
+        pub fn call(
+            &mut self,
+            result_ty: Type,
+            func_id: FuncId,
+            args: &[Value]
+        ) -> Value {
+            let inst = self.insert_inst(InstructionData::Call {
+                func_id, args: args.into()
+            });
+            self.make_inst_result(inst, result_ty, 0)
         }
     }
 
     with_comment! {
         call_intrin_with_comment,
         #[inline]
-        pub fn call_intrin(&mut self, intrinsic_id: IntrinsicId, args: &[Value]) -> SmallVec<[Value; 2]> {
+        pub fn call_intrin(
+            &mut self,
+            result_ty: Type,
+            intrinsic_id: IntrinsicId,
+            args: &[Value]
+        ) -> Value {
             let inst = self.insert_inst(InstructionData::CallIntrin {
-                intrinsic_id, args: args.into()
+                intrinsic_id,
+                args: args.into()
             });
-            let result_ty = Type::I64; // TODO(#2): Get from function signature
-            let result = self.make_inst_result(inst, result_ty, 0);
-            smallvec![result]
+            self.make_inst_result(inst, result_ty, 0)
         }
     }
 
     with_comment! {
         call_ext_with_comment,
         #[inline]
-        pub fn call_ext(&mut self, func_id: ExtFuncId, args: &[Value]) -> SmallVec<[Value; 2]> {
-            let inst = self.insert_inst(InstructionData::CallExt { func_id, args: args.into() });
-            let result_ty = Type::I64; // TODO(#6): Get from function signature
-            let result = self.make_inst_result(inst, result_ty, 0);
-            smallvec![result]
+        pub fn call_ext(
+            &mut self,
+            result_ty: Type,
+            func_id: ExtFuncId,
+            args: &[Value]
+        ) -> Value {
+            let inst = self.insert_inst(InstructionData::CallExt {
+                func_id, args: args.into()
+            });
+            self.make_inst_result(inst, result_ty, 0)
         }
     }
 
@@ -1238,7 +1368,7 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            self.call_ext(libc_memcpy, &[dest, src, size]);
+            self.call_ext(Type::Ptr, libc_memcpy, &[dest, src, size]);
         }
     }
 
@@ -1260,7 +1390,7 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            self.call_ext(libc_memset, &[dest, c, n]);
+            self.call_ext(Type::Ptr, libc_memset, &[dest, c, n]);
         }
     }
 
@@ -1273,7 +1403,7 @@ impl InstBuilder<'_, '_> {
                 signature: Signature::default()
             });
 
-            self.call_ext(libc_abort, &[]);
+            self.call_ext(Type::I8, libc_abort, &[]);
         }
     }
 
