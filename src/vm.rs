@@ -178,7 +178,8 @@ impl StackFrame {
 #[derive(Clone)]
 pub struct ExtFunc {
     pub signature: Signature,
-    pub addr: *const ()
+    pub addr: *const (),
+    pub name: Box<str>
 }
 
 pub type VmFuncMap = FxHashMap<FuncId, Arc<BytecodeChunk>>;
@@ -339,8 +340,13 @@ impl VirtualMachine {
         func_id: ExtFuncId,
         signature: Signature,
         addr: *const (),
+        name: impl Into<Box<str>>
     ) {
-        self.ext_funcs.insert(func_id, ExtFunc { signature, addr });
+        self.ext_funcs.insert(func_id, ExtFunc {
+            signature,
+            addr,
+            name: name.into()
+        });
     }
 
     #[inline]
@@ -662,25 +668,39 @@ impl VirtualMachine {
                         }
                     }
 
-                    let ExtFunc { ref signature, addr } = self.ext_funcs[&ext_func_id];
+                    let ExtFunc { ref signature, addr, ref name } = self.ext_funcs[&ext_func_id];
 
                     let rety = signature.returns.first();
                     let args = &signature.params;
 
                     // Store all values directly (not boxed) - must be stack-allocated before we reference them
-                    let mut arg_values: Vec<u64> = Vec::with_capacity(args.len());
-                    let mut ffi_types: Vec<FFIType> = Vec::with_capacity(args.len());
+                    let mut arg_values = Vec::with_capacity(args.len());
+                    let mut ffi_types = Vec::with_capacity(args.len());
+
+                    let is_variadic = signature.is_var_arg.is_some();
+                    let nfixedargs = signature.is_var_arg.map(|n| n as usize).unwrap_or(0);
 
                     for (i, &ty) in args.iter().enumerate() {
-                        ffi_types.push(ty_to_ffi(ty));
-                        arg_values.push(self.registers[i] as _);
+                        let actual_ty = if is_variadic && i >= nfixedargs {
+                            // For variadic arguments, promote small types according to ABI
+                            match ty {
+                                Type::I8 | Type::U8 => Type::I32,    // Promote to I32
+                                Type::I16 | Type::U16 => Type::I32,  // Promote to I32
+                                _ => ty,                              // Keep larger types as-is
+                            }
+                        } else {
+                            ty
+                        };
+
+                        ffi_types.push(ty_to_ffi(actual_ty));
+                        arg_values.push(self.registers[i] as u64);
                     }
 
                     // Now create Arg references - these point into arg_values which is stable
-                    let mut ffi_args: Vec<Arg> = arg_values
+                    let ffi_args = arg_values
                         .iter()
-                        .map(|v| Arg::new(v))
-                        .collect();
+                        .map(Arg::new)
+                        .collect::<Vec<_>>();
 
                     let mut rety = rety.copied().map_or(FFIType::void(), ty_to_ffi);
 
@@ -692,13 +712,15 @@ impl VirtualMachine {
                     unsafe {
                         let status = if is_variadic {
                             let nfixedargs = signature.is_var_arg.unwrap() as usize;
+                            // For variadic functions: nfixedargs = fixed params, ffi_args.len() = total args
+                            // The fixed args must come first in ffi_types
                             prep_cif_var(
                                 &mut cif,
                                 ffi_abi_FFI_DEFAULT_ABI,
-                                nfixedargs,
-                                ffi_args.len(),
-                                &rety as *const _ as *mut _,
-                                ffi_types.as_mut_ptr() as *mut _,
+                                nfixedargs,          // number of fixed parameters
+                                ffi_args.len(),       // total number of arguments
+                                &mut rety as *mut _ as _,
+                                ffi_types.as_mut_ptr() as _,
                             )
                         } else {
                             // Use regular prep_cif for non-variadic functions
@@ -707,13 +729,18 @@ impl VirtualMachine {
                                 &mut cif,
                                 ffi_abi_FFI_DEFAULT_ABI,
                                 ffi_args.len(),
-                                &mut rety as *mut _ as *mut _,
-                                ffi_types.as_mut_ptr() as *mut _,
+                                &mut rety as *mut _ as _,
+                                ffi_types.as_mut_ptr() as _,
                             )
                         };
 
                         if let Err(e) = status {
-                            panic!("FFI call preparation failed: {:?}", e);
+                            panic!{
+                                "\
+                                    FFI call preparation failed: {e:?}\n\
+                                    func: {name}:\n\
+                                    signature: {signature:?}",
+                            };
                         }
                     };
 
@@ -723,8 +750,8 @@ impl VirtualMachine {
                         ffi_call(
                             &mut cif,
                             mem::transmute(addr),
-                            &mut result as *mut _ as *mut _,
-                            ffi_args.as_mut_ptr() as *mut _,
+                            &mut result as *mut _ as _,
+                            ffi_args.as_ptr() as *mut _,
                         );
                     }
 
@@ -774,6 +801,22 @@ impl VirtualMachine {
                     let dst = decoder.read_u8();
                     let src = decoder.read_u8();
                     self.reg_write(dst as _, self.reg_read(src as _));
+                }
+
+                Opcode::Load8 => {
+                    let dst_reg = decoder.read_u8();
+                    let addr_reg = decoder.read_u8();
+                    let addr = self.reg_read(addr_reg as _) as *const u8;
+                    let val = unsafe { ptr::read(addr) };
+                    self.reg_write(dst_reg as _, u64::from(val));
+                }
+
+                Opcode::Load16 => {
+                    let dst_reg = decoder.read_u8();
+                    let addr_reg = decoder.read_u8();
+                    let addr = self.reg_read(addr_reg as _) as *const u16;
+                    let val = unsafe { ptr::read(addr) };
+                    self.reg_write(dst_reg as _, u64::from(val));
                 }
 
                 Opcode::Load32 => {
