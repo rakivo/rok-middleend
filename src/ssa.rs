@@ -431,13 +431,9 @@ impl Module {
             intrinsic_id: IntrinsicId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Value {
-            let result_ty = self.intrinsics[intrinsic_id].signature.returns[0];
-            let inst = ir_builder.insert_inst(InstructionData::CallIntrin {
-                intrinsic_id,
-                args: args.into()
-            });
-            ir_builder.make_inst_result(inst, result_ty, 0)
+        ) -> Option<Value> {
+            let result_ty = self.intrinsics[intrinsic_id].signature.returns.first().copied();
+            ir_builder.ins().call_intrin(result_ty, intrinsic_id, args)
         }
     }
 
@@ -447,15 +443,12 @@ impl Module {
         #[inline]
         pub fn call_ext(
             &self,
-            func_id: ExtFuncId,
+            ext_func_id: ExtFuncId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Value {
-            let result_ty = self.ext_funcs[func_id].signature.returns[0];
-            let inst = ir_builder.insert_inst(InstructionData::CallExt {
-                func_id, args: args.into()
-            });
-            ir_builder.make_inst_result(inst, result_ty, 0)
+        ) -> Option<Value> {
+            let result_ty = self.ext_funcs[ext_func_id].signature.returns.first().copied();
+            ir_builder.ins().call_ext(result_ty, ext_func_id, args)
         }
     }
 
@@ -468,12 +461,9 @@ impl Module {
             func_id: FuncId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Value {
-            let result_ty = self.funcs[func_id].signature.returns[0];
-            let inst = ir_builder.insert_inst(InstructionData::Call {
-                func_id, args: args.into()
-            });
-            ir_builder.make_inst_result(inst, result_ty, 0)
+        ) -> Option<Value> {
+            let result_ty = self.funcs[func_id].signature.returns.first().copied();
+            ir_builder.ins().call(result_ty, func_id, args)
         }
     }
 
@@ -496,7 +486,7 @@ impl Module {
                 }
             });
 
-            ir_builder.call_ext(Type::Ptr, libc_memcpy, &[dest, src, size]);
+            ir_builder.call_ext(Some(Type::Ptr), libc_memcpy, &[dest, src, size]);
         }
     }
 
@@ -519,7 +509,7 @@ impl Module {
                 }
             });
 
-            ir_builder.call_ext(Type::Ptr, libc_memset, &[dest, c, n]);
+            ir_builder.call_ext(Some(Type::Ptr), libc_memset, &[dest, c, n]);
         }
     }
 
@@ -533,7 +523,7 @@ impl Module {
                 signature: Signature::default()
             });
 
-            ir_builder.call_ext(Type::I8, libc_abort, &[]);
+            ir_builder.call_ext(None, libc_abort, &[]);
         }
     }
 }
@@ -1306,14 +1296,14 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call(
             &mut self,
-            result_ty: Type,
+            result_ty: Option<Type>,
             func_id: FuncId,
             args: &[Value]
-        ) -> Value {
+        ) -> Option<Value> {
             let inst = self.insert_inst(InstructionData::Call {
                 func_id, args: args.into()
             });
-            self.make_inst_result(inst, result_ty, 0)
+            result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
         }
     }
 
@@ -1322,15 +1312,15 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call_intrin(
             &mut self,
-            result_ty: Type,
+            result_ty: Option<Type>,
             intrinsic_id: IntrinsicId,
             args: &[Value]
-        ) -> Value {
+        ) -> Option<Value> {
             let inst = self.insert_inst(InstructionData::CallIntrin {
                 intrinsic_id,
                 args: args.into()
             });
-            self.make_inst_result(inst, result_ty, 0)
+            result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
         }
     }
 
@@ -1339,14 +1329,14 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call_ext(
             &mut self,
-            result_ty: Type,
+            result_ty: Option<Type>,
             func_id: ExtFuncId,
             args: &[Value]
-        ) -> Value {
+        ) -> Option<Value> {
             let inst = self.insert_inst(InstructionData::CallExt {
                 func_id, args: args.into()
             });
-            self.make_inst_result(inst, result_ty, 0)
+            result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
         }
     }
 
@@ -1359,7 +1349,7 @@ impl InstBuilder<'_, '_> {
             dest: Value,
             src: Value,
             size: Value,
-        ) {
+        ) -> Value {
             let libc_memcpy = parent.import_function(ExtFuncData {
                 name: "memcpy".into(),
                 signature: Signature {
@@ -1368,7 +1358,7 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            self.call_ext(Type::Ptr, libc_memcpy, &[dest, src, size]);
+            self.call_ext(Some(Type::Ptr), libc_memcpy, &[dest, src, size]).unwrap()
         }
     }
 
@@ -1381,7 +1371,7 @@ impl InstBuilder<'_, '_> {
             dest: Value,
             c: Value,
             n: Value,
-        ) {
+        ) -> Value {
             let libc_memset = parent.import_function(ExtFuncData {
                 name: "memset".into(),
                 signature: Signature {
@@ -1390,7 +1380,7 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            self.call_ext(Type::Ptr, libc_memset, &[dest, c, n]);
+            self.call_ext(Some(Type::Ptr), libc_memset, &[dest, c, n]).unwrap()
         }
     }
 
@@ -1403,7 +1393,7 @@ impl InstBuilder<'_, '_> {
                 signature: Signature::default()
             });
 
-            self.call_ext(Type::I8, libc_abort, &[]);
+            self.call_ext(None, libc_abort, &[]);
         }
     }
 
