@@ -11,10 +11,9 @@ use rustc_hash::{FxHashSet, FxHashMap};
 pub const REG_COUNT   : u8 = 63;
 pub const SCRATCH_REG : u8 = REG_COUNT + 1;
 
-// -----------------------------------------------------------------------------
-// Register clobber mask (per callee or per call-site policy)
-// Bit i == 1 means register i may be overwritten (clobbered) by the callee.
-// Bit i == 0 means register i is preserved across the call.
+// Sentinel value for entry parameter definitions
+const ENTRY_PARAM_DEF: usize = usize::MAX;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct RegMask(pub u128);
 
@@ -48,7 +47,6 @@ impl RegMask {
     /// Convenience: r0-r7 set (args/returns clobbered)
     #[inline(always)]
     pub const fn args_and_returns() -> Self {
-        // bits 0..=7 -> 0xFF
         Self(0xFF)
     }
 }
@@ -58,7 +56,6 @@ const fn int_preg(index: u8) -> PReg {
     PReg { index }
 }
 
-// PReg with required derives for BinaryHeap
 #[derive(Hash, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PReg {
     index: u8,
@@ -76,10 +73,9 @@ impl EntityRef for PReg {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SpillSlot {
-    index: usize,
+    pub index: usize,
 }
 
-// Machine environment
 pub struct MachineEnv {
     preferred_regs: Vec<PReg>,
     non_preferred_regs: Vec<PReg>,
@@ -95,19 +91,17 @@ impl MachineEnv {
     }
 }
 
-// Adapter for linear scan
 pub struct CustomAllocAdapter<'a> {
     func: &'a ssa::SsaFunc,
     block_order: Vec<ssa::Block>,
     entry_param_pregs: FxHashMap<Value, PReg>,
-    value_defs: FxHashMap<Value, usize>, // inst index or block index for params
-    value_uses: FxHashMap<Value, Vec<usize>>, // inst indices where used
-    inst_positions: FxHashMap<usize, u32>, // inst index -> position
-    block_positions: FxHashMap<usize, u32>, // block index -> start position
-    is_call: FxHashMap<usize, bool>, // inst index -> is call
-    call_masks: Vec<(u32, RegMask)>, // (inst position, mask)
+    value_defs: FxHashMap<Value, usize>,
+    value_uses: FxHashMap<Value, Vec<usize>>,
+    inst_positions: FxHashMap<usize, u32>,
+    block_positions: FxHashMap<usize, u32>,
+    is_call: FxHashMap<usize, bool>,
+    call_masks: Vec<(u32, RegMask)>,
     func_clobber_masks: &'a RegMaskMap,
-    // For each call site position, which Value is passed in which arg reg (0..7)
     call_arg_map: Vec<(u32, SmallVec<[(Value, u8); 8]>)>,
 }
 
@@ -127,11 +121,6 @@ impl<'a> CustomAllocAdapter<'a> {
             call_arg_map: Vec::new(),
         };
 
-        // eprintln!{
-        //     "[regalloc] allocating registers for {name}",
-        //     name = func.name
-        // };
-
         adapter.compute_block_order();
         adapter.compute_entry_params();
         adapter.compute_defs_uses_and_positions();
@@ -149,9 +138,6 @@ impl<'a> CustomAllocAdapter<'a> {
                 self.block_order.push(block);
 
                 let block_data = &self.func.cfg.blocks[block.index()];
-                if !block_data.insts.is_empty() || self.func.layout.block_entry == Some(block) {
-                    self.block_order.push(block);
-                }
 
                 if let Some(&last_inst) = block_data.insts.last() {
                     match &self.func.dfg.insts[last_inst.index()] {
@@ -184,7 +170,6 @@ impl<'a> CustomAllocAdapter<'a> {
                     panic!("Duplicate fixed register r{i} for entry param")
                 }
                 self.entry_param_pregs.insert(param, preg);
-                self.value_defs.insert(param, entry.index());
             }
             if block_data.params.len() > 8 {
                 unimplemented!("Parameters beyond 8 not supported")
@@ -194,7 +179,6 @@ impl<'a> CustomAllocAdapter<'a> {
 
     fn compute_defs_uses_and_positions(&mut self) {
         let mut current_pos: u32 = 0;
-        // SAFETY: self.block_order is not modified in this function
         let block_order = unsafe { util::reborrow(&self.block_order) };
 
         for &block in block_order {
@@ -205,6 +189,8 @@ impl<'a> CustomAllocAdapter<'a> {
             for &param in &block_data.params {
                 if !self.entry_param_pregs.contains_key(&param) {
                     self.value_defs.insert(param, block_idx);
+                } else {
+                    self.value_defs.insert(param, ENTRY_PARAM_DEF);
                 }
             }
             current_pos += 1;
@@ -216,12 +202,11 @@ impl<'a> CustomAllocAdapter<'a> {
 
                 let inst_data = &self.func.dfg.insts[inst_idx];
 
-                if matches!{
-                    inst_data,
+                if matches!(inst_data,
                     InstructionData::Call { .. } |
                     InstructionData::CallExt { .. } |
                     InstructionData::CallIntrin { .. }
-                } {
+                ) {
                     self.is_call.insert(inst_idx, true);
                 }
 
@@ -243,20 +228,16 @@ impl<'a> CustomAllocAdapter<'a> {
                         for &arg in args.iter().take(8) {
                             self.add_use(arg, inst_idx);
                         }
-                        // Record call clobber mask for this inst position
+
                         let pos = self.inst_positions[&inst_idx];
-                        // Call-site clobber mask must include:
-                        // - caller argument registers r0..r7 (we write them for the call)
-                        // - callee-provided clobbers (if known)
                         let mask = match inst_data {
                             InstructionData::Call { func_id, .. } => {
-                                // For debugging isolation: treat internal call as fully clobbering
                                 let callee = self.func_clobber_masks.get(func_id).unwrap();
                                 callee.union(RegMask::args_and_returns())
                             }
                             InstructionData::CallExt { .. } => {
-                                // RegMask::args_and_returns()
-                                RegMask::full()
+                                // External calls in VM don't clobber beyond arg registers
+                                RegMask::args_and_returns()
                             }
                             InstructionData::CallIntrin { .. } => {
                                 RegMask::args_and_returns()
@@ -265,7 +246,6 @@ impl<'a> CustomAllocAdapter<'a> {
                         };
                         self.call_masks.push((pos, mask));
 
-                        // Record argument mapping for conflict avoidance
                         let mut vec: SmallVec<[(Value, u8); 8]> = SmallVec::new();
                         for (i, &arg) in args.iter().enumerate().take(8) {
                             vec.push((arg, i as u8));
@@ -308,7 +288,6 @@ impl<'a> CustomAllocAdapter<'a> {
                 }
             }
         }
-        // sort call masks for later range queries
         self.call_masks.sort_by_key(|(p, _)| *p);
     }
 
@@ -345,20 +324,21 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
     let mut intervals = Vec::new();
     let mut spill_slot_index = 0;
 
-    let mut call_positions = adapter.is_call.iter()
-        .filter(|&(_, &is)| is)
-        .map(|(idx, _)| adapter.inst_positions[idx])
-        .collect::<Vec<_>>();
-
-    call_positions.sort_unstable();
-
     for (value, def_loc) in &adapter.value_defs {
+        if adapter.entry_param_pregs.contains_key(value) {
+            continue;
+        }
+
         let uses = adapter.value_uses.get(value).cloned().unwrap_or_default();
 
-        let start = if adapter.block_positions.contains_key(def_loc) {
+        let start = if *def_loc == ENTRY_PARAM_DEF {
+            0
+        } else if adapter.inst_positions.contains_key(def_loc) {
+            adapter.inst_positions[def_loc] + 1
+        } else if adapter.block_positions.contains_key(def_loc) {
             adapter.block_positions[def_loc]
         } else {
-            adapter.inst_positions[def_loc] + 1
+            panic!("Value {:?} has unknown def_loc {}", value, def_loc);
         };
 
         let end = if uses.is_empty() {
@@ -370,25 +350,18 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
         let mut crosses = false;
         let mut clobber_union = RegMask::empty();
         let mut arg_conflict_mask = RegMask::empty();
-        // union clobber masks of calls inside (start, end), and record arg reg conflicts
+
         for &(p, m) in &adapter.call_masks {
             if p > start && p < end {
-                crosses = true;
-                clobber_union = clobber_union.union(m);
-            }
-        }
-        for &(p, ref vec) in &adapter.call_arg_map {
-            if p > start && p < end {
-                for &(arg_val, reg_idx) in vec {
-                    if arg_val == *value {
-                        arg_conflict_mask.set(reg_idx);
+                if let Some(last_use) = uses.iter().map(|&u| adapter.inst_positions[&u]).max() {
+                    if last_use > p {
+                        crosses = true;
+                        clobber_union = clobber_union.union(m);
                     }
                 }
             }
         }
 
-        // Build arg-conflict mask: if this value is passed as an argument at any
-        // call inside its lifetime, do not assign it to that specific arg reg.
         for &(p, ref vec) in &adapter.call_arg_map {
             if p > start && p < end {
                 for &(arg_val, reg_idx) in vec {
@@ -452,7 +425,6 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
         } else if let Some(fixed) = interval.fixed_reg {
             Some(fixed)
         } else if interval.crosses_call {
-            // Only use regs not clobbered by any crossed call and not conflicting with arg regs
             let forbidden = interval.clobber_union.union(interval.arg_conflict_mask);
             if let Some(&reg) = free_preferred.iter().find(|r| !forbidden.contains(r.index as u8)) {
                 free_preferred.remove(&reg);
@@ -486,6 +458,8 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             spills.push((interval.value, slot));
         }
     }
+
+    debug_assert_eq!(adapter.block_order.len(), adapter.block_order.iter().collect::<FxHashSet<_>>().len());
 
     let output = RegAllocOutput {
         allocs,

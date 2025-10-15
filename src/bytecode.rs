@@ -34,20 +34,24 @@ define_opcodes! {
 
     IConst16(dst: u8, val: i16)      = 1,
     @ IData::IConst { value, .. } if bits == 16 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let val = *value as i16;
-        chunk.append(Opcode::IConst16);
-        chunk.append(dst);
-        chunk.append(val);
+        let val = *value;
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::IConst16);
+            chunk.append(dst);
+            chunk.append(val as i16);
+        });
     },
 
     IConst32(dst: u8, val: i32)      = 2,
     @ IData::IConst { value, .. } if bits == 32 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let val = *value as i32;
-        chunk.append(Opcode::IConst32);
-        chunk.append(dst);
-        chunk.append(val);
+        let val = *value;
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::IConst32);
+            chunk.append(dst);
+            chunk.append(val as i32);
+        });
     },
 
     IConst64(dst: u8, val: i64)      = 3,
@@ -495,19 +499,23 @@ define_opcodes! {
     // Memory
     Load8(dst: u8, addr: u8)         = 40,
     @ IData::LoadNoOffset { ty, addr } if bits == 8 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
         let addr = self.load_value(chunk, *addr);
-        chunk.append(Opcode::Load8);
-        chunk.append(dst);
-        chunk.append(addr);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::Load8);
+            chunk.append(dst);
+            chunk.append(addr);
+        });
     },
     Load16(dst: u8, addr: u8)        = 41,
     @ IData::LoadNoOffset { ty, addr } if bits == 16 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
         let addr = self.load_value(chunk, *addr);
-        chunk.append(Opcode::Load16);
-        chunk.append(dst);
-        chunk.append(addr);
+        let result_val = results.unwrap()[0];
+        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
+            chunk.append(Opcode::Load16);
+            chunk.append(dst);
+            chunk.append(addr);
+        });
     },
     Load32(dst: u8, addr: u8)        = 42,
     @ IData::LoadNoOffset { ty, addr } if bits == 32 => |results, chunk| {
@@ -909,12 +917,9 @@ pub fn disassemble_chunk(
     println!();
 
     let mut offset = 0;
-
-    #[cfg(debug_assertions)]
     let mut curr_block = None;
     while offset < lowered_func.chunk.code.len() {
         if print_metadata_ {
-            #[cfg(debug_assertions)]
             print_metadata(
                 lowered_func,
                 offset,
@@ -967,8 +972,15 @@ fn print_metadata(
         println!("  pc={pc:?} inst_id={inst:?}, size={size}");
         println!("{offset_str};");
     }
+}
 
-    print!("{offset_str}");
+#[cfg(not(debug_assertions))]
+fn print_metadata(
+    _lowered: &LoweredSsaFunc,
+    offset: usize,
+    _curr_block: &mut Option<crate::ssa::Block>,
+) {
+    print!("{offset:05X}");
 }
 
 fn print_aligned(name: &str, operands: &str) {
@@ -1047,6 +1059,13 @@ pub fn disassemble_instruction(
                 f64::from_le_bytes(chunk.code[offset + 2..offset + 10].try_into().unwrap());
             print_aligned("FCONST64", &format!("v{dst}, {val}_f64"));
             offset + 10
+        }
+        Opcode::Ishl => {
+            let dst = chunk.code[offset + 1];
+            let a = chunk.code[offset + 2];
+            let b = chunk.code[offset + 3];
+            print_aligned("ISHL", &format!("v{dst}, v{a}, v{b}"));
+            offset + 4
         }
         Opcode::IAdd => {
             let dst = chunk.code[offset + 1];
@@ -1130,6 +1149,18 @@ pub fn disassemble_instruction(
             };
             print_aligned(op_name, &format!("v{dst}, v{a}, v{b}"));
             offset + 4
+        }
+        Opcode::Load8 => {
+            let dst = chunk.code[offset + 1];
+            let addr = chunk.code[offset + 2];
+            print_aligned("LOAD8", &format!("v{dst}, v{addr}"));
+            offset + 3
+        }
+        Opcode::Load16 => {
+            let dst = chunk.code[offset + 1];
+            let addr = chunk.code[offset + 2];
+            print_aligned("LOAD16", &format!("v{dst}, v{addr}"));
+            offset + 3
         }
         Opcode::Load32 => {
             let dst = chunk.code[offset + 1];
