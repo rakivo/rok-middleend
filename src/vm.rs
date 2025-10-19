@@ -7,7 +7,6 @@ use crate::entity::EntityRef;
 use crate::bytecode::{Opcode, BytecodeChunk};
 use crate::ssa::{
     Type,
-    Datas,
     DataId,
     FuncId,
     Signature,
@@ -16,12 +15,145 @@ use crate::ssa::{
     IntrinsicId,
 };
 
+use std::ops::Deref;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::{fmt, ptr, mem};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use smallvec::SmallVec;
 use rustc_hash::FxHashMap;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+// Data management types moved from rok_middleend
+#[derive(Debug)]
+pub struct AtomicContents(pub RwLock<Box<[u8]>>);
+
+impl Clone for AtomicContents {
+    fn clone(&self) -> Self {
+        Self(RwLock::new(self.0.read().clone()))
+    }
+}
+
+impl IntoIterator for &AtomicContents {
+    type Item = u8;
+    type IntoIter = std::vec::IntoIter<u8>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl AtomicContents {
+    #[inline(always)]
+    #[must_use]
+    pub fn new(contents: Box<[u8]>) -> Self {
+        Self(RwLock::new(contents))
+    }
+
+    #[inline(always)]
+    pub fn read(&self) -> RwLockReadGuard<'_, Box<[u8]>> {
+        self.0.read()
+    }
+
+    #[inline(always)]
+    pub fn write(&self) -> RwLockWriteGuard<'_, Box<[u8]>> {
+        self.0.write()
+    }
+
+    // Length operations
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.0.read().len()
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.0.read().is_empty()
+    }
+
+    // Element access
+    #[inline(always)]
+    pub fn get(&self, index: usize) -> Option<u8> {
+        self.0.read().get(index).copied()
+    }
+
+    #[inline(always)]
+    pub fn first(&self) -> Option<u8> {
+        self.0.read().first().copied()
+    }
+
+    #[inline(always)]
+    pub fn last(&self) -> Option<u8> {
+        self.0.read().last().copied()
+    }
+
+    // Iterator
+    #[inline(always)]
+    pub fn iter(&self) -> std::vec::IntoIter<u8> {
+        self.0.read().iter().copied().collect::<Vec<_>>().into_iter()
+    }
+
+    // Chunked iteration
+    #[inline(always)]
+    pub fn chunks(&self, chunk_size: usize) -> Vec<Vec<u8>> {
+        let guard = self.0.read();
+        guard.chunks(chunk_size).map(<[u8]>::to_vec).collect()
+    }
+}
+
+// TODO(#13): Data names in DataDescription
+#[derive(Debug)]
+pub struct DataDescription {
+    pub size: u32,
+    pub is_external: AtomicBool,
+    pub contents: Box<[u8]>,
+}
+
+impl Clone for DataDescription {
+    fn clone(&self) -> Self {
+        Self {
+            size: self.size,
+            is_external: self.is_external().into(),
+            contents: self.contents.clone()
+        }
+    }
+}
+
+impl DataDescription {
+    pub fn is_external(&self) -> bool {
+        self.is_external.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+pub struct DataDescriptionView<'a> {
+    pub size: u32,
+    pub is_external: bool,
+    pub contents: &'a [u8]
+}
+
+pub enum DataView<'a> {
+    Defined(DataDescriptionView<'a>),
+    Placeholder(u32)
+}
+
+impl DataView<'_> {
+    pub fn size(&self) -> u32 {
+        match self {
+            Self::Defined(d) => d.size,
+            Self::Placeholder(p) => *p
+        }
+    }
+}
+
+/// A view over all data slots, holding the lock for the duration.
+pub struct AllDatasView<'a> {
+    pub datas: Vec<(DataId, DataView<'a>)>,
+}
+
+impl<'a> Deref for AllDatasView<'a> {
+    type Target = Vec<(DataId, DataView<'a>)>;
+    fn deref(&self) -> &Self::Target { &self.datas }
+}
 
 pub type VMCallback = Arc<dyn Fn(
     &mut VirtualMachine,
@@ -35,9 +167,10 @@ pub enum VMError {
     FFIError,
     EmptyCallStack,
     InvalidOpcode(u8),
-    InvalidDataId(u32),
-    InvalidFuncId(u32),
-    InvalidIntrinId(u32),
+    InvalidDataId(DataId),
+    InvalidFuncId(FuncId),
+    InvalidExtFuncId(ExtFuncId),
+    InvalidIntrinId(IntrinsicId),
     StackOverflow,
     StackUnderflow,
     DivisionByZero,
@@ -56,6 +189,7 @@ impl fmt::Display for VMError {
             VMError::InvalidOpcode(op) => write!(f, "Invalid opcode: {op}"),
             VMError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
             VMError::InvalidFuncId(id) => write!(f, "Invalid function ID: {id}"),
+            VMError::InvalidExtFuncId(id) => write!(f, "Invalid ext function ID: {id}"),
             VMError::InvalidIntrinId(id) => write!(f, "Invalid intrinsic ID: {id}"),
             VMError::StackOverflow => write!(f, "Stack overflow"),
             VMError::StackUnderflow => write!(f, "Stack underflow"),
@@ -287,37 +421,35 @@ impl VirtualMachine {
         self.ext_funcs = ext_funcs;
     }
 
-    pub fn initialize_module_data(&mut self, datas: &Datas) {
-        let total_size = datas.values().map(|desc| desc.size as usize).sum();
+    pub fn initialize_module_data(&mut self, datas: AllDatasView) {
+        let total_size = datas.iter().map(|(_, desc)| desc.size() as usize).sum();
         self.data_memory.reserve(total_size);
         self.data_offsets.reserve(datas.len());
 
         let mut total_aligned_size = 0;
-        for data_desc in datas.values() {
-            if !data_desc.is_external() {
-                total_aligned_size = util::align_up(total_aligned_size, 8);
-                total_aligned_size += data_desc.size;
-            }
+        for (_, data_desc) in &*datas {
+            total_aligned_size = util::align_up(total_aligned_size, 8);
+            total_aligned_size += data_desc.size();
         }
 
         self.data_memory.resize(total_aligned_size as _, 0);
 
         let mut current_offset = 0;
-        for (data_id, data_desc) in datas {
-            if !data_desc.is_external() {
-                current_offset = util::align_up(current_offset, 8);
-                self.data_offsets.insert(data_id, current_offset);
+        for (data_id, data_desc) in &*datas {
+            current_offset = util::align_up(current_offset, 8);
+            self.data_offsets.insert(*data_id, current_offset);
 
+            if let DataView::Defined(data_desc) = data_desc {
                 if data_desc.contents.is_empty() {
                     // leave placeholder zeroed out
                 } else {
-                    let contents = data_desc.contents.read();
+                    let contents = &data_desc.contents;
                     let curr = current_offset as usize;
                     self.data_memory[curr..curr + contents.len()].copy_from_slice(&contents);
                 }
-
-                current_offset += data_desc.size;
             }
+
+            current_offset += data_desc.size();
         }
     }
 
@@ -581,7 +713,7 @@ impl VirtualMachine {
 
                     #[cfg(debug_assertions)]
                     if intrinsic_id.index() >= self.intrinsics.len() {
-                        return Err(VMError::InvalidIntrinId(intrinsic_id.as_u32()));
+                        return Err(VMError::InvalidIntrinId(intrinsic_id));
                     }
 
                     let callback = unsafe { util::reborrow(&self.intrinsics[intrinsic_id].vm_callback) };
@@ -594,7 +726,7 @@ impl VirtualMachine {
 
                     #[cfg(debug_assertions)]
                     if func_id.index() >= self.funcs.len() {
-                        return Err(VMError::InvalidFuncId(func_id.as_u32()));
+                        return Err(VMError::InvalidFuncId(func_id));
                     }
 
                     let save_start = self.stack_top;
@@ -648,7 +780,7 @@ impl VirtualMachine {
 
                     #[cfg(debug_assertions)]
                     if ext_func_id.index() >= self.ext_funcs.len() {
-                        return Err(VMError::InvalidFuncId(ext_func_id.as_u32()));
+                        return Err(VMError::InvalidExtFuncId(ext_func_id));
                     }
 
                     #[inline]
@@ -793,7 +925,7 @@ impl VirtualMachine {
                         let data_ptr = self.data_memory.as_ptr() as u64 + u64::from(offset);
                         self.registers[dst] = data_ptr;
                     } else {
-                        return Err(VMError::InvalidDataId(data_id.as_u32()));
+                        return Err(VMError::InvalidDataId(data_id));
                     }
                 }
 

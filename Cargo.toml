@@ -1,43 +1,22 @@
 [package]
-name = "rok-bytecode"
+name = "rok_middleend"
 version = "0.1.0"
 edition = "2024"
 authors = ["Mark Tyrkba <marktyrkba456@gmail.com>"]
 readme = "README.md"
 license = "MIT OR APACHE"
-repository = "https://github.com/rakivo/rok-bytecode"
+repository = "https://github.com/rakivo/rok-middleend"
 keywords = ["bytecode", "compiler", "interpreter", "vm", "assembly", "codegen"]
 description = "An experimental bytecode format for (`rok`) compiler"
 categories = ["development-tools", "programming-languages", "virtual-machines"]
 exclude = ["assets/*", "README.md"]
 
 [dependencies]
-smallvec    = { version = "1.13.2", features = [] }
-cfg-if      = { version = "1.0.3",  features = [] }
-indexmap    = { version = "2.11.1", features = [] }
-libffi      = { version = "4.1.2",  features = [] }
-once_cell   = { version = "1.21.3", features = [] }
-parking_lot = { version = "0.12.4", features = [] }
-rustc-hash  = { version = "2.1.1",  features = [] }
-paste       = { version = "1.0.15" }
+cfg-if.workspace = true
+indexmap.workspace = true
+parking_lot.workspace = true
+smallvec.workspace = true
+rustc-hash.workspace = true
+paste.workspace = true
 
-[profile.release]
-opt-level = 3
-panic = "abort"
-codegen-units = 1
-lto = "fat"
-debug = false
-strip = true
-overflow-checks = false
-
-# also: set RUSTFLAGS="-C force-frame-pointers=yes"
-[profile.profiling]
-inherits = "release"
-debug = true                      # keep DWARF symbols
-split-debuginfo = "packed"        # so perf can find them easily (Linux)
-strip = "none"                    # don’t strip symbols
-lto = false
-codegen-units = 16
-overflow-checks = false
-panic = "abort"                   # optional: less noise, smaller code
-
+libffi = { version = "4.1.2",  features = [] }
