@@ -64,19 +64,19 @@ where
     }
 
     /// Is this map completely empty?
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.elems.is_empty()
     }
 
     /// Get the total number of entity references created.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.elems.len()
     }
 
     /// Iterate over all the keys in this map.
-    #[must_use] 
+    #[must_use]
     pub fn keys(&self) -> Keys<K> {
         Keys::with_len(self.elems.len())
     }
@@ -92,7 +92,7 @@ where
     }
 
     /// Iterate over all the keys and values in this map.
-    #[must_use] 
+    #[must_use]
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter::new(self.elems.iter())
     }
@@ -103,7 +103,7 @@ where
     }
 
     /// Returns the last element that was inserted in the map.
-    #[must_use] 
+    #[must_use]
     pub fn last(&self) -> Option<&V> {
         self.elems.last()
     }
@@ -160,6 +160,8 @@ where
 mod tests {
     use super::*;
     use crate::primary::PrimaryMap;
+
+    extern crate alloc;
     use alloc::vec::Vec;
 
     // `EntityRef` impl for testing.
