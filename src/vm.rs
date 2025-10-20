@@ -11,8 +11,8 @@ use crate::ssa::{
     FuncId,
     Signature,
     ExtFuncId,
-    Intrinsics,
-    IntrinsicId,
+    Hooks,
+    HookId,
 };
 
 use std::ops::Deref;
@@ -170,7 +170,7 @@ pub enum VMError {
     InvalidDataId(DataId),
     InvalidFuncId(FuncId),
     InvalidExtFuncId(ExtFuncId),
-    InvalidIntrinId(IntrinsicId),
+    InvalidHookId(HookId),
     StackOverflow,
     StackUnderflow,
     DivisionByZero,
@@ -190,7 +190,7 @@ impl fmt::Display for VMError {
             VMError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
             VMError::InvalidFuncId(id) => write!(f, "Invalid function ID: {id}"),
             VMError::InvalidExtFuncId(id) => write!(f, "Invalid ext function ID: {id}"),
-            VMError::InvalidIntrinId(id) => write!(f, "Invalid intrinsic ID: {id}"),
+            VMError::InvalidHookId(id) => write!(f, "Invalid hook ID: {id}"),
             VMError::StackOverflow => write!(f, "Stack overflow"),
             VMError::StackUnderflow => write!(f, "Stack underflow"),
             VMError::DivisionByZero => write!(f, "Division by zero"),
@@ -329,7 +329,7 @@ pub struct VirtualMachine {
     stack_memory: Box<[u8]>,
     stack_top: usize,
 
-    intrinsics: Intrinsics,
+    hooks: Hooks,
 
     data_memory: Vec<u8>,
     data_offsets: FxHashMap<DataId, u32>,
@@ -386,7 +386,7 @@ impl VirtualMachine {
         let stack_memory = stack_memory.into_boxed_slice();
 
         VirtualMachine {
-            intrinsics: PrimaryMap::new(),
+            hooks: PrimaryMap::new(),
             data_memory: Vec::new(),
             data_offsets: FxHashMap::default(),
             funcs: FxHashMap::default(),
@@ -412,8 +412,8 @@ impl VirtualMachine {
     }
 
     #[inline(always)]
-    pub fn load_intrinsics(&mut self, intrinsics: Intrinsics) {
-        self.intrinsics = intrinsics;
+    pub fn load_hooks(&mut self, hooks: Hooks) {
+        self.hooks = hooks;
     }
 
     #[inline(always)]
@@ -708,15 +708,15 @@ impl VirtualMachine {
                     }
                 }
 
-                Opcode::CallIntrin => {
-                    let intrinsic_id = IntrinsicId::from_u32(decoder.read_u32());
+                Opcode::CallHook => {
+                    let hook_id = HookId::from_u32(decoder.read_u32());
 
                     #[cfg(debug_assertions)]
-                    if intrinsic_id.index() >= self.intrinsics.len() {
-                        return Err(VMError::InvalidIntrinId(intrinsic_id));
+                    if hook_id.index() >= self.hooks.len() {
+                        return Err(VMError::InvalidHookId(hook_id));
                     }
 
-                    let callback = unsafe { util::reborrow(&self.intrinsics[intrinsic_id].vm_callback) };
+                    let callback = unsafe { util::reborrow(&self.hooks[hook_id].vm_callback) };
                     let chunk = unsafe { util::reborrow(chunk) };
                     (callback)(self, &mut decoder, chunk);
                 }

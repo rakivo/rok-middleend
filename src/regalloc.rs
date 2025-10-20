@@ -205,7 +205,7 @@ impl<'a> CustomAllocAdapter<'a> {
                 if matches!(inst_data,
                     InstructionData::Call { .. } |
                     InstructionData::CallExt { .. } |
-                    InstructionData::CallIntrin { .. }
+                    InstructionData::CallHook { .. }
                 ) {
                     self.is_call.insert(inst_idx, true);
                 }
@@ -224,7 +224,7 @@ impl<'a> CustomAllocAdapter<'a> {
                     }
                     InstructionData::Call { args, .. } |
                     InstructionData::CallExt { args, .. } |
-                    InstructionData::CallIntrin { args, .. } => {
+                    InstructionData::CallHook { args, .. } => {
                         for &arg in args.iter().take(8) {
                             self.add_use(arg, inst_idx);
                         }
@@ -239,7 +239,7 @@ impl<'a> CustomAllocAdapter<'a> {
                                 // External calls in VM don't clobber beyond arg registers
                                 RegMask::args_and_returns()
                             }
-                            InstructionData::CallIntrin { .. } => {
+                            InstructionData::CallHook { .. } => {
                                 RegMask::args_and_returns()
                             }
                             _ => unreachable!()

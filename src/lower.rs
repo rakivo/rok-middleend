@@ -237,7 +237,7 @@ impl<'a> LoweringContext<'a> {
                 Opcode::Store8 | Opcode::Store16 | Opcode::Store32 | Opcode::Store64 |
                 Opcode::FpStore8 | Opcode::FpStore16 | Opcode::FpStore32 | Opcode::FpStore64 => {}
                 // Calls: results in r0..r7 depending on number of results
-                Opcode::Call | Opcode::CallExt | Opcode::CallIntrin => {
+                Opcode::Call | Opcode::CallExt | Opcode::CallHook => {
                     // Conservatively mark r0..r7 as clobbered
                     mask = mask.union(RegMask::args_and_returns());
                 }

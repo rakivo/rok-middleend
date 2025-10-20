@@ -15,7 +15,7 @@ crate::entity_ref!(Value, "Value");
 crate::entity_ref!(Inst, "Inst");
 crate::entity_ref!(Block, "Block");
 crate::entity_ref!(StackSlot, "StackSlot");
-crate::entity_ref!(IntrinsicId, "IntrinsicId");
+crate::entity_ref!(HookId, "HookId");
 crate::entity_ref!(FuncId, "FuncId");
 crate::entity_ref!(DataId, "DataId");
 crate::entity_ref!(GlobalValue, "GlobalValue");
@@ -78,16 +78,16 @@ impl Signature {
     }
 }
 
-/// Represents an intrinsic
+/// Represents a compiler hook
 #[derive(Clone)]
-pub struct IntrinData {
+pub struct HookData {
     pub name: Box<str>,
     pub signature: Signature,
     pub vm_callback: VMCallback
 }
 
-unsafe impl Send for IntrinData {}
-unsafe impl Sync for IntrinData {}
+unsafe impl Send for HookData {}
+unsafe impl Sync for HookData {}
 
 /// Represents an external function, defined outside the module.
 #[derive(Debug, Clone)]
@@ -236,7 +236,7 @@ pub struct FunctionMetadata {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    CallIntrin { intrinsic_id: IntrinsicId, args: SmallVec<[Value; 8]> },
+    CallHook { hook_id: HookId, args: SmallVec<[Value; 8]> },
     Binary { binop: BinaryOp, args: [Value; 2] },
     Icmp { code: IntCC, args: [Value; 2] },
     Unary { unop: UnaryOp, arg: Value },
@@ -286,7 +286,7 @@ impl InstructionData {
             Self::CallExt { .. } => 32,
             Self::Return { .. } => 32,
 
-            Self::CallIntrin { .. } |
+            Self::CallHook { .. } |
             Self::Unreachable |
             Self::Nop => 0
         }
@@ -346,13 +346,13 @@ pub enum ValueDef {
     Const(i64),
 }
 
-pub type Intrinsics = PrimaryMap<IntrinsicId, IntrinData>;
+pub type Hooks = PrimaryMap<HookId, HookData>;
 
 #[derive(Default)]
 pub struct Module {
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFuncData>,
-    pub intrinsics: Intrinsics,
+    pub hooks: Hooks,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
 
@@ -369,8 +369,8 @@ impl Module {
     }
 
     #[inline(always)]
-    pub fn add_intrinsic(&mut self, intrin_data: IntrinData) -> IntrinsicId {
-        self.intrinsics.push(intrin_data)
+    pub fn add_hook(&mut self, data: HookData) -> HookId {
+        self.hooks.push(data)
     }
 
     #[inline]
@@ -405,16 +405,16 @@ impl Module {
 
     with_comment! {
         ir_builder,
-        call_intrin_with_comment,
+        call_hook_with_comment,
         #[inline]
-        pub fn call_intrin(
+        pub fn call_hook(
             &self,
-            intrinsic_id: IntrinsicId,
+            hook_id: HookId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
         ) -> Option<Value> {
-            let result_ty = self.intrinsics[intrinsic_id].signature.returns.first().copied();
-            ir_builder.ins().call_intrin(result_ty, intrinsic_id, args)
+            let result_ty = self.hooks[hook_id].signature.returns.first().copied();
+            ir_builder.ins().call_hook(result_ty, hook_id, args)
         }
     }
 
@@ -1131,16 +1131,16 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
-        call_intrin_with_comment,
+        call_hook_with_comment,
         #[inline]
-        pub fn call_intrin(
+        pub fn call_hook(
             &mut self,
             result_ty: Option<Type>,
-            intrinsic_id: IntrinsicId,
+            hook_id: HookId,
             args: &[Value]
         ) -> Option<Value> {
-            let inst = self.insert_inst(InstructionData::CallIntrin {
-                intrinsic_id,
+            let inst = self.insert_inst(InstructionData::CallHook {
+                hook_id,
                 args: args.into()
             });
             result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
@@ -1284,7 +1284,7 @@ impl SsaFunc {
             InstructionData::Jump { destination, args } => s.push_str(&format!("jump {}({})", destination, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Call { func_id, args } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::CallIntrin { intrinsic_id, args } => s.push_str(&format!("call_intrin {} ({})", intrinsic_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallHook { hook_id, args } => s.push_str(&format!("call_hook {} ({})", hook_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Return { args } => s.push_str(&format!("return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),

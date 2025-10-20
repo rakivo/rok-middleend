@@ -699,8 +699,8 @@ define_opcodes! {
     Nop() = 128,
     @ IData::Nop => |results, chunk| {},
 
-    CallIntrin(intrinsic_id: u32) = 135,
-    @ IData::CallIntrin { intrinsic_id, args } => |results, chunk, inst_id| {
+    CallHook(hook_id: u32) = 135,
+    @ IData::CallHook { hook_id, args } => |results, chunk, inst_id| {
         // 1) Move arguments to r0-r7 (up to 8 args)
         for (i, &arg) in args.iter().take(8).enumerate() {
             let arg_reg = self.load_value(chunk, arg);
@@ -714,15 +714,15 @@ define_opcodes! {
             }
         }
 
-        // TODO(#16): CallIntrin: If more than 8 args, push extras onto stack
+        // TODO(#16): CallHook: If more than 8 args, push extras onto stack
         // For now, assume <= 8 arguments
         if args.len() > 8 {
             panic!("Functions with more than 8 arguments not yet supported");
         }
 
         // 2) Emit call instruction
-        chunk.append(Opcode::CallIntrin);
-        chunk.append(intrinsic_id.index() as u32);
+        chunk.append(Opcode::CallHook);
+        chunk.append(hook_id.index() as u32);
 
         // 3) Move result(s) from r0 to destination register(s).
         if let Some(results) = results && !results.is_empty() {
@@ -1227,10 +1227,10 @@ pub fn disassemble_instruction(
             print_aligned("CALL_EXT", &format!("EXT_{func_id}"));
             offset + 5
         }
-        Opcode::CallIntrin => {
-            let intrinsic_id =
+        Opcode::CallHook => {
+            let hook_id =
                 u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("CALL_INTRIN", &format!("INTRIN_{intrinsic_id}"));
+            print_aligned("CALL_HOOK", &format!("HOOK_{hook_id}"));
             offset + 5
         }
         Opcode::Bor => {
