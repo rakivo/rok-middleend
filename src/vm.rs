@@ -293,9 +293,15 @@ impl InstructionDecoder {
     }
 }
 
+// @Hack: I just don't wanna move Consteval map to a shared module rn..
+pub trait FuncDispatcher {
+    fn get_bytecode_chunk(&self, packed: u64) -> Arc<BytecodeChunk>;
+    fn get_ext_func_data(&self, packed: u64) -> Arc<VMExtFunc>;
+}
+
 #[derive(Copy, Debug, Clone)]
 pub struct StackFrame {
-    pub func_id: FuncId,
+    pub func_id_packed: u64,
     pub ret_pc: usize,
     pub fp: usize,
     pub sp: usize,
@@ -304,23 +310,26 @@ pub struct StackFrame {
 impl StackFrame {
     #[inline]
     #[must_use]
-    pub const fn new(func_id: FuncId, ret_pc: usize, fp: usize, sp: usize) -> Self {
-        StackFrame { func_id, ret_pc, fp, sp }
+    pub const fn new(func_id_packed: u64, ret_pc: usize, fp: usize, sp: usize) -> Self {
+        StackFrame { func_id_packed, ret_pc, fp, sp }
     }
 }
 
 #[derive(Clone)]
-pub struct ExtFunc {
+pub struct VMExtFunc {
     pub signature: Signature,
     pub addr: *const (),
     pub name: Box<str>
 }
 
-pub type VmFuncMap = FxHashMap<FuncId, Arc<BytecodeChunk>>;
-pub type VmExtFuncMap = FxHashMap<ExtFuncId, ExtFunc>;
+unsafe impl Send for VMExtFunc {}
+unsafe impl Sync for VMExtFunc {}
 
-pub struct VirtualMachine {
-    funcs: VmFuncMap,
+pub type VmExtFuncMap = FxHashMap<ExtFuncId, VMExtFunc>;
+
+pub struct VirtualMachine<'a> {
+    module_id: u32,
+
     ext_funcs: VmExtFuncMap,
 
     call_stack: Vec<StackFrame>,
@@ -330,6 +339,9 @@ pub struct VirtualMachine {
     stack_top: usize,
 
     hooks: Hooks,
+
+    // @Performance: i dont like this
+    dispatcher: &'a dyn FuncDispatcher,
 
     data_memory: Vec<u8>,
     data_offsets: FxHashMap<DataId, u32>,
@@ -372,12 +384,12 @@ macro_rules! def_op_icmp {
     };
 }
 
-impl VirtualMachine {
+impl<'a> VirtualMachine<'a> {
     pub const STACK_SIZE: usize = 1024 * 1024;
 
     #[inline]
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(module_id: u32, dispatcher: &'a dyn FuncDispatcher) -> Self {
         let mut stack_memory = Vec::with_capacity(Self::STACK_SIZE);
         #[allow(clippy::uninit_vec)]
         unsafe {
@@ -386,10 +398,11 @@ impl VirtualMachine {
         let stack_memory = stack_memory.into_boxed_slice();
 
         VirtualMachine {
+            module_id,
+            dispatcher,
             hooks: PrimaryMap::new(),
             data_memory: Vec::new(),
             data_offsets: FxHashMap::default(),
-            funcs: FxHashMap::default(),
             ext_funcs: FxHashMap::default(),
             call_stack: Vec::with_capacity(32),
             pc: 0,
@@ -417,7 +430,7 @@ impl VirtualMachine {
     }
 
     #[inline(always)]
-    pub fn load_ext_funcs(&mut self, ext_funcs: FxHashMap<ExtFuncId, ExtFunc>) {
+    pub fn load_ext_funcs(&mut self, ext_funcs: FxHashMap<ExtFuncId, VMExtFunc>) {
         self.ext_funcs = ext_funcs;
     }
 
@@ -461,11 +474,6 @@ impl VirtualMachine {
         ].copy_from_slice(contents);
     }
 
-    #[inline(always)]
-    pub fn add_function(&mut self, func_id: FuncId, chunk: Arc<BytecodeChunk>) {
-        self.funcs.insert(func_id, chunk);
-    }
-
     #[inline]
     pub fn add_external_function(
         &mut self,
@@ -474,7 +482,7 @@ impl VirtualMachine {
         addr: *const (),
         name: impl Into<Box<str>>
     ) {
-        self.ext_funcs.insert(func_id, ExtFunc {
+        self.ext_funcs.insert(func_id, VMExtFunc {
             signature,
             addr,
             name: name.into()
@@ -500,7 +508,9 @@ impl VirtualMachine {
 
     fn call_function_(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
         // Set up initial frame
-        let chunk = self.funcs.get(&func_id).unwrap();
+        // @Hack: We just assume that if you call a function -> it's local to a VM
+        let packed = ((self.module_id as u64) << 32) | (func_id.as_u32() as u64);
+        let chunk = self.get_chunk(packed);
 
         unsafe {
             // Clear return registers for new function call
@@ -522,7 +532,7 @@ impl VirtualMachine {
             return Err(VMError::StackOverflow);
         }
 
-        let frame = StackFrame::new(func_id, 0, new_fp, new_sp);
+        let frame = StackFrame::new(packed, 0, new_fp, new_sp);
         self.call_stack.push(frame);
         self.stack_top = new_sp;
         self.pc = 0;
@@ -544,8 +554,8 @@ impl VirtualMachine {
         let mut frame = *self.current_frame();
 
         while !self.halted && !self.call_stack.is_empty() {
-            let func_id = frame.func_id;
-            let chunk = self.get_chunk(func_id);
+            let packed = frame.func_id_packed;
+            let chunk = &self.get_chunk(packed);
             let mut decoder = InstructionDecoder::new(&chunk.code);
             decoder.set_pos(self.pc, chunk.code.as_ptr());
 
@@ -722,14 +732,10 @@ impl VirtualMachine {
                 }
 
                 Opcode::Call => {
-                    let func_id = FuncId::from_u32(decoder.read_u32());
-
-                    #[cfg(debug_assertions)]
-                    if func_id.index() >= self.funcs.len() {
-                        return Err(VMError::InvalidFuncId(func_id));
-                    }
+                    let packed = decoder.read_u64();
 
                     let save_start = self.stack_top;
+                    // @Performance: Idk why we do this
                     let save_size = (REG_COUNT as usize) * 8; // reg count registers * 8 bytes each
 
                     #[cfg(debug_assertions)]
@@ -740,7 +746,7 @@ impl VirtualMachine {
                     let ret_pc = decoder.get_pos(chunk.code.as_ptr());
 
                     // Set up initial frame
-                    let new_chunk = self.get_chunk(func_id);
+                    let new_chunk = self.get_chunk(packed);
                     let frame_size = new_chunk.frame_info.total_size as usize;
                     let new_fp = save_start + save_size; // Frame starts after saved registers
                     let new_sp = new_fp + frame_size;
@@ -751,7 +757,7 @@ impl VirtualMachine {
                     }
 
                     let new_frame = StackFrame::new(
-                        func_id,
+                        packed,
                         ret_pc,
                         new_fp,
                         new_sp
@@ -774,15 +780,6 @@ impl VirtualMachine {
                         ffi_abi_FFI_DEFAULT_ABI,
                     };
 
-                    let ext_func_id = ExtFuncId::from_u32(
-                        decoder.read_u32()
-                    );
-
-                    #[cfg(debug_assertions)]
-                    if ext_func_id.index() >= self.ext_funcs.len() {
-                        return Err(VMError::InvalidExtFuncId(ext_func_id));
-                    }
-
                     #[inline]
                     fn ty_to_ffi(ty: Type) -> FFIType {
                         match ty {
@@ -800,7 +797,13 @@ impl VirtualMachine {
                         }
                     }
 
-                    let ExtFunc { ref signature, addr, ref name } = self.ext_funcs[&ext_func_id];
+                    let packed = decoder.read_u64();
+                    let ext_func = &*self.dispatcher.get_ext_func_data(packed);
+
+                    let addr: *const () = ext_func.addr;
+
+                    let name: &str = &ext_func.name;
+                    let signature = &ext_func.signature;
 
                     let rety = signature.returns.first();
                     let args = &signature.params;
@@ -1127,7 +1130,7 @@ impl VirtualMachine {
                 }
             }
 
-            let chunk = self.get_chunk(func_id);
+            let chunk = self.get_chunk(packed);
             self.pc = decoder.get_pos(chunk.code.as_ptr());
         }
 
@@ -1135,7 +1138,7 @@ impl VirtualMachine {
     }
 }
 
-impl VirtualMachine {
+impl VirtualMachine<'_> {
     fn try_run<T>(f: impl FnOnce() -> Result<T, VMError>) -> Result<T, VMError> {
         let result = catch_unwind(AssertUnwindSafe(f));
 
@@ -1277,19 +1280,8 @@ impl VirtualMachine {
 
     // helper to get chunk pointer in a single place (safer to centralize)
     #[inline(always)]
-    fn get_chunk(&self, func_id: FuncId) -> &BytecodeChunk {
-        #[cfg(debug_assertions)]
-        {
-            self.funcs
-                .get(&func_id)
-                .expect("invalid function id")
-        }
-        #[cfg(not(debug_assertions))]
-        unsafe {
-            self.funcs
-                .get(&func_id)
-                .unwrap_unchecked()
-        }
+    fn get_chunk(&self, packed: u64) -> Arc<BytecodeChunk> {
+        self.dispatcher.get_bytecode_chunk(packed)
     }
 
     #[inline(always)]

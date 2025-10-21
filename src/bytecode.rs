@@ -416,8 +416,8 @@ define_opcodes! {
         chunk.append(Opcode::Return);
     },
 
-    Call(func_id: u32)          = 29,
-    @ IData::Call { func_id, args, .. } => |results, chunk, inst_id| {
+    Call(key: u64)          = 29,
+    @ IData::Call { func_id, args, parent } => |results, chunk, inst_id| {
         // 1) Move arguments to r0-r7 (up to 8 args)
         for (i, &arg) in args.iter().take(8).enumerate() {
             let arg_reg = self.load_value(chunk, arg);
@@ -439,7 +439,8 @@ define_opcodes! {
 
         // 2) Emit call instruction
         chunk.append(Opcode::Call);
-        chunk.append(func_id.index() as u32);
+        let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
+        chunk.append(key);
 
         // 3) Move result(s) from r0-r7 to destination register(s)
         // Results are already in r0-r7, just need to map them
@@ -730,8 +731,8 @@ define_opcodes! {
         }
     },
 
-    CallExt(func_id: u32)          = 136,
-    @ IData::CallExt { func_id, args, .. } => |results, chunk, inst_id| {
+    CallExt(key: u64)          = 136,
+    @ IData::CallExt { func_id, args, parent } => |results, chunk, inst_id| {
         // 1) Move arguments to r0-r7 (up to 8 args)
         for (i, &arg) in args.iter().take(8).enumerate() {
             let arg_reg = self.load_value(chunk, arg);
@@ -753,7 +754,8 @@ define_opcodes! {
 
         // 2) Emit call instruction
         chunk.append(Opcode::CallExt);
-        chunk.append(func_id.index() as u32);
+        let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
+        chunk.append(key);
     },
 
     Halt()          = 255,
@@ -1216,16 +1218,22 @@ pub fn disassemble_instruction(
             offset + 4
         }
         Opcode::Call => {
-            let func_id =
-                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("CALL", &format!("FUNC_{func_id}"));
-            offset + 5
+            let key =
+                u64::from_le_bytes(chunk.code[offset + 1..offset + 9].try_into().unwrap());
+
+            let module_id = key >> 32;
+            let func_id = key & 0xFFFFFFFF;
+            print_aligned("CALL", &format!("FUNC_{func_id} ModuleId({module_id})"));
+            offset + 9
         }
         Opcode::CallExt => {
-            let func_id =
-                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("CALL_EXT", &format!("EXT_{func_id}"));
-            offset + 5
+            let key =
+                u64::from_le_bytes(chunk.code[offset + 1..offset + 9].try_into().unwrap());
+
+            let module_id = key >> 32;
+            let func_id = key & 0xFFFFFFFF;
+            print_aligned("CALL_EXT", &format!("EXT_{func_id} ModuleId({module_id})"));
+            offset + 9
         }
         Opcode::CallHook => {
             let hook_id =

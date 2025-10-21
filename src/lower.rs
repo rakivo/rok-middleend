@@ -39,6 +39,8 @@ pub struct LoInstMeta {
 // Lowering from SSA to Bytecode
 //
 pub struct LoweringContext<'a> {
+    pub module_id: u32,
+
     pub func: &'a SsaFunc,
     pub ssa_to_preg: FxHashMap<Value, u8>,
 
@@ -73,7 +75,11 @@ impl<'a> LoweringContext<'a> {
     pub const RETURN_VALUES_REGISTERS_COUNT : u32 = 8;
 
     #[must_use]
-    pub fn new(func: &'a SsaFunc, regmask_map: &RegMaskMap) -> Self {
+    pub fn new(
+        module_id: u32,
+        func: &'a SsaFunc,
+        regmask_map: &RegMaskMap,
+    ) -> Self {
         let (
             order,
             result
@@ -84,6 +90,7 @@ impl<'a> LoweringContext<'a> {
 
         Self {
             order,
+            module_id,
             regalloc: result,
             next_stack_slot: StackSlot::from_u32(func.stack_slots.len() as _),
             #[cfg(debug_assertions)]
