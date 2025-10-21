@@ -21,9 +21,11 @@ pub type RegMaskMap = FxHashMap<FuncId, RegMask>;
 
 impl RegMask {
     #[inline(always)]
+    #[must_use] 
     pub const fn empty() -> Self { Self(0) }
 
     #[inline(always)]
+    #[must_use] 
     pub const fn full() -> Self { Self(u128::MAX) }
 
     #[inline(always)]
@@ -33,19 +35,23 @@ impl RegMask {
     }
 
     #[inline(always)]
+    #[must_use] 
     pub fn contains(&self, reg_index: u8) -> bool {
         debug_assert!(reg_index < 128);
         (self.0 & (1u128 << reg_index)) != 0
     }
 
     #[inline(always)]
+    #[must_use] 
     pub fn union(self, other: Self) -> Self { Self(self.0 | other.0) }
 
     #[inline(always)]
+    #[must_use] 
     pub fn subtract(self, other: Self) -> Self { Self(self.0 & !other.0) }
 
     /// Convenience: r0-r7 set (args/returns clobbered)
     #[inline(always)]
+    #[must_use] 
     pub const fn args_and_returns() -> Self {
         Self(0xFF)
     }
@@ -81,6 +87,12 @@ pub struct MachineEnv {
     non_preferred_regs: Vec<PReg>,
 }
 
+impl Default for MachineEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MachineEnv {
     #[inline(always)]
     pub fn new() -> Self {
@@ -106,6 +118,7 @@ pub struct CustomAllocAdapter<'a> {
 }
 
 impl<'a> CustomAllocAdapter<'a> {
+    #[must_use] 
     pub fn new(func: &'a ssa::SsaFunc, regmask_map: &'a RegMaskMap) -> Self {
         let mut adapter = Self {
             func,
@@ -166,9 +179,7 @@ impl<'a> CustomAllocAdapter<'a> {
             let mut used_regs = FxHashSet::default();
             for (i, &param) in block_data.params.iter().enumerate().take(8) {
                 let preg = int_preg(i as _);
-                if !used_regs.insert(preg) {
-                    panic!("Duplicate fixed register r{i} for entry param")
-                }
+                assert!(used_regs.insert(preg), "Duplicate fixed register r{i} for entry param");
                 self.entry_param_pregs.insert(param, preg);
             }
             if block_data.params.len() > 8 {
@@ -187,10 +198,10 @@ impl<'a> CustomAllocAdapter<'a> {
 
             let block_data = &self.func.cfg.blocks[block_idx];
             for &param in &block_data.params {
-                if !self.entry_param_pregs.contains_key(&param) {
-                    self.value_defs.insert(param, block_idx);
-                } else {
+                if self.entry_param_pregs.contains_key(&param) {
                     self.value_defs.insert(param, ENTRY_PARAM_DEF);
+                } else {
+                    self.value_defs.insert(param, block_idx);
                 }
             }
             current_pos += 1;
@@ -338,7 +349,7 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
         } else if adapter.block_positions.contains_key(def_loc) {
             adapter.block_positions[def_loc]
         } else {
-            panic!("Value {:?} has unknown def_loc {}", value, def_loc);
+            panic!("Value {value:?} has unknown def_loc {def_loc}");
         };
 
         let end = if uses.is_empty() {
@@ -352,14 +363,12 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
         let mut arg_conflict_mask = RegMask::empty();
 
         for &(p, m) in &adapter.call_masks {
-            if p > start && p < end {
-                if let Some(last_use) = uses.iter().map(|&u| adapter.inst_positions[&u]).max() {
-                    if last_use > p {
+            if p > start && p < end
+                && let Some(last_use) = uses.iter().map(|&u| adapter.inst_positions[&u]).max()
+                    && last_use > p {
                         crosses = true;
                         clobber_union = clobber_union.union(m);
                     }
-                }
-            }
         }
 
         for &(p, ref vec) in &adapter.call_arg_map {
@@ -372,7 +381,7 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             }
         }
 
-        let fixed_reg = adapter.entry_param_pregs.get(value).cloned();
+        let fixed_reg = adapter.entry_param_pregs.get(value).copied();
 
         intervals.push(Interval {
             value: *value,
@@ -390,11 +399,11 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
 
     let mut active = BinaryHeap::new();
     let mut free_preferred = machine_env.preferred_regs.iter()
-        .cloned()
+        .copied()
         .collect::<FxHashSet<_>>();
 
     let mut free_non_preferred = machine_env.non_preferred_regs.iter()
-        .cloned()
+        .copied()
         .collect::<FxHashSet<_>>();
 
     let mut allocs = FxHashMap::default();
@@ -426,27 +435,25 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             Some(fixed)
         } else if interval.crosses_call {
             let forbidden = interval.clobber_union.union(interval.arg_conflict_mask);
-            if let Some(&reg) = free_preferred.iter().find(|r| !forbidden.contains(r.index as u8)) {
+            if let Some(&reg) = free_preferred.iter().find(|r| !forbidden.contains(r.index)) {
                 free_preferred.remove(&reg);
                 Some(reg)
-            } else if let Some(&reg) = free_non_preferred.iter().find(|r| !forbidden.contains(r.index as u8)) {
+            } else if let Some(&reg) = free_non_preferred.iter().find(|r| !forbidden.contains(r.index)) {
                 free_non_preferred.remove(&reg);
                 Some(reg)
             } else {
                 None
             }
+        } else if !free_preferred.is_empty() {
+            let reg = free_preferred.iter().next().copied().unwrap();
+            free_preferred.remove(&reg);
+            Some(reg)
+        } else if !free_non_preferred.is_empty() {
+            let reg = free_non_preferred.iter().next().copied().unwrap();
+            free_non_preferred.remove(&reg);
+            Some(reg)
         } else {
-            if !free_preferred.is_empty() {
-                let reg = free_preferred.iter().next().cloned().unwrap();
-                free_preferred.remove(&reg);
-                Some(reg)
-            } else if !free_non_preferred.is_empty() {
-                let reg = free_non_preferred.iter().next().cloned().unwrap();
-                free_non_preferred.remove(&reg);
-                Some(reg)
-            } else {
-                None
-            }
+            None
         };
 
         if let Some(reg) = assigned {

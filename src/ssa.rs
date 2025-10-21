@@ -73,6 +73,7 @@ pub struct Signature {
 
 impl Signature {
     #[inline]
+    #[must_use] 
     pub fn is_var_arg(&self) -> bool {
         self.is_var_arg.is_some()
     }
@@ -656,6 +657,7 @@ impl InstBuilder<'_, '_> {
     }
 
     #[inline]
+    #[must_use] 
     pub fn get_last_inst(&self) -> Option<Inst> {
         let block = self.current_block();
         self.builder.func.cfg.blocks[block.index()].insts.last().copied()
@@ -1292,12 +1294,11 @@ impl SsaFunc {
     pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
         let inst = &self.dfg.insts[inst_id.index()];
         let mut s = String::new();
-        if let Some(results) = self.dfg.inst_results.get(&inst_id) {
-            if !results.is_empty() {
+        if let Some(results) = self.dfg.inst_results.get(&inst_id)
+            && !results.is_empty() {
                 s.push_str(&results.iter().map(|r| self.fmt_value(*r)).collect::<Vec<_>>().join(", "));
                 s.push_str(" = ");
             }
-        }
         match inst {
             InstructionData::Binary { binop: opcode, args } => s.push_str(&format!("{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))),
             InstructionData::Icmp { code, args } => s.push_str(&format!("icmp_{:?} {}, {}", code, self.fmt_value(args[0]), self.fmt_value(args[1]))),
@@ -1315,7 +1316,7 @@ impl SsaFunc {
             InstructionData::StackStore { slot, arg } => s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg))),
             InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!("load_no_offset {}:{:?}", self.fmt_value(*addr), ty)),
             InstructionData::StoreNoOffset { args } => s.push_str(&format!("store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))),
-            InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {}", data_id)),
+            InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {data_id}")),
             // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
             InstructionData::Unreachable => s.push_str("unreachable"),
             InstructionData::Nop => s.push_str("nop"),

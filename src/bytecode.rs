@@ -433,9 +433,7 @@ define_opcodes! {
 
         // TODO(#18): Call: If more than 8 args, push extras onto stack
         // For now, assume <= 8 arguments
-        if args.len() > 8 {
-            panic!("Functions with more than 8 arguments not yet supported");
-        }
+        assert!((args.len() <= 8), "Functions with more than 8 arguments not yet supported");
 
         // 2) Emit call instruction
         chunk.append(Opcode::Call);
@@ -717,9 +715,7 @@ define_opcodes! {
 
         // TODO(#16): CallHook: If more than 8 args, push extras onto stack
         // For now, assume <= 8 arguments
-        if args.len() > 8 {
-            panic!("Functions with more than 8 arguments not yet supported");
-        }
+        assert!((args.len() <= 8), "Functions with more than 8 arguments not yet supported");
 
         // 2) Emit call instruction
         chunk.append(Opcode::CallHook);
@@ -748,9 +744,7 @@ define_opcodes! {
 
         // TODO(#17): CallExt: If more than 8 args, push extras onto stack
         // For now, assume <= 8 arguments
-        if args.len() > 8 {
-            panic!("Functions with more than 8 arguments not yet supported");
-        }
+        assert!((args.len() <= 8), "Functions with more than 8 arguments not yet supported");
 
         // 2) Emit call instruction
         chunk.append(Opcode::CallExt);

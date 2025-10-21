@@ -137,6 +137,7 @@ pub enum DataView<'a> {
 }
 
 impl DataView<'_> {
+    #[must_use] 
     pub fn size(&self) -> u32 {
         match self {
             Self::Defined(d) => d.size,
@@ -458,7 +459,7 @@ impl<'a> VirtualMachine<'a> {
                 } else {
                     let contents = &data_desc.contents;
                     let curr = current_offset as usize;
-                    self.data_memory[curr..curr + contents.len()].copy_from_slice(&contents);
+                    self.data_memory[curr..curr + contents.len()].copy_from_slice(contents);
                 }
             }
 
@@ -813,7 +814,7 @@ impl<'a> VirtualMachine<'a> {
                     let mut ffi_types = Vec::with_capacity(args.len());
 
                     let is_variadic = signature.is_var_arg.is_some();
-                    let nfixedargs = signature.is_var_arg.map(|n| n as usize).unwrap_or(0);
+                    let nfixedargs = signature.is_var_arg.map_or(0, |n| n as usize);
 
                     for (i, &ty) in args.iter().enumerate() {
                         let actual_ty = if is_variadic && i >= nfixedargs {
@@ -828,7 +829,7 @@ impl<'a> VirtualMachine<'a> {
                         };
 
                         ffi_types.push(ty_to_ffi(actual_ty));
-                        arg_values.push(self.registers[i] as u64);
+                        arg_values.push(self.registers[i]);
                     }
 
                     // Now create Arg references - these point into arg_values which is stable
@@ -850,22 +851,22 @@ impl<'a> VirtualMachine<'a> {
                             // For variadic functions: nfixedargs = fixed params, ffi_args.len() = total args
                             // The fixed args must come first in ffi_types
                             prep_cif_var(
-                                &mut cif,
+                                &raw mut cif,
                                 ffi_abi_FFI_DEFAULT_ABI,
                                 nfixedargs,          // number of fixed parameters
                                 ffi_args.len(),       // total number of arguments
-                                &mut rety as *mut _ as _,
-                                ffi_types.as_mut_ptr() as _,
+                                (&raw mut rety).cast(),
+                                ffi_types.as_mut_ptr().cast(),
                             )
                         } else {
                             // Use regular prep_cif for non-variadic functions
                             use libffi::low::prep_cif;
                             prep_cif(
-                                &mut cif,
+                                &raw mut cif,
                                 ffi_abi_FFI_DEFAULT_ABI,
                                 ffi_args.len(),
-                                &mut rety as *mut _ as _,
-                                ffi_types.as_mut_ptr() as _,
+                                (&raw mut rety).cast(),
+                                ffi_types.as_mut_ptr().cast(),
                             )
                         };
 
@@ -883,9 +884,9 @@ impl<'a> VirtualMachine<'a> {
 
                     unsafe {
                         ffi_call(
-                            &mut cif,
+                            &raw mut cif,
                             mem::transmute(addr),
-                            &mut result as *mut _ as _,
+                            (&raw mut result).cast(),
                             ffi_args.as_ptr() as *mut _,
                         );
                     }
@@ -1241,7 +1242,7 @@ impl VirtualMachine<'_> {
     fn stack_read_u8(&mut self, addr: usize) -> u8 {
         #[cfg(debug_assertions)]
         {
-            assert!((addr + 1 <= self.stack_memory.len()), "stack_read_u8 OOB: addr={} len={}", addr, self.stack_memory.len());
+            assert!((addr < self.stack_memory.len()), "stack_read_u8 OOB: addr={} len={}", addr, self.stack_memory.len());
             self.stack_memory[addr]
         }
         #[cfg(not(debug_assertions))]
@@ -1254,9 +1255,9 @@ impl VirtualMachine<'_> {
     fn stack_write_u8(&mut self, addr: usize, v: u8) {
         #[cfg(debug_assertions)]
         {
-            assert!((addr + 1 <= self.stack_memory.len()), "stack_write_u8 oob: addr={} len={}", addr, self.stack_memory.len());
+            assert!((addr < self.stack_memory.len()), "stack_write_u8 oob: addr={} len={}", addr, self.stack_memory.len());
             let b = v.to_le_bytes();
-            self.stack_memory[addr..addr + 1].copy_from_slice(&b);
+            self.stack_memory[addr..=addr].copy_from_slice(&b);
         }
         #[cfg(not(debug_assertions))]
         {
