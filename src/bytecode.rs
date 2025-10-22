@@ -1,3 +1,4 @@
+use crate::regalloc;
 use crate::entity::EntityRef;
 use crate::lower::LoweredSsaFunc;
 use crate::util::{self, IntoBytes};
@@ -16,6 +17,7 @@ use crate::ssa::{
 use std::mem;
 
 use indexmap::IndexMap;
+use rustc_hash::FxHashSet;
 
 define_opcodes! {
     self,
@@ -409,6 +411,11 @@ define_opcodes! {
             }
         }
 
+        // Emit epilogue before return
+        if let Some(ref info) = self.callee_saved_info {
+            self.emit_function_epilogue(chunk, info);
+        }
+
         // Teardown stack frame
         self.emit_frame_teardown(chunk);
 
@@ -418,36 +425,122 @@ define_opcodes! {
 
     Call(key: u64)          = 29,
     @ IData::Call { func_id, args, parent } => |results, chunk, inst_id| {
-        // 1) Move arguments to r0-r7 (up to 8 args)
-        for (i, &arg) in args.iter().take(8).enumerate() {
-            let arg_reg = self.load_value(chunk, arg);
-            let target_reg = i as u8; // r0, r1, r2, ... r7
+        let call_opcode = Opcode::Call;
 
-            // Only emit move if source != destination
-            if arg_reg != target_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(target_reg); // dst
-                chunk.append(arg_reg);    // src
+        #[cfg(debug_assertions)]
+        eprintln!("[call] Emitting call (opcode: {:?})", call_opcode);
+
+        // 1. Identify unique caller-saved registers to save
+        // Collect unique registers, avoiding duplicates and arg registers
+        let arg_regs: FxHashSet<u8> = args.iter()
+            .filter_map(|&v| self.ssa_to_preg.get(&v))
+            .copied()
+            .collect();
+
+        let mut regs_to_save: FxHashSet<u8> = FxHashSet::default();
+
+        for &reg in self.ssa_to_preg.values() {
+            // Only save caller-saved registers (r0-r31) that aren't argument registers
+            if regalloc::is_caller_saved(reg) && !arg_regs.contains(&reg) {
+                regs_to_save.insert(reg);
             }
         }
 
-        // TODO(#18): Call: If more than 8 args, push extras onto stack
-        // For now, assume <= 8 arguments
-        assert!((args.len() <= 8), "Functions with more than 8 arguments not yet supported");
+        let mut regs_to_save: Vec<u8> = regs_to_save.into_iter().collect();
+        regs_to_save.sort_unstable();
 
-        // 2) Emit call instruction
+        #[cfg(debug_assertions)]
+        if !regs_to_save.is_empty() {
+            eprintln!("[call] Saving {} unique caller-saved registers: {:?}",
+                regs_to_save.len(), regs_to_save);
+            eprintln!("[call] Current register allocation:");
+            let mut sorted: Vec<_> = self.ssa_to_preg.iter().collect();
+            sorted.sort_by_key(|(_, r)| **r);
+            for (val, reg) in sorted {
+                eprintln!("[call]   v{} -> r{}", val.index(), reg);
+            }
+        }
+
+        // 2. Save caller-saved registers to stack
+        let mut save_slots: Vec<(u8, StackSlot)> = Vec::new();
+        for &reg in &regs_to_save {
+            // Use I64 as default type for saves (all our registers hold 64-bit values)
+            let slot = self.allocate_spill_slot(Type::I64);
+            let allocation = &self.frame_info.slot_allocations[&slot];
+
+            chunk.append(Opcode::FpStore64);
+            chunk.append(allocation.offset);
+            chunk.append(reg);
+
+            save_slots.push((reg, slot));
+
+            #[cfg(debug_assertions)]
+            eprintln!("[call]   Saved r{} -> stack[{}]", reg, allocation.offset);
+        }
+
+        // 3. Move arguments to r0-r7
+        for (i, &arg) in args.iter().take(8).enumerate() {
+            let arg_reg = self.load_value(chunk, arg);
+            let target_reg = i as u8;
+
+            if arg_reg != target_reg {
+                chunk.append(Opcode::Mov);
+                chunk.append(target_reg);
+                chunk.append(arg_reg);
+
+                #[cfg(debug_assertions)]
+                eprintln!("[call]   Arg {}: r{} -> r{}", i, arg_reg, target_reg);
+            }
+        }
+
+        assert!(args.len() <= 8, "Functions with more than 8 arguments not yet supported");
+
+        // 4. Emit call instruction
         chunk.append(Opcode::Call);
         let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
         chunk.append(key);
 
-        // 3) Move result(s) from r0-r7 to destination register(s)
-        // Results are already in r0-r7, just need to map them
-        if let Some(results) = results {
-            for (i, result) in results.iter().enumerate() {
-                let return_reg = i as u8; // r0, r1, r2, ... r7
-                self.store_value(chunk, *result, return_reg);
+        // 5. Move results from r0-r7
+        let result_regs: FxHashSet<u8> = if let Some(results) = results {
+            let mut result_regs = FxHashSet::default();
+            for (i, &result) in results.iter().enumerate().take(8) {
+                let return_reg = i as u8;
+                self.store_value(chunk, result, return_reg);
+
+                // Track which register this result was moved to
+                if let Some(&dest_reg) = self.ssa_to_preg.get(&result) {
+                    result_regs.insert(dest_reg);
+                }
+
+                #[cfg(debug_assertions)]
+                eprintln!("[call]   Result {}: r{} -> r{}", i, return_reg,
+                    self.ssa_to_preg.get(&result).copied().unwrap_or(regalloc::SCRATCH_REG));
             }
+            result_regs
+        } else {
+            FxHashSet::default()
+        };
+
+        // 6. Restore saved registers (but skip registers that now hold return values)
+        for (reg, slot) in save_slots.iter().rev() {
+            if result_regs.contains(reg) {
+                #[cfg(debug_assertions)]
+                eprintln!("[call]   Skipped restore of r{} (holds return value)", reg);
+                continue;
+            }
+
+            let allocation = &self.frame_info.slot_allocations[slot];
+
+            chunk.append(Opcode::FpLoad64);
+            chunk.append(*reg);
+            chunk.append(allocation.offset);
+
+            #[cfg(debug_assertions)]
+            eprintln!("[call]   Restored r{} <- stack[{}]", reg, allocation.offset);
         }
+
+        #[cfg(debug_assertions)]
+        eprintln!("[call] Call complete");
     },
 
     Ireduce(dst: u8, src: u8, bits: u8) = 30,
@@ -840,7 +933,7 @@ impl StackFrameInfo {
     #[must_use]
     pub fn calculate_layout(func: &SsaFunc) -> Self {
         let mut frame_info = StackFrameInfo::default();
-        let mut current_offset = 0u32; // start at FP+0
+        let mut curr_offset = 0u32; // start at FP+0
 
         // Allocate stack slots (growing upward)
         for (slot_idx, slot_data) in func.stack_slots.iter().enumerate() {
@@ -848,21 +941,21 @@ impl StackFrameInfo {
             let align = slot_data.ty.align_bytes();
 
             // Align current offset upward
-            current_offset = util::align_up(current_offset, align);
+            curr_offset = util::align_up(curr_offset, align);
 
             let size = slot_data.size;
             frame_info.slot_allocations.insert(slot, StackSlotAllocation {
                 size,
-                offset: current_offset,
+                offset: curr_offset,
                 ty: slot_data.ty,
             });
 
             // Move current offset past this slot
-            current_offset += size;
+            curr_offset += size;
         }
 
         // Total frame size (still aligned to 16 bytes for ABI)
-        frame_info.total_size = util::align_up(current_offset, 16);
+        frame_info.total_size = util::align_up(curr_offset, 16);
 
         frame_info
     }

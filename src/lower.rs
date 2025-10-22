@@ -2,8 +2,7 @@
 
 use crate::util;
 use crate::entity::EntityRef;
-// use crate::regalloc2::{RegAllocOutput, SCRATCH_REG};
-use crate::regalloc::{RegAllocOutput, RegMask, RegMaskMap, SCRATCH_REG};
+use crate::regalloc::{self, RegAllocOutput, SCRATCH_REG};
 use crate::bytecode::{
     StackFrameInfo,
     StackSlotAllocation,
@@ -19,7 +18,7 @@ use crate::ssa::{
     Value
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Represents a function that has been lowered to bytecode.
 pub struct LoweredSsaFunc<'a> {
@@ -58,40 +57,97 @@ pub struct LoweringContext<'a> {
 
     order: Vec<Block>,
 
+    pub callee_saved_info: Option<Vec<(u8, StackSlot)>>,
+
     /// Map from Value -> spill `StackSlot` (allocated in `frame_info`)
     pub spill_slots: FxHashMap<Value, StackSlot>,
 
     #[cfg(debug_assertions)]
     pub pc_to_inst_meta: FxHashMap<usize, LoInstMeta>,  // index == inst index in lowered list
-
-    /// Produced clobber mask for the function being lowered; computed in `lower()`.
-    pub produced_clobber_mask: RegMask,
 }
 
-/// The context for lowering a single function.
+impl<'a> LoweringContext<'a> {
+    /// Determine which callee-saved registers this function uses.
+    fn compute_used_callee_saved_regs(&self) -> Vec<u8> {
+        let mut used = FxHashSet::default();
+
+        for &reg in self.ssa_to_preg.values() {
+            if regalloc::is_callee_saved(reg) {
+                used.insert(reg);
+            }
+        }
+
+        let mut regs: Vec<u8> = used.into_iter().collect();
+        regs.sort_unstable();
+        regs
+    }
+
+    /// Emit function prologue: save callee-saved registers this function uses.
+    pub fn emit_function_prologue(&mut self, chunk: &mut BytecodeChunk) -> Vec<(u8, StackSlot)> {
+        let callee_saved = self.compute_used_callee_saved_regs();
+
+        #[cfg(debug_assertions)]
+        if !callee_saved.is_empty() {
+            eprintln!("[prologue] Saving {} callee-saved registers: {:?}",
+                callee_saved.len(), callee_saved);
+        }
+
+        let mut saved_slots = Vec::new();
+
+        for &reg in &callee_saved {
+            let slot = self.allocate_spill_slot(Type::I64);
+            let allocation = &self.frame_info.slot_allocations[&slot];
+
+            chunk.append(Opcode::FpStore64);
+            chunk.append(allocation.offset);
+            chunk.append(reg);
+
+            saved_slots.push((reg, slot));
+
+            #[cfg(debug_assertions)]
+            eprintln!("[prologue]   Saved r{} -> stack[{}]", reg, allocation.offset);
+        }
+
+        saved_slots
+    }
+
+    /// Emit function epilogue: restore callee-saved registers.
+    pub fn emit_function_epilogue(&self, chunk: &mut BytecodeChunk, saved_slots: &[(u8, StackSlot)]) {
+        #[cfg(debug_assertions)]
+        if !saved_slots.is_empty() {
+            eprintln!("[epilogue] Restoring {} callee-saved registers", saved_slots.len());
+        }
+
+        for (reg, slot) in saved_slots.iter().rev() {
+            let allocation = &self.frame_info.slot_allocations[slot];
+
+            chunk.append(Opcode::FpLoad64);
+            chunk.append(*reg);
+            chunk.append(allocation.offset);
+
+            #[cfg(debug_assertions)]
+            eprintln!("[epilogue]   Restored r{} <- stack[{}]", reg, allocation.offset);
+        }
+    }
+}
+
 #[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
 impl<'a> LoweringContext<'a> {
     pub const ARG_REGISTERS_COUNT           : u32 = 8;
     pub const RETURN_VALUES_REGISTERS_COUNT : u32 = 8;
 
     #[must_use]
-    pub fn new(
-        module_id: u32,
-        func: &'a SsaFunc,
-        regmask_map: &RegMaskMap,
-    ) -> Self {
+    pub fn new(module_id: u32, func: &'a SsaFunc) -> Self {
         let (
             order,
             result
-        ) = crate::regalloc::allocate_registers_custom(
-            func,
-            regmask_map
-        ).unwrap();
+        ) = crate::regalloc::allocate_registers_custom(func).unwrap();
 
         Self {
             order,
             module_id,
             regalloc: result,
+            callee_saved_info: None,
             next_stack_slot: StackSlot::from_u32(func.stack_slots.len() as _),
             #[cfg(debug_assertions)]
             pc_to_inst_meta: FxHashMap::default(),
@@ -101,7 +157,6 @@ impl<'a> LoweringContext<'a> {
             block_offsets: FxHashMap::default(),
             jump_placeholders: Vec::default(),
             spill_slots: FxHashMap::default(),
-            produced_clobber_mask: RegMask::empty(),
         }
     }
 
@@ -129,33 +184,51 @@ impl<'a> LoweringContext<'a> {
             self.ssa_to_preg.remove(&v);
         }
 
-        // After possibly growing the frame with spill slots, copy frame info to chunk
-        let mut chunk = BytecodeChunk {
-            frame_info: self.frame_info.clone(),
-            ..Default::default()
+        // Create chunk but DON'T copy frame_info yet
+        let mut chunk = BytecodeChunk::default();
+
+        // Allocate callee-saved register slots (this grows self.frame_info)
+        let callee_saved_info = {
+            let callee_saved = self.compute_used_callee_saved_regs();
+            let mut saved_slots = Vec::new();
+
+            for &reg in &callee_saved {
+                let slot = self.allocate_spill_slot(Type::I64);
+                saved_slots.push((reg, slot));
+            }
+
+            saved_slots
         };
 
-        // 4. Emit frame setup at the beginning
+        self.callee_saved_info = Some(callee_saved_info);
+
+        // NOW copy the finalized frame_info to chunk
+        chunk.frame_info = self.frame_info.clone();
+
+        // Emit frame setup (uses correct total_size now)
         self.emit_frame_setup(&mut chunk);
 
-        // 5. Emit bytecode for each block.
+        // Emit the actual store instructions for callee-saved regs
+        if let Some(ref info) = self.callee_saved_info {
+            for &(reg, slot) in info {
+                let allocation = &self.frame_info.slot_allocations[&slot];
+                chunk.append(Opcode::FpStore64);
+                chunk.append(allocation.offset);
+                chunk.append(reg);
+
+                #[cfg(debug_assertions)]
+                eprintln!("[prologue]   Saved r{} -> stack[{}]", reg, allocation.offset);
+            }
+        }
+
+        // Emit bytecode for each block
         self.emit_blocks(&mut chunk);
 
-        // 6. Compute clobber mask for this function by scanning emitted bytecode.
-        self.produced_clobber_mask = self.compute_clobber_mask(&chunk);
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[lower] produced_clobber_mask for '{}': 0x{:032X}",
-            self.func.name,
-            self.produced_clobber_mask.0
-        );
-
-        // 7. Patch jump instructions with correct offsets.
+        // Patch jump instructions with correct offsets
         self.patch_jumps(&mut chunk);
 
         LoweredSsaFunc { context: self, chunk }
     }
-
 
     #[inline(always)]
     pub fn append_jump_placeholder<T>(
@@ -170,7 +243,7 @@ impl<'a> LoweringContext<'a> {
 
     /// Allocate a new FP-relative stack slot for a spill and register it in `frame_info`.
     /// Returns the `StackSlot` handle.
-    fn allocate_spill_slot(&mut self, ty: Type) -> StackSlot {
+    pub fn allocate_spill_slot(&mut self, ty: Type) -> StackSlot {
         let size = ty.bytes() as i32;
         let align = ty.align_bytes();
 
@@ -208,56 +281,6 @@ impl<'a> LoweringContext<'a> {
             chunk.append(Opcode::FrameSetup);
             chunk.append(self.frame_info.total_size);
         }
-    }
-
-    /// Compute function-level clobber mask by scanning generated bytecode for writes to registers
-    /// and including return registers used by `Return`.
-    fn compute_clobber_mask(&self, chunk: &BytecodeChunk) -> RegMask {
-        let mut mask = RegMask::empty();
-
-        let mut offset = 0usize;
-        while offset < chunk.code.len() {
-            let opcode: Opcode = unsafe { std::mem::transmute(chunk.code[offset]) };
-            match opcode {
-                // Single-dst ops (dst at +1)
-                Opcode::IConst8 | Opcode::IConst16 | Opcode::IConst32 | Opcode::IConst64 |
-                Opcode::FConst32 | Opcode::FConst64 |
-                Opcode::IAdd | Opcode::ISub | Opcode::IMul | Opcode::IDiv |
-                Opcode::And | Opcode::Or | Opcode::Xor | Opcode::Ushr | Opcode::Ishl |
-                Opcode::Band | Opcode::Bor |
-                Opcode::IEq | Opcode::INe | Opcode::ISGt | Opcode::ISGe | Opcode::ISLt | Opcode::ISLe |
-                Opcode::IUGt | Opcode::IUGe | Opcode::IULt | Opcode::IULe |
-                Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv |
-                Opcode::Load32 | Opcode::Load64 |
-                Opcode::FpLoad8 | Opcode::FpLoad16 | Opcode::FpLoad32 | Opcode::FpLoad64 |
-                Opcode::FpAddr | Opcode::LoadDataAddr |
-                Opcode::Ireduce | Opcode::Uextend | Opcode::Sextend => {
-                    let dst = chunk.code[offset + 1];
-                    mask.set(dst);
-                }
-                // MOV dst, src
-                Opcode::Mov => {
-                    let dst = chunk.code[offset + 1];
-                    mask.set(dst);
-                }
-                // Stores don't clobber registers; they read registers and write memory
-                Opcode::Store8 | Opcode::Store16 | Opcode::Store32 | Opcode::Store64 |
-                Opcode::FpStore8 | Opcode::FpStore16 | Opcode::FpStore32 | Opcode::FpStore64 => {}
-                // Calls: results in r0..r7 depending on number of results
-                Opcode::Call | Opcode::CallExt | Opcode::CallHook => {
-                    // Conservatively mark r0..r7 as clobbered
-                    mask = mask.union(RegMask::args_and_returns());
-                }
-                _ => {}
-            }
-
-            // Advance by instruction size without printing
-            // offset = crate::bytecode::advance_instruction(chunk, offset);
-            offset += opcode.size();
-            debug_assert_ne!(offset, 0);
-        }
-
-        mask
     }
 
     #[inline(always)]

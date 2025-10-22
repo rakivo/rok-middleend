@@ -1,61 +1,25 @@
 use crate::util;
 use crate::entity::EntityRef;
-use crate::ssa::{self, Value, SsaFunc, InstructionData, Block as SsaBlock, FuncId};
+use crate::ssa::{self, Value, SsaFunc, InstructionData, Block as SsaBlock};
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use smallvec::SmallVec;
 use rustc_hash::{FxHashSet, FxHashMap};
 
-pub const REG_COUNT   : u8 = 63;
-pub const SCRATCH_REG : u8 = REG_COUNT + 1;
+// Simplified register allocator with caller/callee-saved conventions
+//
+// Register convention (similar to x86-64 System V ABI):
+// - r0-r7:   argument/return registers (caller-saved)
+// - r8-r31:  general purpose caller-saved
+// - r32-r62: callee-saved (preserved across calls)
+// - r63:     scratch register
+
+pub const REG_COUNT: u8 = 63;
+pub const SCRATCH_REG: u8 = REG_COUNT + 1;
 
 // Sentinel value for entry parameter definitions
 const ENTRY_PARAM_DEF: usize = usize::MAX;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct RegMask(pub u128);
-
-pub type RegMaskMap = FxHashMap<FuncId, RegMask>;
-
-impl RegMask {
-    #[inline(always)]
-    #[must_use] 
-    pub const fn empty() -> Self { Self(0) }
-
-    #[inline(always)]
-    #[must_use] 
-    pub const fn full() -> Self { Self(u128::MAX) }
-
-    #[inline(always)]
-    pub fn set(&mut self, reg_index: u8) {
-        debug_assert!(reg_index < 128);
-        self.0 |= 1u128 << reg_index;
-    }
-
-    #[inline(always)]
-    #[must_use] 
-    pub fn contains(&self, reg_index: u8) -> bool {
-        debug_assert!(reg_index < 128);
-        (self.0 & (1u128 << reg_index)) != 0
-    }
-
-    #[inline(always)]
-    #[must_use] 
-    pub fn union(self, other: Self) -> Self { Self(self.0 | other.0) }
-
-    #[inline(always)]
-    #[must_use] 
-    pub fn subtract(self, other: Self) -> Self { Self(self.0 & !other.0) }
-
-    /// Convenience: r0-r7 set (args/returns clobbered)
-    #[inline(always)]
-    #[must_use] 
-    pub const fn args_and_returns() -> Self {
-        Self(0xFF)
-    }
-}
 
 #[inline(always)]
 const fn int_preg(index: u8) -> PReg {
@@ -77,14 +41,28 @@ impl EntityRef for PReg {
     fn index(self) -> usize { self.index as _ }
 }
 
+#[inline(always)]
+pub fn is_caller_saved(reg: u8) -> bool {
+    reg < 32  // r0-r31
+}
+
+#[inline(always)]
+pub fn is_callee_saved(reg: u8) -> bool {
+    reg >= 32 && reg < REG_COUNT  // r32-r62
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SpillSlot {
     pub index: usize,
 }
 
 pub struct MachineEnv {
-    preferred_regs: Vec<PReg>,
-    non_preferred_regs: Vec<PReg>,
+    /// r32-r62: callee-saved (preserved across calls)
+    callee_saved_regs: Vec<PReg>,
+    /// r8-r31: caller-saved general purpose
+    caller_saved_general: Vec<PReg>,
+    /// r0-r7: argument/return registers (also caller-saved)
+    arg_regs: Vec<PReg>,
 }
 
 impl Default for MachineEnv {
@@ -97,8 +75,9 @@ impl MachineEnv {
     #[inline(always)]
     pub fn new() -> Self {
         Self {
-            preferred_regs: (8..REG_COUNT).map(int_preg).collect(),
-            non_preferred_regs: (0..8).map(int_preg).collect(),
+            callee_saved_regs: (32..REG_COUNT).map(int_preg).collect(),
+            caller_saved_general: (8..32).map(int_preg).collect(),
+            arg_regs: (0..8).map(int_preg).collect(),
         }
     }
 }
@@ -111,15 +90,13 @@ pub struct CustomAllocAdapter<'a> {
     value_uses: FxHashMap<Value, Vec<usize>>,
     inst_positions: FxHashMap<usize, u32>,
     block_positions: FxHashMap<usize, u32>,
-    is_call: FxHashMap<usize, bool>,
-    call_masks: Vec<(u32, RegMask)>,
-    func_clobber_masks: &'a RegMaskMap,
-    call_arg_map: Vec<(u32, SmallVec<[(Value, u8); 8]>)>,
+    /// Program positions where calls occur
+    call_positions: Vec<u32>,
 }
 
 impl<'a> CustomAllocAdapter<'a> {
-    #[must_use] 
-    pub fn new(func: &'a ssa::SsaFunc, regmask_map: &'a RegMaskMap) -> Self {
+    #[must_use]
+    pub fn new(func: &'a ssa::SsaFunc) -> Self {
         let mut adapter = Self {
             func,
             block_order: Vec::new(),
@@ -128,10 +105,7 @@ impl<'a> CustomAllocAdapter<'a> {
             value_uses: FxHashMap::default(),
             inst_positions: FxHashMap::default(),
             block_positions: FxHashMap::default(),
-            is_call: FxHashMap::default(),
-            call_masks: Vec::new(),
-            func_clobber_masks: regmask_map,
-            call_arg_map: Vec::new(),
+            call_positions: Vec::new(),
         };
 
         adapter.compute_block_order();
@@ -209,17 +183,19 @@ impl<'a> CustomAllocAdapter<'a> {
             for &inst in &block_data.insts {
                 let inst_idx = inst.index();
                 self.inst_positions.insert(inst_idx, current_pos);
-                current_pos += 2;
 
                 let inst_data = &self.func.dfg.insts[inst_idx];
 
+                // Track call positions
                 if matches!(inst_data,
                     InstructionData::Call { .. } |
                     InstructionData::CallExt { .. } |
                     InstructionData::CallHook { .. }
                 ) {
-                    self.is_call.insert(inst_idx, true);
+                    self.call_positions.push(current_pos);
                 }
+
+                current_pos += 2;
 
                 match inst_data {
                     InstructionData::Binary { args, .. } => {
@@ -239,29 +215,6 @@ impl<'a> CustomAllocAdapter<'a> {
                         for &arg in args.iter().take(8) {
                             self.add_use(arg, inst_idx);
                         }
-
-                        let pos = self.inst_positions[&inst_idx];
-                        let mask = match inst_data {
-                            InstructionData::Call { func_id, .. } => {
-                                let callee = self.func_clobber_masks.get(func_id).unwrap();
-                                callee.union(RegMask::args_and_returns())
-                            }
-                            InstructionData::CallExt { .. } => {
-                                // External calls in VM don't clobber beyond arg registers
-                                RegMask::args_and_returns()
-                            }
-                            InstructionData::CallHook { .. } => {
-                                RegMask::args_and_returns()
-                            }
-                            _ => unreachable!()
-                        };
-                        self.call_masks.push((pos, mask));
-
-                        let mut vec: SmallVec<[(Value, u8); 8]> = SmallVec::new();
-                        for (i, &arg) in args.iter().enumerate().take(8) {
-                            vec.push((arg, i as u8));
-                        }
-                        self.call_arg_map.push((pos, vec));
                     }
                     InstructionData::Return { args, .. } => {
                         for &arg in args.iter().take(8) {
@@ -299,7 +252,6 @@ impl<'a> CustomAllocAdapter<'a> {
                 }
             }
         }
-        self.call_masks.sort_by_key(|(p, _)| *p);
     }
 
     fn add_use(&mut self, value: Value, inst_idx: usize) {
@@ -315,8 +267,6 @@ struct Interval {
     fixed_reg: Option<PReg>,
     use_count: usize,
     crosses_call: bool,
-    clobber_union: RegMask,
-    arg_conflict_mask: RegMask,
 }
 
 #[derive(Debug)]
@@ -328,8 +278,8 @@ pub struct RegAllocOutput {
 
 type RegAllocResult = Result<(Vec<SsaBlock>, RegAllocOutput), String>;
 
-pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> RegAllocResult {
-    let adapter = CustomAllocAdapter::new(func, regmask_map);
+pub fn allocate_registers_custom(func: &SsaFunc) -> RegAllocResult {
+    let adapter = CustomAllocAdapter::new(func);
     let machine_env = MachineEnv::new();
 
     let mut intervals = Vec::new();
@@ -358,28 +308,9 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             uses.iter().map(|&u| adapter.inst_positions[&u]).max().unwrap() + 1
         };
 
-        let mut crosses = false;
-        let mut clobber_union = RegMask::empty();
-        let mut arg_conflict_mask = RegMask::empty();
-
-        for &(p, m) in &adapter.call_masks {
-            if p > start && p < end
-                && let Some(last_use) = uses.iter().map(|&u| adapter.inst_positions[&u]).max()
-                    && last_use > p {
-                        crosses = true;
-                        clobber_union = clobber_union.union(m);
-                    }
-        }
-
-        for &(p, ref vec) in &adapter.call_arg_map {
-            if p > start && p < end {
-                for &(arg_val, reg_idx) in vec {
-                    if arg_val == *value {
-                        arg_conflict_mask.set(reg_idx);
-                    }
-                }
-            }
-        }
+        // Check if this interval crosses any calls
+        let crosses = adapter.call_positions.iter()
+            .any(|&call_pos| call_pos > start && call_pos < end);
 
         let fixed_reg = adapter.entry_param_pregs.get(value).copied();
 
@@ -390,19 +321,19 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             fixed_reg,
             use_count: uses.len(),
             crosses_call: crosses,
-            clobber_union,
-            arg_conflict_mask,
         });
     }
 
     intervals.sort_by_key(|i| (i.start, Reverse(i.use_count)));
 
     let mut active = BinaryHeap::new();
-    let mut free_preferred = machine_env.preferred_regs.iter()
+    let mut free_callee_saved = machine_env.callee_saved_regs.iter()
         .copied()
         .collect::<FxHashSet<_>>();
-
-    let mut free_non_preferred = machine_env.non_preferred_regs.iter()
+    let mut free_caller_saved = machine_env.caller_saved_general.iter()
+        .copied()
+        .collect::<FxHashSet<_>>();
+    let mut free_arg_regs = machine_env.arg_regs.iter()
         .copied()
         .collect::<FxHashSet<_>>();
 
@@ -410,50 +341,52 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
     let mut spills = Vec::new();
 
     for interval in intervals {
+        // Expire old intervals
         while let Some(Reverse((end, _))) = active.peek() {
             if *end > interval.start {
                 break;
             }
             let Reverse((_, reg)) = active.pop().unwrap();
-            if machine_env.preferred_regs.contains(&reg) {
-                free_preferred.insert(reg);
+            if machine_env.callee_saved_regs.contains(&reg) {
+                free_callee_saved.insert(reg);
+            } else if machine_env.caller_saved_general.contains(&reg) {
+                free_caller_saved.insert(reg);
             } else {
-                free_non_preferred.insert(reg);
+                free_arg_regs.insert(reg);
             }
         }
 
-        let must_spill = if let Some(fixed_reg) = interval.fixed_reg {
-            interval.crosses_call &&
-            machine_env.non_preferred_regs.contains(&fixed_reg)
-        } else {
-            false
-        };
-
-        let assigned = if must_spill {
-            None
-        } else if let Some(fixed) = interval.fixed_reg {
+        let assigned = if let Some(fixed) = interval.fixed_reg {
+            // Entry parameters stay in r0-r7
             Some(fixed)
         } else if interval.crosses_call {
-            let forbidden = interval.clobber_union.union(interval.arg_conflict_mask);
-            if let Some(&reg) = free_preferred.iter().find(|r| !forbidden.contains(r.index)) {
-                free_preferred.remove(&reg);
+            // Prefer callee-saved registers (no save/restore needed)
+            if let Some(&reg) = free_callee_saved.iter().next() {
+                free_callee_saved.remove(&reg);
                 Some(reg)
-            } else if let Some(&reg) = free_non_preferred.iter().find(|r| !forbidden.contains(r.index)) {
-                free_non_preferred.remove(&reg);
+            } else if let Some(&reg) = free_caller_saved.iter().next() {
+                free_caller_saved.remove(&reg);
+                Some(reg)
+            } else if let Some(&reg) = free_arg_regs.iter().next() {
+                free_arg_regs.remove(&reg);
                 Some(reg)
             } else {
                 None
             }
-        } else if !free_preferred.is_empty() {
-            let reg = free_preferred.iter().next().copied().unwrap();
-            free_preferred.remove(&reg);
-            Some(reg)
-        } else if !free_non_preferred.is_empty() {
-            let reg = free_non_preferred.iter().next().copied().unwrap();
-            free_non_preferred.remove(&reg);
-            Some(reg)
         } else {
-            None
+            // Doesn't cross calls - prefer caller-saved (more available)
+            if let Some(&reg) = free_caller_saved.iter().next() {
+                free_caller_saved.remove(&reg);
+                Some(reg)
+            } else if let Some(&reg) = free_arg_regs.iter().next() {
+                free_arg_regs.remove(&reg);
+                Some(reg)
+            } else if let Some(&reg) = free_callee_saved.iter().next() {
+                free_callee_saved.remove(&reg);
+                Some(reg)
+            } else {
+                None
+            }
         };
 
         if let Some(reg) = assigned {
@@ -465,8 +398,6 @@ pub fn allocate_registers_custom(func: &SsaFunc, regmask_map: &RegMaskMap) -> Re
             spills.push((interval.value, slot));
         }
     }
-
-    debug_assert_eq!(adapter.block_order.len(), adapter.block_order.iter().collect::<FxHashSet<_>>().len());
 
     let output = RegAllocOutput {
         allocs,
