@@ -1,4 +1,3 @@
-use crate::regalloc;
 use crate::entity::EntityRef;
 use crate::lower::LoweredSsaFunc;
 use crate::util::{self, IntoBytes};
@@ -17,184 +16,175 @@ use crate::ssa::{
 use std::mem;
 
 use indexmap::IndexMap;
-use rustc_hash::FxHashSet;
 
 define_opcodes! {
     self,
 
     // Constants
-    IConst8(dst: u8, val: i8)       = 0,
+    IConst8(dst: u32, val: i8)       = 0,
     @ IData::IConst { value, .. } if bits == 8 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::IConst8);
-            chunk.append(dst);
-            chunk.append(val as i8);
-        });
+        chunk.append(Opcode::IConst8);
+        chunk.append(result_val.as_u32());
+        chunk.append(val as i8);
     },
 
-    IConst16(dst: u8, val: i16)      = 1,
+    IConst16(dst: u32, val: i16)      = 1,
     @ IData::IConst { value, .. } if bits == 16 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::IConst16);
-            chunk.append(dst);
-            chunk.append(val as i16);
-        });
+        chunk.append(Opcode::IConst16);
+        chunk.append(result_val.as_u32());
+        chunk.append(val as i16);
     },
 
-    IConst32(dst: u8, val: i32)      = 2,
+    IConst32(dst: u32, val: i32)      = 2,
     @ IData::IConst { value, .. } if bits == 32 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::IConst32);
-            chunk.append(dst);
-            chunk.append(val as i32);
-        });
+        chunk.append(Opcode::IConst32);
+        chunk.append(result_val.as_u32());
+        chunk.append(val as i32);
     },
 
-    IConst64(dst: u8, val: i64)      = 3,
+    IConst64(dst: u32, val: i64)      = 3,
     @ IData::IConst { value, .. } if bits == 64 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::IConst64);
-            chunk.append(dst);
-            chunk.append(val as u64);
-        });
+        chunk.append(Opcode::IConst64);
+        chunk.append(result_val.as_u32());
+        chunk.append(val as u64);
     },
 
-    FConst32(dst: u8, val: f32)      = 4,
+    FConst32(dst: u32, val: f32)      = 4,
     @ IData::FConst { value, .. } if bits == 32 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let dst = results.unwrap()[0];;
         let val = *value as f32;
         chunk.append(Opcode::FConst32);
         chunk.append(dst);
         chunk.append(val);
     },
 
-    FConst64(dst: u8, val: f64)      = 5,
+    FConst64(dst: u32, val: f64)      = 5,
     @ IData::FConst { value, .. } if bits == 64 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let dst = results.unwrap()[0];;
         chunk.append(Opcode::FConst64);
         chunk.append(dst);
         chunk.append(*value);
     },
 
     // Arithmetic
-    IAdd(dst: u8, a: u8, b: u8)           = 10,
+    IAdd(dst: u32, a: u32, b: u32)           = 10,
     @ IData::Binary { binop: BinaryOp::IAdd, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];;
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IAdd);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    ISub(dst: u8, a: u8, b: u8)           = 11,
+    ISub(dst: u32, a: u32, b: u32)           = 11,
     @ IData::Binary { binop: BinaryOp::ISub, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];;
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::ISub);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    IMul(dst: u8, a: u8, b: u8)           = 12,
+    IMul(dst: u32, a: u32, b: u32)           = 12,
     @ IData::Binary { binop: BinaryOp::IMul, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];;
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IMul);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    IDiv(dst: u8, a: u8, b: u8)           = 13,
+    IDiv(dst: u32, a: u32, b: u32)           = 13,
     @ IData::Binary { binop: BinaryOp::IDiv, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IDiv);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    And(dst: u8, a: u8, b: u8)            = 14,
+    And(dst: u32, a: u32, b: u32)            = 14,
     @ IData::Binary { binop: BinaryOp::And, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::And);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    Or(dst: u8, a: u8, b: u8)             = 15,
+    Or(dst: u32, a: u32, b: u32)             = 15,
     @ IData::Binary { binop: BinaryOp::Or, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::Or);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    Xor(dst: u8, a: u8, b: u8)            = 16,
+    Xor(dst: u32, a: u32, b: u32)            = 16,
     @ IData::Binary { binop: BinaryOp::Xor, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::Xor);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    Ushr(dst: u8, a: u8, b: u8)            = 17,
+    Ushr(dst: u32, a: u32, b: u32)            = 17,
     @ IData::Binary { binop: BinaryOp::Ushr, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::Ushr);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    Ishl(dst: u8, a: u8, b: u8)            = 18,
+    Ishl(dst: u32, a: u32, b: u32)            = 18,
     @ IData::Binary { binop: BinaryOp::Ishl, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::Ishl);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    Band(dst: u8, a: u8, b: u8)            = 19,
+    Band(dst: u32, a: u32, b: u32)            = 19,
     @ IData::Binary { binop: BinaryOp::Band, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::Band);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    Bor(dst: u8, a: u8, b: u8)             = 20,
+    Bor(dst: u32, a: u32, b: u32)             = 20,
     @ IData::Binary { binop: BinaryOp::Bor, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::Bor);
         chunk.append(dst);
         chunk.append(a);
@@ -202,386 +192,266 @@ define_opcodes! {
     },
 
 
-    IEq(dst: u8, a: u8, b: u8)            = 96,
+    IEq(dst: u32, a: u32, b: u32)            = 96,
     @ IData::Icmp { code: IntCC::Equal, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IEq);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    INe(dst: u8, a: u8, b: u8)            = 97,
+    INe(dst: u32, a: u32, b: u32)            = 97,
     @ IData::Icmp { code: IntCC::NotEqual, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::INe);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    ISGt(dst: u8, a: u8, b: u8)           = 98,
+    ISGt(dst: u32, a: u32, b: u32)           = 98,
     @ IData::Icmp { code: IntCC::SignedGreaterThan, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::ISGt);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    ISGe(dst: u8, a: u8, b: u8)           = 99,
+    ISGe(dst: u32, a: u32, b: u32)           = 99,
     @ IData::Icmp { code: IntCC::SignedGreaterThanOrEqual, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::ISGe);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    ISLt(dst: u8, a: u8, b: u8)           = 100,
+    ISLt(dst: u32, a: u32, b: u32)           = 100,
     @ IData::Icmp { code: IntCC::SignedLessThan, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::ISLt);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    ISLe(dst: u8, a: u8, b: u8)           = 101,
+    ISLe(dst: u32, a: u32, b: u32)           = 101,
     @ IData::Icmp { code: IntCC::SignedLessThanOrEqual, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::ISLe);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    IUGt(dst: u8, a: u8, b: u8)           = 102,
+    IUGt(dst: u32, a: u32, b: u32)           = 102,
     @ IData::Icmp { code: IntCC::UnsignedGreaterThan, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IUGt);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    IUGe(dst: u8, a: u8, b: u8)           = 103,
+    IUGe(dst: u32, a: u32, b: u32)           = 103,
     @ IData::Icmp { code: IntCC::UnsignedGreaterThanOrEqual, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IUGe);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    IULt(dst: u8, a: u8, b: u8)           = 104,
+    IULt(dst: u32, a: u32, b: u32)           = 104,
     @ IData::Icmp { code: IntCC::UnsignedLessThan, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IULt);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    IULe(dst: u8, a: u8, b: u8)           = 105,
+    IULe(dst: u32, a: u32, b: u32)           = 105,
     @ IData::Icmp { code: IntCC::UnsignedLessThanOrEqual, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::IULe);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    FAdd(dst: u8, a: u8, b: u8)          = 22,
+    FAdd(dst: u32, a: u32, b: u32)          = 22,
     @ IData::Binary { binop: BinaryOp::FAdd, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::FAdd);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    FSub(dst: u8, a: u8, b: u8)          = 23,
+    FSub(dst: u32, a: u32, b: u32)          = 23,
     @ IData::Binary { binop: BinaryOp::FSub, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::FSub);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    FMul(dst: u8, a: u8, b: u8)          = 24,
+    FMul(dst: u32, a: u32, b: u32)          = 24,
     @ IData::Binary { binop: BinaryOp::FMul, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::FMul);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
-    FDiv(dst: u8, a: u8, b: u8)          = 25,
+    FDiv(dst: u32, a: u32, b: u32)          = 25,
     @ IData::Binary { binop: BinaryOp::FDiv, args } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let a = self.load_value(chunk, args[0]);
-        let b = self.load_value(chunk, args[1]);
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
         chunk.append(Opcode::FDiv);
         chunk.append(dst);
         chunk.append(a);
         chunk.append(b);
     },
 
-    Jump16(offset: i16)        = 26,
+    Jump16(offset: i16) = 26,
     @ IData::Jump { destination, args, .. } => |_results, chunk| {
         let dest_block = &self.func.cfg.blocks[destination.index()];
 
-        // Move SSA values into destination block parameters
-        for (i, &arg_value) in args.iter().enumerate() {
-            let arg_val = self.load_value(chunk, arg_value);
-            let param = dest_block.params[i];
-            self.store_value(chunk, param, arg_val);
-        }
-
-        // Emit the jump
         chunk.append(Opcode::Jump16);
-        self.append_jump_placeholder::<i16>(chunk, *destination);
+        self.jump_with_args(chunk, *destination, args);
     },
-    BranchIf16(cond: u8, offset: i16)    = 27,
+
+    BranchIf16(cond: u32, offset: i16) = 27,
     @ IData::Branch { arg, destinations, args, .. } => |_results, chunk| {
         let [t, e] = *destinations;
 
-        let true_dest_block = &self.func.cfg.blocks[t.index()];
-        for (i, &arg_value) in args.iter().enumerate() {
-            let arg_reg = self.load_value(chunk, arg_value);
-            let param = true_dest_block.params[i];
-            self.store_value(chunk, param, arg_reg);
-        }
-
-        let cond_slot = self.load_value(chunk, *arg);
+        let cond_reg = *arg;
         chunk.append(Opcode::BranchIf16);
-        chunk.append(cond_slot);
-        self.append_jump_placeholder::<i16>(chunk, t);
-
-        let false_dest_block = &self.func.cfg.blocks[e.index()];
-        for (i, &arg_value) in args.iter().enumerate() {
-            let arg_reg = self.load_value(chunk, arg_value);
-            let param = false_dest_block.params[i];
-            self.store_value(chunk, param, arg_reg);
-        }
+        chunk.append(cond_reg);
+        self.jump_with_args(chunk, t, args);
 
         // Unconditional jump for the false branch
         chunk.append(Opcode::Jump16);
-        self.append_jump_placeholder::<i16>(chunk, e);
+        self.jump_with_args(chunk, e, args);
     },
 
-    Return()        = 28,
+    Return() = 28,
     @ IData::Return { args, .. } => |_results, chunk| {
-        // Move return values to r0-r7
-        for (i, &arg) in args.iter().take(8).enumerate() {
-            let arg_reg = self.load_value(chunk, arg);
-            let target_reg = i as u8; // r0, r1, r2, ... r7
-
-            // Only emit move if source != destination
-            if arg_reg != target_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(target_reg); // dst
-                chunk.append(arg_reg);    // src
-            }
-        }
-
-        // Emit epilogue before return
-        if let Some(ref info) = self.callee_saved_info {
-            self.emit_function_epilogue(chunk, info);
-        }
-
         // Teardown stack frame
         self.emit_frame_teardown(chunk);
 
-        // Emit return instruction
+        // Emit return instruction with arguments
         chunk.append(Opcode::Return);
+        self.append_args(chunk, args);
     },
 
-    Call(key: u64)          = 29,
+    Call(key: u64) = 29,
     @ IData::Call { func_id, args, parent } => |results, chunk, inst_id| {
-        let call_opcode = Opcode::Call;
-
-        #[cfg(debug_assertions)]
-        eprintln!("[call] Emitting call (opcode: {:?})", call_opcode);
-
-        // 1. Identify unique caller-saved registers to save
-        // Collect unique registers, avoiding duplicates and arg registers
-        let arg_regs: FxHashSet<u8> = args.iter()
-            .filter_map(|&v| self.ssa_to_preg.get(&v))
-            .copied()
-            .collect();
-
-        let mut regs_to_save: FxHashSet<u8> = FxHashSet::default();
-
-        for &reg in self.ssa_to_preg.values() {
-            // Only save caller-saved registers (r0-r31) that aren't argument registers
-            if regalloc::is_caller_saved(reg) && !arg_regs.contains(&reg) {
-                regs_to_save.insert(reg);
-            }
-        }
-
-        let mut regs_to_save: Vec<u8> = regs_to_save.into_iter().collect();
-        regs_to_save.sort_unstable();
-
-        #[cfg(debug_assertions)]
-        if !regs_to_save.is_empty() {
-            eprintln!("[call] Saving {} unique caller-saved registers: {:?}",
-                regs_to_save.len(), regs_to_save);
-            eprintln!("[call] Current register allocation:");
-            let mut sorted: Vec<_> = self.ssa_to_preg.iter().collect();
-            sorted.sort_by_key(|(_, r)| **r);
-            for (val, reg) in sorted {
-                eprintln!("[call]   v{} -> r{}", val.index(), reg);
-            }
-        }
-
-        // 2. Save caller-saved registers to stack
-        let mut save_slots: Vec<(u8, StackSlot)> = Vec::new();
-        for &reg in &regs_to_save {
-            // Use I64 as default type for saves (all our registers hold 64-bit values)
-            let slot = self.allocate_spill_slot(Type::I64);
-            let allocation = &self.frame_info.slot_allocations[&slot];
-
-            chunk.append(Opcode::FpStore64);
-            chunk.append(allocation.offset);
-            chunk.append(reg);
-
-            save_slots.push((reg, slot));
-
-            #[cfg(debug_assertions)]
-            eprintln!("[call]   Saved r{} -> stack[{}]", reg, allocation.offset);
-        }
-
-        // 3. Move arguments to r0-r7
-        for (i, &arg) in args.iter().take(8).enumerate() {
-            let arg_reg = self.load_value(chunk, arg);
-            let target_reg = i as u8;
-
-            if arg_reg != target_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(target_reg);
-                chunk.append(arg_reg);
-
-                #[cfg(debug_assertions)]
-                eprintln!("[call]   Arg {}: r{} -> r{}", i, arg_reg, target_reg);
-            }
-        }
-
-        assert!(args.len() <= 8, "Functions with more than 8 arguments not yet supported");
-
-        // 4. Emit call instruction
         chunk.append(Opcode::Call);
+        if let Some(result) = results.and_then(|v| v.first()) {
+            chunk.append(result.as_u32());
+        } else {
+            chunk.append(u32::MAX); // sentinel
+        }
         let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
         chunk.append(key);
-
-        // 5. Move results from r0-r7
-        let result_regs: FxHashSet<u8> = if let Some(results) = results {
-            let mut result_regs = FxHashSet::default();
-            for (i, &result) in results.iter().enumerate().take(8) {
-                let return_reg = i as u8;
-                self.store_value(chunk, result, return_reg);
-
-                // Track which register this result was moved to
-                if let Some(&dest_reg) = self.ssa_to_preg.get(&result) {
-                    result_regs.insert(dest_reg);
-                }
-
-                #[cfg(debug_assertions)]
-                eprintln!("[call]   Result {}: r{} -> r{}", i, return_reg,
-                    self.ssa_to_preg.get(&result).copied().unwrap_or(regalloc::SCRATCH_REG));
-            }
-            result_regs
-        } else {
-            FxHashSet::default()
-        };
-
-        // 6. Restore saved registers (but skip registers that now hold return values)
-        for (reg, slot) in save_slots.iter().rev() {
-            if result_regs.contains(reg) {
-                #[cfg(debug_assertions)]
-                eprintln!("[call]   Skipped restore of r{} (holds return value)", reg);
-                continue;
-            }
-
-            let allocation = &self.frame_info.slot_allocations[slot];
-
-            chunk.append(Opcode::FpLoad64);
-            chunk.append(*reg);
-            chunk.append(allocation.offset);
-
-            #[cfg(debug_assertions)]
-            eprintln!("[call]   Restored r{} <- stack[{}]", reg, allocation.offset);
-        }
-
-        #[cfg(debug_assertions)]
-        eprintln!("[call] Call complete");
+        self.append_args(chunk, args);
     },
 
-    Ireduce(dst: u8, src: u8, bits: u8) = 30,
+    CallHook(hook_id: u32) = 135,
+    @ IData::CallHook { hook_id, args } => |results, chunk, inst_id| {
+        chunk.append(Opcode::CallHook);
+        if let Some(result) = results.and_then(|v| v.first()) {
+            chunk.append(result.as_u32());
+        } else {
+            chunk.append(u32::MAX); // sentinel
+        }
+        chunk.append(hook_id.index() as u32);
+        self.append_args(chunk, args);
+    },
+
+    CallExt(key: u64) = 136,
+    @ IData::CallExt { func_id, args, parent } => |results, chunk, inst_id| {
+        chunk.append(Opcode::CallExt);
+        if let Some(result) = results.and_then(|v| v.first()) {
+            chunk.append(result.as_u32());
+        } else {
+            chunk.append(u32::MAX); // sentinel
+        }
+        let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
+        chunk.append(key);
+        self.append_args(chunk, args);
+    },
+
+    Ireduce(dst: u32, src: u32, bits: u32) = 30,
     @ IData::Unary { unop: UnaryOp::Ireduce, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
         let bits = result_ty.bits() as u8;
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let src = self.load_value(chunk, *arg);
+        let dst = results.unwrap()[0];
+        let src = *arg;
         chunk.append(Opcode::Ireduce);
         chunk.append(dst);
         chunk.append(src);
         chunk.append(bits);
     },
-    Uextend(dst: u8, src: u8, from_bits: u8, to_bits: u8) = 31,
+    Uextend(dst: u32, src: u32, from_bits: u32, to_bits: u32) = 31,
     @ IData::Unary { unop: UnaryOp::Uextend, arg } => |results, chunk| {
         let src_ty = self.func.dfg.values[arg.index()].ty;
         let dst_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
         let from_bits = src_ty.bits() as u8;
         let to_bits = dst_ty.bits() as u8;
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let src = self.load_value(chunk, *arg);
+        let dst = results.unwrap()[0];
+        let src = *arg;
         chunk.append(Opcode::Uextend);
         chunk.append(dst);
         chunk.append(src);
         chunk.append(from_bits);
         chunk.append(to_bits);
     },
-    Sextend(dst: u8, src: u8) = 32,
+    Sextend(dst: u32, src: u32) = 32,
     @ IData::Unary { unop: UnaryOp::Sextend, arg } => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let src = self.load_value(chunk, *arg);
+        let dst = results.unwrap()[0];
+        let src = *arg;
         chunk.append(Opcode::Sextend);
         chunk.append(dst);
         chunk.append(src);
     },
 
-    Bitcast(dst: u8, src: u8, ty: u8) = 33,
+    Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
-        let src = self.load_value(chunk, *arg);
+        let dst = results.unwrap()[0];
+        let src = *arg;
         chunk.append(Opcode::Bitcast);
         chunk.append(dst);
         chunk.append(src);
@@ -589,81 +459,73 @@ define_opcodes! {
     },
 
     // Memory
-    Load8(dst: u8, addr: u8)         = 40,
+    Load8(dst: u32, addr: u32)         = 40,
     @ IData::LoadNoOffset { ty, addr } if bits == 8 => |results, chunk| {
-        let addr = self.load_value(chunk, *addr);
-        let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::Load8);
-            chunk.append(dst);
-            chunk.append(addr);
-        });
+        let addr = *addr;
+        let dst = results.unwrap()[0];
+        chunk.append(Opcode::Load8);
+        chunk.append(dst);
+        chunk.append(addr);
     },
-    Load16(dst: u8, addr: u8)        = 41,
+    Load16(dst: u32, addr: u32)        = 41,
     @ IData::LoadNoOffset { ty, addr } if bits == 16 => |results, chunk| {
-        let addr = self.load_value(chunk, *addr);
-        let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::Load16);
-            chunk.append(dst);
-            chunk.append(addr);
-        });
+        let addr = *addr;
+        let dst = results.unwrap()[0];
+        chunk.append(Opcode::Load16);
+        chunk.append(dst);
+        chunk.append(addr);
     },
-    Load32(dst: u8, addr: u8)        = 42,
+    Load32(dst: u32, addr: u32)        = 42,
     @ IData::LoadNoOffset { ty, addr } if bits == 32 => |results, chunk| {
-        let addr = self.load_value(chunk, *addr);
-        let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::Load32);
-            chunk.append(dst);
-            chunk.append(addr);
-        });
+        let addr = *addr;
+        let dst = results.unwrap()[0];
+        chunk.append(Opcode::Load32);
+        chunk.append(dst);
+        chunk.append(addr);
     },
-    Load64(dst: u8, addr: u8)        = 43,
+    Load64(dst: u32, addr: u32)        = 43,
     @ IData::LoadNoOffset { ty, addr } if bits == 64 => |results, chunk| {
-        let addr = self.load_value(chunk, *addr);
-        let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::Load64);
-            chunk.append(dst);
-            chunk.append(addr);
-        });
+        let addr = *addr;
+        let dst = results.unwrap()[0];
+        chunk.append(Opcode::Load64);
+        chunk.append(dst);
+        chunk.append(addr);
     },
 
-    Store8(addr: u8, val: u8) = 44,
+    Store8(addr: u32, val: u32) = 44,
     @ IData::StoreNoOffset { args } if bits == 8 => |_results, chunk| {
-        let addr = self.load_value(chunk, args[0]);
-        let val = self.load_value(chunk, args[1]);
+        let addr = args[0];
+        let val = args[1];
         let opcode = Opcode::Store8;
         chunk.append(opcode);
         chunk.append(addr);
         chunk.append(val);
     },
 
-    Store16(addr: u8, val: u8) = 45,
+    Store16(addr: u32, val: u32) = 45,
     @ IData::StoreNoOffset { args } if bits == 16 => |_results, chunk| {
-        let addr = self.load_value(chunk, args[0]);
-        let val = self.load_value(chunk, args[1]);
+        let addr = args[0];
+        let val = args[1];
         let opcode = Opcode::Store16;
         chunk.append(opcode);
         chunk.append(addr);
         chunk.append(val);
     },
 
-    Store32(addr: u8, val: u8) = 47,
+    Store32(addr: u32, val: u32) = 47,
     @ IData::StoreNoOffset { args } if bits == 32 => |_results, chunk| {
-        let addr = self.load_value(chunk, args[0]);
-        let val = self.load_value(chunk, args[1]);
+        let addr = args[0];
+        let val = args[1];
         let opcode = Opcode::Store32;
         chunk.append(opcode);
         chunk.append(addr);
         chunk.append(val);
     },
 
-    Store64(addr: u8, val: u8) = 47,
+    Store64(addr: u32, val: u32) = 47,
     @ IData::StoreNoOffset { args } if bits == 64 => |_results, chunk| {
-        let addr = self.load_value(chunk, args[0]);
-        let val = self.load_value(chunk, args[1]);
+        let addr = args[0];
+        let val = args[1];
         let opcode = Opcode::Store64;
         chunk.append(opcode);
         chunk.append(addr);
@@ -671,7 +533,7 @@ define_opcodes! {
     },
 
     // Stack operations
-    Mov(dst: u8, src: u8)           = 50,
+    Mov(dst: u32, src: u32)           = 50,
 
     // Stack frame management
     FrameSetup(size: u32)    = 60,
@@ -682,72 +544,72 @@ define_opcodes! {
     SpSub(offset: u32)         = 63,
 
     // Frame pointer relative operations
-    FpLoad8(dst: u8, offset: i32)       = 70,
+    FpLoad8(dst: u32, offset: i32)       = 70,
     @ IData::StackLoad { slot, .. } if bits == 8 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad8;
         chunk.append(opcode);
         chunk.append(dst);
         chunk.append(allocation.offset);
     },
-    FpLoad16(dst: u8, offset: i32)      = 71,
+    FpLoad16(dst: u32, offset: i32)      = 71,
     @ IData::StackLoad { slot, .. } if bits == 16 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad16;
         chunk.append(opcode);
         chunk.append(dst);
         chunk.append(allocation.offset);
     },
-    FpLoad32(dst: u8, offset: i32)      = 72,
+    FpLoad32(dst: u32, offset: i32)      = 72,
     @ IData::StackLoad { slot, .. } if bits == 32 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad32;
         chunk.append(opcode);
         chunk.append(dst);
         chunk.append(allocation.offset);
     },
-    FpLoad64(dst: u8, offset: i32)      = 73,
+    FpLoad64(dst: u32, offset: i32)      = 73,
     @ IData::StackLoad { slot, .. } if bits == 64 => |results, chunk| {
-        let dst = self.ssa_to_preg[&results.unwrap()[0]];
+        let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad64;
         chunk.append(opcode);
         chunk.append(dst);
         chunk.append(allocation.offset);
     },
-    FpStore8(offset: i32, src: u8)      = 74,
+    FpStore8(offset: i32, src: u32)      = 74,
     @ IData::StackStore { slot, arg, .. } if bits == 8 => |_results, chunk| {
-        let src = self.load_value(chunk, *arg);
+        let src = *arg;
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore8;
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src);
     },
-    FpStore16(offset: i32, src: u8)     = 75,
+    FpStore16(offset: i32, src: u32)     = 75,
     @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
-        let src = self.load_value(chunk, *arg);
+        let src = *arg;
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore16;
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src);
     },
-    FpStore32(offset: i32, src: u8)     = 76,
+    FpStore32(offset: i32, src: u32)     = 76,
     @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
-        let src = self.load_value(chunk, *arg);
+        let src = *arg;
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore32;
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src);
     },
-    FpStore64(offset: i32, src: u8)     = 77,
+    FpStore64(offset: i32, src: u32)     = 77,
     @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
-        let src = self.load_value(chunk, *arg);
+        let src = *arg;
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpStore64;
         chunk.append(opcode);
@@ -756,94 +618,36 @@ define_opcodes! {
     },
 
     // Stack pointer relative operations
-    SpLoad8(dst: u8, offset: i32)       = 80,
-    SpLoad16(dst: u8, offset: i32)      = 81,
-    SpLoad32(dst: u8, offset: i32)      = 82,
-    SpLoad64(dst: u8, offset: i32)      = 83,
-    SpStore8(offset: i32, src: u8)      = 84,
-    SpStore16(offset: i32, src: u8)     = 85,
-    SpStore32(offset: i32, src: u8)     = 86,
-    SpStore64(offset: i32, src: u8)     = 87,
+    SpLoad8(dst: u32, offset: i32)       = 80,
+    SpLoad16(dst: u32, offset: i32)      = 81,
+    SpLoad32(dst: u32, offset: i32)      = 82,
+    SpLoad64(dst: u32, offset: i32)      = 83,
+    SpStore8(offset: i32, src: u32)      = 84,
+    SpStore16(offset: i32, src: u32)     = 85,
+    SpStore32(offset: i32, src: u32)     = 86,
+    SpStore64(offset: i32, src: u32)     = 87,
 
     // Address calculation
-    FpAddr(dst: u8, offset: i32)        = 90,
+    FpAddr(dst: u32, offset: i32)        = 90,
     @ IData::StackAddr { slot, .. } => |results, chunk| {
-        let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |l, chunk, dst| {
-            chunk.append(Opcode::FpAddr);
-            chunk.append(dst);
-            let allocation = &l.frame_info.slot_allocations[slot];
-            chunk.append(allocation.offset);
-        });
+        let dst = results.unwrap()[0];
+        chunk.append(Opcode::FpAddr);
+        chunk.append(dst);
+        let allocation = &self.frame_info.slot_allocations[slot];
+        chunk.append(allocation.offset);
     },
-    SpAddr(dst: u8, offset: i32)        = 91,
+    SpAddr(dst: u32, offset: i32)        = 91,
 
-    LoadDataAddr(dst: u8, data_id: DataId) = 95,
+    LoadDataAddr(dst: u32, data_id: DataId) = 95,
     @ IData::DataAddr { data_id } => |results, chunk| {
-        let result_val = results.unwrap()[0];
-        self.emit_inst_with_result(chunk, result_val, |_, chunk, dst| {
-            chunk.append(Opcode::LoadDataAddr);
-            chunk.append(dst);
-            chunk.append(*data_id);
-        });
+        let dst = results.unwrap()[0];
+        chunk.append(Opcode::LoadDataAddr);
+        chunk.append(dst);
+        chunk.append(*data_id);
     },
 
     Nop() = 128,
     @ IData::Nop => |results, chunk| {},
-
-    CallHook(hook_id: u32) = 135,
-    @ IData::CallHook { hook_id, args } => |results, chunk, inst_id| {
-        // 1) Move arguments to r0-r7 (up to 8 args)
-        for (i, &arg) in args.iter().take(8).enumerate() {
-            let arg_reg = self.load_value(chunk, arg);
-            let target_reg = i as u8; // r0, r1, r2, ... r7
-
-            // Only emit move if source != destination
-            if arg_reg != target_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(target_reg); // dst
-                chunk.append(arg_reg);    // src
-            }
-        }
-
-        // TODO(#16): CallHook: If more than 8 args, push extras onto stack
-        // For now, assume <= 8 arguments
-        assert!((args.len() <= 8), "Functions with more than 8 arguments not yet supported");
-
-        // 2) Emit call instruction
-        chunk.append(Opcode::CallHook);
-        chunk.append(hook_id.index() as u32);
-
-        // 3) Move result(s) from r0 to destination register(s).
-        if let Some(results) = results && !results.is_empty() {
-            self.store_value(chunk, results[0], 0);
-        }
-    },
-
-    CallExt(key: u64)          = 136,
-    @ IData::CallExt { func_id, args, parent } => |results, chunk, inst_id| {
-        // 1) Move arguments to r0-r7 (up to 8 args)
-        for (i, &arg) in args.iter().take(8).enumerate() {
-            let arg_reg = self.load_value(chunk, arg);
-            let target_reg = i as u8; // r0, r1, r2, ... r7
-
-            // Only emit move if source != destination
-            if arg_reg != target_reg {
-                chunk.append(Opcode::Mov);
-                chunk.append(target_reg); // dst
-                chunk.append(arg_reg);    // src
-            }
-        }
-
-        // TODO(#17): CallExt: If more than 8 args, push extras onto stack
-        // For now, assume <= 8 arguments
-        assert!((args.len() <= 8), "Functions with more than 8 arguments not yet supported");
-
-        // 2) Emit call instruction
-        chunk.append(Opcode::CallExt);
-        let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
-        chunk.append(key);
-    },
 
     Halt()          = 255,
     @ IData::Unreachable => |results, chunk| {
@@ -924,6 +728,7 @@ pub struct StackSlotAllocation {
 /// Stack frame layout information
 #[derive(Debug, Clone, Default)]
 pub struct StackFrameInfo {
+    pub regs_used: u32,
     pub total_size: u32,
     pub slot_allocations: IndexMap<StackSlot, StackSlotAllocation>,
 }
@@ -956,6 +761,8 @@ impl StackFrameInfo {
 
         // Total frame size (still aligned to 16 bytes for ABI)
         frame_info.total_size = util::align_up(curr_offset, 16);
+
+        frame_info.regs_used = func.dfg.values.len() as _;
 
         frame_info
     }
@@ -1091,7 +898,7 @@ fn print_aligned(name: &str, operands: &str) {
         output.push_str(operand);
 
         if operand_iter.peek().is_some() {
-            let padding = 10 - operand.len();
+            let padding = 10_usize.saturating_sub(operand.len());
             let padding = " ".repeat(padding);
             output.push_str(&padding);
         }
@@ -1100,14 +907,58 @@ fn print_aligned(name: &str, operands: &str) {
     println!("{output}");
 }
 
-#[must_use]
-#[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
-pub fn disassemble_instruction(
-    chunk: &BytecodeChunk,
-    offset: usize,
-) -> usize {
-    let offset_str = format!("{offset:05X} ");
+#[inline(always)]
+fn read_u32_le(code: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap())
+}
 
+fn read_args_for_disasm(chunk: &BytecodeChunk, mut offset: usize) -> (usize, String) {
+    let count = chunk.code[offset];
+    offset += 1;
+
+    if count == 0 {
+        return (offset, String::new());
+    }
+
+    let mut args_str = String::from(" (");
+    for i in 0..count {
+        if i > 0 {
+            args_str.push_str(", ");
+        }
+        let reg = read_u32_le(&chunk.code, offset);
+        args_str.push_str(&format!("v{reg}"));
+        offset += 4;
+    }
+    args_str.push(')');
+
+    (offset, args_str)
+}
+
+fn read_moves_for_disasm(chunk: &BytecodeChunk, mut offset: usize) -> (usize, String) {
+    let count = chunk.code[offset];
+    offset += 1;
+
+    if count == 0 {
+        return (offset, String::new());
+    }
+
+    let mut args_str = String::from(" (");
+    for i in 0..count {
+        if i > 0 {
+            args_str.push_str(", ");
+        }
+        let dst = read_u32_le(&chunk.code, offset);
+        let src = read_u32_le(&chunk.code, offset);
+        args_str.push_str(&format!("v{dst} = v{src}"));
+        offset += 8;
+    }
+    args_str.push(')');
+
+    (offset, args_str)
+}
+
+pub fn disassemble_instruction(chunk: &BytecodeChunk, offset: usize) -> usize {
+    let offset_str = format!("{offset:05X} ");
     print!("{offset_str}");
 
     let opcode_byte = chunk.code[offset];
@@ -1115,103 +966,63 @@ pub fn disassemble_instruction(
 
     match opcode {
         Opcode::LoadDataAddr => {
-            let dst = chunk.code[offset + 1];
+            let dst = read_u32_le(&chunk.code, offset + 1);
             let data_id =
-                u32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                u32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
             print_aligned("LOAD_DATA_ADDR", &format!("v{dst}, D{data_id}"));
-            offset + 6
+            offset + 9
         }
+
         Opcode::IConst8 => {
-            let dst = chunk.code[offset + 1];
-            let val =
-                i8::from_le_bytes(chunk.code[offset + 2..offset + 3].try_into().unwrap());
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let val = i8::from_le_bytes(chunk.code[offset + 5..offset + 6].try_into().unwrap());
             print_aligned("ICONST8", &format!("v{dst}, {val}_i8"));
-            offset + 3
-        }
-        Opcode::IConst32 => {
-            let dst = chunk.code[offset + 1];
-            let val =
-                u32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
-            print_aligned("ICONST32", &format!("v{dst}, {val}_i32"));
             offset + 6
         }
+
+        Opcode::IConst32 => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let val =
+                u32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            print_aligned("ICONST32", &format!("v{dst}, {val}_i32"));
+            offset + 9
+        }
+
         Opcode::IConst64 => {
-            let dst = chunk.code[offset + 1];
+            let dst = read_u32_le(&chunk.code, offset + 1);
             let val =
-                u64::from_le_bytes(chunk.code[offset + 2..offset + 10].try_into().unwrap());
+                u64::from_le_bytes(chunk.code[offset + 5..offset + 13].try_into().unwrap());
             print_aligned("ICONST64", &format!("v{dst}, {val}_i64"));
-            offset + 10
+            offset + 13
         }
+
         Opcode::FConst64 => {
-            let dst = chunk.code[offset + 1];
+            let dst = read_u32_le(&chunk.code, offset + 1);
             let val =
-                f64::from_le_bytes(chunk.code[offset + 2..offset + 10].try_into().unwrap());
+                f64::from_le_bytes(chunk.code[offset + 5..offset + 13].try_into().unwrap());
             print_aligned("FCONST64", &format!("v{dst}, {val}_f64"));
-            offset + 10
+            offset + 13
         }
-        Opcode::Ishl => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("ISHL", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::IAdd => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("IADD", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::ISub => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("ISUB", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::IMul => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("IMUL", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::IDiv => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("IDIV", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::And => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("AND", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::Or => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("OR", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::Xor => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
-            print_aligned("XOR", &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
-        }
-        Opcode::IEq | Opcode::INe | Opcode::ISGt | Opcode::ISGe | Opcode::ISLt | Opcode::ISLe | Opcode::IUGt | Opcode::IUGe | Opcode::IULt | Opcode::IULe => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
+
+        // Binary int ops
+        Opcode::Ishl | Opcode::IAdd | Opcode::ISub | Opcode::IMul | Opcode::IDiv |
+        Opcode::And  | Opcode::Or   | Opcode::Xor  |
+        Opcode::IEq | Opcode::INe | Opcode::ISGt | Opcode::ISGe |
+        Opcode::ISLt | Opcode::ISLe | Opcode::IUGt | Opcode::IUGe | Opcode::IULt | Opcode::IULe => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let a   = read_u32_le(&chunk.code, offset + 5);
+            let b   = read_u32_le(&chunk.code, offset + 9);
             let name = match opcode {
-                Opcode::IEq => "IEQ",
-                Opcode::INe => "INE",
+                Opcode::Ishl => "ISHL",
+                Opcode::IAdd => "IADD",
+                Opcode::ISub => "ISUB",
+                Opcode::IMul => "IMUL",
+                Opcode::IDiv => "IDIV",
+                Opcode::And  => "AND",
+                Opcode::Or   => "OR",
+                Opcode::Xor  => "XOR",
+                Opcode::IEq  => "IEQ",
+                Opcode::INe  => "INE",
                 Opcode::ISGt => "ISGT",
                 Opcode::ISGe => "ISGE",
                 Opcode::ISLt => "ISLT",
@@ -1223,12 +1034,14 @@ pub fn disassemble_instruction(
                 _ => unreachable!(),
             };
             print_aligned(name, &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
+            offset + 13
         }
+
+        // Float ops
         Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv => {
-            let dst = chunk.code[offset + 1];
-            let a = chunk.code[offset + 2];
-            let b = chunk.code[offset + 3];
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let a   = read_u32_le(&chunk.code, offset + 5);
+            let b   = read_u32_le(&chunk.code, offset + 9);
             let op_name = match opcode {
                 Opcode::FAdd => "FADD",
                 Opcode::FSub => "FSUB",
@@ -1237,241 +1050,230 @@ pub fn disassemble_instruction(
                 _ => unreachable!(),
             };
             print_aligned(op_name, &format!("v{dst}, v{a}, v{b}"));
-            offset + 4
+            offset + 13
         }
-        Opcode::Load8 => {
-            let dst = chunk.code[offset + 1];
-            let addr = chunk.code[offset + 2];
-            print_aligned("LOAD8", &format!("v{dst}, v{addr}"));
-            offset + 3
+
+        // Memory loads/stores
+        Opcode::Load8 | Opcode::Load16 | Opcode::Load32 | Opcode::Load64 => {
+            let dst  = read_u32_le(&chunk.code, offset + 1);
+            let addr = read_u32_le(&chunk.code, offset + 5);
+            let name = match opcode {
+                Opcode::Load8  => "LOAD8",
+                Opcode::Load16 => "LOAD16",
+                Opcode::Load32 => "LOAD32",
+                Opcode::Load64 => "LOAD64",
+                _ => unreachable!(),
+            };
+            print_aligned(name, &format!("v{dst}, v{addr}"));
+            offset + 9
         }
-        Opcode::Load16 => {
-            let dst = chunk.code[offset + 1];
-            let addr = chunk.code[offset + 2];
-            print_aligned("LOAD16", &format!("v{dst}, v{addr}"));
-            offset + 3
+
+        Opcode::Store8 | Opcode::Store32 | Opcode::Store64 => {
+            let addr = read_u32_le(&chunk.code, offset + 1);
+            let val  = read_u32_le(&chunk.code, offset + 5);
+            let name = match opcode {
+                Opcode::Store8  => "STORE8",
+                Opcode::Store32 => "STORE32",
+                Opcode::Store64 => "STORE64",
+                _ => unreachable!(),
+            };
+            print_aligned(name, &format!("v{addr}, v{val}"));
+            offset + 9
         }
-        Opcode::Load32 => {
-            let dst = chunk.code[offset + 1];
-            let addr = chunk.code[offset + 2];
-            print_aligned("LOAD32", &format!("v{dst}, v{addr}"));
-            offset + 3
-        }
-        Opcode::Load64 => {
-            let dst = chunk.code[offset + 1];
-            let addr = chunk.code[offset + 2];
-            print_aligned("LOAD64", &format!("v{dst}, v{addr}"));
-            offset + 3
-        }
-        Opcode::Store8 => {
-            let addr = chunk.code[offset + 1];
-            let val = chunk.code[offset + 2];
-            print_aligned("STORE8", &format!("v{addr}, v{val}"));
-            offset + 3
-        }
-        Opcode::Store32 => {
-            let addr = chunk.code[offset + 1];
-            let val = chunk.code[offset + 2];
-            print_aligned("STORE32", &format!("v{addr}, v{val}"));
-            offset + 3
-        }
-        Opcode::Store64 => {
-            let addr = chunk.code[offset + 1];
-            let val = chunk.code[offset + 2];
-            print_aligned("STORE64", &format!("v{addr}, v{val}"));
-            offset + 3
-        }
+
         Opcode::Jump16 => {
             let jmp =
                 i16::from_le_bytes(chunk.code[offset + 1..offset + 3].try_into().unwrap());
+            let (new_offset, args_str) = read_moves_for_disasm(chunk, offset + 3);
             let sign = if jmp < 0 { "-" } else { "+" };
             let target_addr = offset as i16 + 3 + jmp;
-            print_aligned(
-                "JUMP16",
-                &format!("{target_addr:04X} ({sign}0x{jmp:X})"),
-            );
-            offset + 3
+            print_aligned("JUMP16", &format!("{target_addr:04X} ({sign}0x{jmp:X}){args_str}"));
+            new_offset
         }
+
         Opcode::BranchIf16 => {
-            let cond = chunk.code[offset + 1];
+            let cond = read_u32_le(&chunk.code, offset + 1);
             let jmp =
-                i16::from_le_bytes(chunk.code[offset + 2..offset + 4].try_into().unwrap());
-            let target_addr = offset as i16 + 4 + jmp;
+                i16::from_le_bytes(chunk.code[offset + 5..offset + 7].try_into().unwrap());
+            let (new_offset, args_str) = read_moves_for_disasm(chunk, offset + 7);
+            let target_addr = offset as i16 + 7 + jmp;
             let sign = if jmp < 0 { "-" } else { "+" };
-            print_aligned(
-                "BRANCH_IF16",
-                &format!("v{cond}, {target_addr:04X} ({sign}0x{jmp:X})"),
-            );
-            offset + 4
+            print_aligned("BRANCH_IF16", &format!("v{cond}, {target_addr:04X} ({sign}0x{jmp:X}){args_str}"));
+            new_offset
         }
+
         Opcode::Call => {
+            let ret_reg = read_u32_le(&chunk.code, offset + 1);
             let key =
-                u64::from_le_bytes(chunk.code[offset + 1..offset + 9].try_into().unwrap());
-
+                u64::from_le_bytes(chunk.code[offset + 5..offset + 13].try_into().unwrap());
+            let (new_offset, args_str) = read_args_for_disasm(chunk, offset + 13);
             let module_id = key >> 32;
             let func_id = key & 0xFFFFFFFF;
-            print_aligned("CALL", &format!("FUNC_{func_id} ModuleId({module_id})"));
-            offset + 9
+            if ret_reg != u32::MAX {
+                print_aligned(&format!("v{ret_reg} = CALL"), &format!("FUNC_{func_id} ModuleId({module_id}){args_str}"));
+            } else {
+                print_aligned("CALL", &format!("FUNC_{func_id} ModuleId({module_id}){args_str}"));
+
+            }
+            new_offset
         }
+
         Opcode::CallExt => {
+            let ret_reg = read_u32_le(&chunk.code, offset + 1);
             let key =
-                u64::from_le_bytes(chunk.code[offset + 1..offset + 9].try_into().unwrap());
-
+                u64::from_le_bytes(chunk.code[offset + 5..offset + 13].try_into().unwrap());
+            let (new_offset, args_str) = read_args_for_disasm(chunk, offset + 13);
             let module_id = key >> 32;
             let func_id = key & 0xFFFFFFFF;
-            print_aligned("CALL_EXT", &format!("EXT_{func_id} ModuleId({module_id})"));
-            offset + 9
-        }
-        Opcode::CallHook => {
-            let hook_id =
-                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("CALL_HOOK", &format!("HOOK_{hook_id}"));
-            offset + 5
-        }
-        Opcode::Bor => {
-            let dst = chunk.code[offset + 1];
-            let src1 = chunk.code[offset + 2];
-            let src2 = chunk.code[offset + 3];
-            print_aligned("BOR", &format!("v{dst}, v{src1}, v{src2}"));
-            offset + 4
-        }
-        Opcode::Ireduce => {
-            let dst = chunk.code[offset + 1];
-            let src = chunk.code[offset + 2];
-            let bits = chunk.code[offset + 3];
-            print_aligned("IREDUCE", &format!("v{dst}, v{src}, {bits}"));
-            offset + 4
-        }
-        Opcode::Uextend => {
-            let dst = chunk.code[offset + 1];
-            let src = chunk.code[offset + 2];
-            let from_bits = chunk.code[offset + 3];
-            let to_bits = chunk.code[offset + 4];
-            print_aligned("UEXTEND", &format!("v{dst}, v{src}, {from_bits}, {to_bits}"));
-            offset + 5
-        }
-        Opcode::Bitcast => {
-            let dst = chunk.code[offset + 1];
-            let src = chunk.code[offset + 2];
-            let ty = chunk.code[offset + 3];
-            print_aligned("BITCAST", &format!("v{dst}, v{src}, {ty}"));
-            offset + 4
-        }
-        Opcode::Mov => {
-            let dst = chunk.code[offset + 1];
-            let src = chunk.code[offset + 2];
-            print_aligned("MOV", &format!("v{dst}, v{src}"));
-            offset + 3
-        }
-        Opcode::Return => {
-            print_aligned("RETURN", "");
-            offset + 1
+            if ret_reg != u32::MAX {
+                print_aligned(&format!("v{ret_reg} = CALL_EXT"), &format!("EXT_{func_id} ModuleId({module_id}){args_str}"));
+            } else {
+                print_aligned("CALL_EXT", &format!("EXT_{func_id} ModuleId({module_id}){args_str}"));
+
+            }
+            new_offset
         }
 
-        // New stack frame operations
+        Opcode::CallHook => {
+            let ret_reg = read_u32_le(&chunk.code, offset + 1);
+            let hook_id =
+                u32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let (new_offset, args_str) = read_args_for_disasm(chunk, offset + 9);
+            if ret_reg != u32::MAX {
+                print_aligned(&format!("v{ret_reg} = CALL_HOOK"), &format!("HOOK_{hook_id}{args_str}"));
+            } else {
+                print_aligned("CALL_HOOK", &format!("HOOK_{hook_id}{args_str}"));
+
+            }
+            new_offset
+        }
+
+        Opcode::Bor => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let a   = read_u32_le(&chunk.code, offset + 5);
+            let b   = read_u32_le(&chunk.code, offset + 9);
+            print_aligned("BOR", &format!("v{dst}, v{a}, v{b}"));
+            offset + 13
+        }
+
+        Opcode::Ireduce => {
+            let dst  = read_u32_le(&chunk.code, offset + 1);
+            let src  = read_u32_le(&chunk.code, offset + 5);
+            let bits = chunk.code[offset + 9];
+            print_aligned("IREDUCE", &format!("v{dst}, v{src}, {bits}"));
+            offset + 10
+        }
+
+        Opcode::Uextend => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let src = read_u32_le(&chunk.code, offset + 5);
+            let from_bits = chunk.code[offset + 9];
+            let to_bits   = chunk.code[offset + 10];
+            print_aligned("UEXTEND", &format!("v{dst}, v{src}, {from_bits}, {to_bits}"));
+            offset + 11
+        }
+
+        Opcode::Bitcast => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let src = read_u32_le(&chunk.code, offset + 5);
+            let ty  = chunk.code[offset + 9];
+            print_aligned("BITCAST", &format!("v{dst}, v{src}, {ty}"));
+            offset + 10
+        }
+
+        Opcode::Mov => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let src = read_u32_le(&chunk.code, offset + 5);
+            print_aligned("MOV", &format!("v{dst}, v{src}"));
+            offset + 9
+        }
+
+        Opcode::Return => {
+            let (new_offset, args_str) = read_args_for_disasm(chunk, offset + 1);
+            print_aligned("RETURN", &args_str.trim_start());
+            new_offset
+        }
+
+        // Stack frame management
         Opcode::FrameSetup => {
             let size =
                 u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
             print_aligned("FRAME_SETUP", &format!("{size}"));
             offset + 5
         }
+
         Opcode::FrameTeardown => {
             print_aligned("FRAME_TEARDOWN", "");
             offset + 1
         }
 
-        // Frame pointer relative operations
-        Opcode::FpLoad8 => {
-            let dst = chunk.code[offset + 1];
+        // Frame-pointer-relative operations
+        Opcode::FpLoad8 | Opcode::FpLoad16 | Opcode::FpLoad32 | Opcode::FpLoad64 => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
             let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
-            print_aligned("FP_LOAD8", &format!("v{dst}, FP{fp_offset:+}"));
-            offset + 6
-        }
-        Opcode::FpLoad16 => {
-            let dst = chunk.code[offset + 1];
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
-            print_aligned("FP_LOAD16", &format!("v{dst}, FP{fp_offset:+}"));
-            offset + 6
-        }
-        Opcode::FpLoad32 => {
-            let dst = chunk.code[offset + 1];
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
-            print_aligned("FP_LOAD32", &format!("v{dst}, FP{fp_offset:+}"));
-            offset + 6
-        }
-        Opcode::FpLoad64 => {
-            let dst = chunk.code[offset + 1];
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
-            print_aligned("FP_LOAD64", &format!("v{dst}, FP{fp_offset:+}"));
-            offset + 6
-        }
-        Opcode::FpStore8 => {
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = chunk.code[offset + 5];
-            print_aligned("FP_STORE8", &format!("FP{fp_offset:+}, v{src}"));
-            offset + 6
-        }
-        Opcode::FpStore16 => {
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = chunk.code[offset + 5];
-            print_aligned("FP_STORE16", &format!("FP{fp_offset:+}, v{src}"));
-            offset + 6
-        }
-        Opcode::FpStore32 => {
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = chunk.code[offset + 5];
-            print_aligned("FP_STORE32", &format!("FP{fp_offset:+}, v{src}"));
-            offset + 6
-        }
-        Opcode::FpStore64 => {
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            let src = chunk.code[offset + 5];
-            print_aligned("FP_STORE64", &format!("FP{fp_offset:+}, v{src}"));
-            offset + 6
-        }
-        Opcode::FpAddr => {
-            let dst = chunk.code[offset + 1];
-            let fp_offset =
-                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
-            print_aligned("FP_ADDR", &format!("v{dst}, FP{fp_offset:+}"));
-            offset + 6
+                i32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            let name = match opcode {
+                Opcode::FpLoad8  => "FP_LOAD8",
+                Opcode::FpLoad16 => "FP_LOAD16",
+                Opcode::FpLoad32 => "FP_LOAD32",
+                Opcode::FpLoad64 => "FP_LOAD64",
+                _ => unreachable!(),
+            };
+            print_aligned(name, &format!("v{dst}, FP{fp_offset:+}"));
+            offset + 9
         }
 
-        // Stack pointer operations
-        Opcode::SpAdd => {
+        Opcode::FpStore8 | Opcode::FpStore16 | Opcode::FpStore32 | Opcode::FpStore64 => {
+            let fp_offset =
+                i32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
+            let src = read_u32_le(&chunk.code, offset + 5);
+            let name = match opcode {
+                Opcode::FpStore8  => "FP_STORE8",
+                Opcode::FpStore16 => "FP_STORE16",
+                Opcode::FpStore32 => "FP_STORE32",
+                Opcode::FpStore64 => "FP_STORE64",
+                _ => unreachable!(),
+            };
+            print_aligned(name, &format!("FP{fp_offset:+}, v{src}"));
+            offset + 9
+        }
+
+        Opcode::FpAddr => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let fp_offset =
+                i32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            print_aligned("FP_ADDR", &format!("v{dst}, FP{fp_offset:+}"));
+            offset + 9
+        }
+
+        // Stack-pointer-relative operations
+        Opcode::SpAdd | Opcode::SpSub => {
             let sp_offset =
                 u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("SP_ADD", &format!("{sp_offset}"));
+            let name = match opcode {
+                Opcode::SpAdd => "SP_ADD",
+                Opcode::SpSub => "SP_SUB",
+                _ => unreachable!(),
+            };
+            print_aligned(name, &format!("{sp_offset}"));
             offset + 5
         }
-        Opcode::SpSub => {
-            let sp_offset =
-                u32::from_le_bytes(chunk.code[offset + 1..offset + 5].try_into().unwrap());
-            print_aligned("SP_SUB", &format!("{sp_offset}"));
-            offset + 5
-        }
+
         Opcode::SpAddr => {
-            let dst = chunk.code[offset + 1];
+            let dst = read_u32_le(&chunk.code, offset + 1);
             let sp_offset =
-                i32::from_le_bytes(chunk.code[offset + 2..offset + 6].try_into().unwrap());
+                i32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
             print_aligned("SP_ADDR", &format!("v{dst}, SP{sp_offset:+}"));
-            offset + 6
+            offset + 9
         }
+
         Opcode::Halt => {
             print_aligned("HALT", "");
             offset + 1
         }
 
         _ => {
-            unimplemented!("not implemented print: {opcode:?}");
+            unimplemented!("disassembly not implemented for {:?}", opcode);
         }
     }
 }

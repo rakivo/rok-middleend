@@ -73,7 +73,7 @@ pub struct Signature {
 
 impl Signature {
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_var_arg(&self) -> bool {
         self.is_var_arg.is_some()
     }
@@ -657,7 +657,7 @@ impl InstBuilder<'_, '_> {
     }
 
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn get_last_inst(&self) -> Option<Inst> {
         let block = self.current_block();
         self.builder.func.cfg.blocks[block.index()].insts.last().copied()
@@ -1249,14 +1249,9 @@ impl InstBuilder<'_, '_> {
         ret_with_comment,
         #[inline]
         pub fn ret(&mut self, vals: &[Value]) {
-            let inst = self.insert_inst(InstructionData::Return {
+            self.insert_inst(InstructionData::Return {
                 args: vals.into()
             });
-
-            for (i, &val) in vals.iter().enumerate() {
-                let ty = self.func.value_type(val);
-                self.make_inst_result(inst, ty, i as _);
-            }
         }
     }
 
