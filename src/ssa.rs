@@ -59,6 +59,19 @@ impl Type {
     pub const fn align_bits(self) -> u32 {
         self.align_bytes() * 8
     }
+
+    #[must_use]
+    #[inline(always)]
+    pub const fn to_int_type(self) -> Self {
+        match self {
+            Self::F32 => Self::I32,
+
+            Self::Ptr |
+            Self::F64 => Self::I64,
+
+            other => other
+        }
+    }
 }
 
 /// Represents a function signature.

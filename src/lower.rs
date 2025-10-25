@@ -14,7 +14,6 @@ use crate::ssa::{
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Represents a function that has been lowered to bytecode.
 pub struct LoweredSsaFunc<'a> {
     pub context: LoweringContext<'a>,
     pub chunk: BytecodeChunk,
@@ -23,9 +22,9 @@ pub struct LoweredSsaFunc<'a> {
 #[cfg(debug_assertions)]
 #[derive(Clone, Debug)]
 pub struct LoInstMeta {
-    pub inst: Inst,             // SSA inst id
-    pub pc: usize,              // start pc
-    pub size: u8,              // byte size
+    pub inst: Inst,
+    pub pc: usize,
+    pub size: u8,
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -46,7 +45,6 @@ pub struct LoweringContext<'a> {
 
     block_order: Vec<Block>,
 
-    /// Stack frame information
     pub frame_info: StackFrameInfo,
 
     #[cfg(debug_assertions)]
