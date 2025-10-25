@@ -431,6 +431,7 @@ impl<'a> VirtualMachine<'a> {
 
 impl<'a> VirtualMachine<'a> {
     pub const STACK_SIZE: usize = 1024 * 1024;
+    pub const REGS_COUNT_PREALLOCATION: usize = 256;
 
     #[inline]
     #[must_use]
@@ -454,7 +455,7 @@ impl<'a> VirtualMachine<'a> {
             pc: 0,
             stack_memory,
             stack_top: 0,
-            registers: Vec::with_capacity(256),
+            registers: Vec::with_capacity(Self::REGS_COUNT_PREALLOCATION),
             halted: false,
         }
     }
@@ -537,11 +538,11 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline]
-    pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
+    pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<SmallVec<[u64; 8]>, VMError> {
         Self::try_run(|| self.call_function_(func_id, args))
     }
 
-    fn call_function_(&mut self, func_id: FuncId, args: &[u64]) -> Result<[u64; 8], VMError> {
+    fn call_function_(&mut self, func_id: FuncId, args: &[u64]) -> Result<SmallVec<[u64; 8]>, VMError> {
         // Set up initial frame
         // @Hack: We just assume that if you call a function -> it's local to a VM
         let packed = ((self.module_id as u64) << 32) | (func_id.as_u32() as u64);
@@ -574,10 +575,12 @@ impl<'a> VirtualMachine<'a> {
         self.pc = 0;
         self.halted = false;
 
+        debug_assert_eq!(self.reg_top, 0);
+        self.ensure_register_capacity(chunk.frame_info.regs_used);
         self.execute()?;
 
-        // Return values are in r0-r7
-        let result = self.registers[0..8].try_into().unwrap();
+        let n = self.registers.len().min(8);
+        let result = self.registers[..n].into();
         Ok(result)
     }
 
@@ -1161,6 +1164,7 @@ impl<'a> VirtualMachine<'a> {
                     break;
                 }
 
+                // @Incomplete: Implement all ops handling and remove this `_` case
                 other => {
                     println!("{other:#?}");
                     return Err(VMError::InvalidOpcode(opcode_byte));
