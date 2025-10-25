@@ -1,7 +1,7 @@
 /// A minimal SSA-based intermediate representation.
 use crate::entity::EntityRef;
 use crate::primary::PrimaryMap;
-use crate::vm::VMCallback;
+use crate::vm::VmCallback;
 use crate::with_comment;
 
 use std::fmt;
@@ -84,7 +84,7 @@ impl Signature {
 pub struct HookData {
     pub name: Box<str>,
     pub signature: Signature,
-    pub vm_callback: VMCallback
+    pub vm_callback: VmCallback
 }
 
 unsafe impl Send for HookData {}
@@ -346,7 +346,6 @@ pub struct ValueData {
 pub enum ValueDef {
     Inst { inst: Inst, result_idx: u8 },
     Param { block: Block, param_idx: u8 },
-    Const(i64),
 }
 
 pub type Hooks = PrimaryMap<HookId, HookData>;

@@ -155,7 +155,13 @@ impl<'a> Deref for AllDatasView<'a> {
     fn deref(&self) -> &Self::Target { &self.datas }
 }
 
-pub type VMCallback = Arc<dyn Fn(
+pub struct HookDataView<'a> {
+    pub name: &'a str,
+    pub signature: &'a Signature,
+    pub vm_callback: VmCallback
+}
+
+pub type VmCallback = Arc<dyn Fn(
     &mut VirtualMachine,
     &[u64],
     u32
@@ -163,7 +169,7 @@ pub type VMCallback = Arc<dyn Fn(
 
 /// VM execution errors
 #[derive(Debug, Clone)]
-pub enum VMError {
+pub enum VmError {
     FFIError,
     EmptyCallStack,
     RegisterOverflow,
@@ -182,30 +188,30 @@ pub enum VMError {
     InterpreterPanic(String)
 }
 
-impl fmt::Display for VMError {
+impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VMError::FFIError => write!(f, "FFIError"),
-            VMError::RegisterOverflow => write!(f, "RegisterOverflow"),
-            VMError::EmptyCallStack => write!(f, "Empty call stack"),
-            VMError::InvalidOpcode(op) => write!(f, "Invalid opcode: {op}"),
-            VMError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
-            VMError::InvalidFuncId(id) => write!(f, "Invalid function ID: {id}"),
-            VMError::InvalidExtFuncId(id) => write!(f, "Invalid ext function ID: {id}"),
-            VMError::InvalidHookId(id) => write!(f, "Invalid hook ID: {id}"),
-            VMError::StackOverflow => write!(f, "Stack overflow"),
-            VMError::StackUnderflow => write!(f, "Stack underflow"),
-            VMError::DivisionByZero => write!(f, "Division by zero"),
-            VMError::InvalidMemoryAccess(addr) => write!(f, "Invalid memory access at 0x{addr:x}"),
-            VMError::UnalignedAccess(addr) => write!(f, "Unaligned memory access at 0x{addr:x}"),
-            VMError::InvalidInstruction(msg) => write!(f, "Invalid instruction: {msg}"),
-            VMError::ExecutionHalted => write!(f, "Execution halted"),
-            VMError::InterpreterPanic(msg) => write!(f, "Execution panicked: {msg}"),
+            VmError::FFIError => write!(f, "FFIError"),
+            VmError::RegisterOverflow => write!(f, "RegisterOverflow"),
+            VmError::EmptyCallStack => write!(f, "Empty call stack"),
+            VmError::InvalidOpcode(op) => write!(f, "Invalid opcode: {op}"),
+            VmError::InvalidDataId(id) => write!(f, "Invalid data ID: {id}"),
+            VmError::InvalidFuncId(id) => write!(f, "Invalid function ID: {id}"),
+            VmError::InvalidExtFuncId(id) => write!(f, "Invalid ext function ID: {id}"),
+            VmError::InvalidHookId(id) => write!(f, "Invalid hook ID: {id}"),
+            VmError::StackOverflow => write!(f, "Stack overflow"),
+            VmError::StackUnderflow => write!(f, "Stack underflow"),
+            VmError::DivisionByZero => write!(f, "Division by zero"),
+            VmError::InvalidMemoryAccess(addr) => write!(f, "Invalid memory access at 0x{addr:x}"),
+            VmError::UnalignedAccess(addr) => write!(f, "Unaligned memory access at 0x{addr:x}"),
+            VmError::InvalidInstruction(msg) => write!(f, "Invalid instruction: {msg}"),
+            VmError::ExecutionHalted => write!(f, "Execution halted"),
+            VmError::InterpreterPanic(msg) => write!(f, "Execution panicked: {msg}"),
         }
     }
 }
 
-impl std::error::Error for VMError {}
+impl std::error::Error for VmError {}
 
 pub struct InstructionDecoder {
     ptr: *const u8,
@@ -318,7 +324,7 @@ impl InstructionDecoder {
 // @Hack: I just don't wanna move Consteval map to a shared module rn..
 pub trait FuncDispatcher {
     fn get_bytecode_chunk(&self, packed: u64) -> Arc<BytecodeChunk>;
-    fn get_ext_func_data(&self, packed: u64) -> Arc<VMExtFunc>;
+    fn get_ext_func_data(&self, packed: u64) -> Arc<VmExtFunc>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -342,21 +348,20 @@ impl StackFrame {
 }
 
 #[derive(Clone)]
-pub struct VMExtFunc {
+pub struct VmExtFunc {
     pub signature: Signature,
     pub addr: *const (),
     pub name: Box<str>
 }
 
-unsafe impl Send for VMExtFunc {}
-unsafe impl Sync for VMExtFunc {}
+unsafe impl Send for VmExtFunc {}
+unsafe impl Sync for VmExtFunc {}
 
-pub type VmExtFuncMap = FxHashMap<ExtFuncId, VMExtFunc>;
+pub type VmHooks<'a> = PrimaryMap<HookId, HookDataView<'a>>;
+pub type VmExtFuncMap = FxHashMap<ExtFuncId, VmExtFunc>;
 
 pub struct VirtualMachine<'a> {
     module_id: u32,
-
-    ext_funcs: VmExtFuncMap,
 
     call_stack: Vec<StackFrame>,
     pc: u32,
@@ -364,7 +369,7 @@ pub struct VirtualMachine<'a> {
     stack_memory: Box<[u8]>,
     stack_top: u32,
 
-    hooks: Hooks,
+    hooks: VmHooks<'a>,
 
     // @Performance: i dont like this
     dispatcher: &'a dyn FuncDispatcher,
@@ -449,7 +454,6 @@ impl<'a> VirtualMachine<'a> {
             hooks: PrimaryMap::new(),
             data_memory: Vec::new(),
             data_offsets: FxHashMap::default(),
-            ext_funcs: FxHashMap::default(),
             call_stack: Vec::with_capacity(32),
             reg_top: 0,
             pc: 0,
@@ -473,13 +477,14 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    pub fn load_hooks(&mut self, hooks: Hooks) {
-        self.hooks = hooks;
-    }
-
-    #[inline(always)]
-    pub fn load_ext_funcs(&mut self, ext_funcs: FxHashMap<ExtFuncId, VMExtFunc>) {
-        self.ext_funcs = ext_funcs;
+    pub fn load_hooks(&mut self, hooks: &'a Hooks) {
+        self.hooks = VmHooks::from_iter(hooks.values().map(|hook_data| {
+             HookDataView {
+                name: &hook_data.name,
+                signature: &hook_data.signature,
+                vm_callback: Arc::clone(&hook_data.vm_callback)
+            }
+        }));
     }
 
     pub fn initialize_module_data(&mut self, datas: AllDatasView) {
@@ -523,26 +528,11 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline]
-    pub fn add_external_function(
-        &mut self,
-        func_id: ExtFuncId,
-        signature: Signature,
-        addr: *const (),
-        name: impl Into<Box<str>>
-    ) {
-        self.ext_funcs.insert(func_id, VMExtFunc {
-            signature,
-            addr,
-            name: name.into()
-        });
-    }
-
-    #[inline]
-    pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<SmallVec<[u64; 8]>, VMError> {
+    pub fn call_function(&mut self, func_id: FuncId, args: &[u64]) -> Result<SmallVec<[u64; 8]>, VmError> {
         Self::try_run(|| self.call_function_(func_id, args))
     }
 
-    fn call_function_(&mut self, func_id: FuncId, args: &[u64]) -> Result<SmallVec<[u64; 8]>, VMError> {
+    fn call_function_(&mut self, func_id: FuncId, args: &[u64]) -> Result<SmallVec<[u64; 8]>, VmError> {
         // Set up initial frame
         // @Hack: We just assume that if you call a function -> it's local to a VM
         let packed = ((self.module_id as u64) << 32) | (func_id.as_u32() as u64);
@@ -565,7 +555,7 @@ impl<'a> VirtualMachine<'a> {
 
         #[cfg(debug_assertions)]
         if new_sp as usize >= self.stack_memory.len() {
-            return Err(VMError::StackOverflow);
+            return Err(VmError::StackOverflow);
         }
 
         // @Incomplete: we assume regs_base is 0
@@ -585,11 +575,11 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    pub fn execute(&mut self) -> Result<(), VMError> {
+    pub fn execute(&mut self) -> Result<(), VmError> {
         Self::try_run(|| self.execute_())
     }
 
-    fn execute_(&mut self) -> Result<(), VMError> {
+    fn execute_(&mut self) -> Result<(), VmError> {
         while !self.halted && !self.call_stack.is_empty() {
             let packed = self.current_frame().packed;
             let chunk = &self.get_chunk(packed);
@@ -774,7 +764,7 @@ impl<'a> VirtualMachine<'a> {
 
                 Opcode::Return => {
                     if self.call_stack.is_empty() {
-                        return Err(VMError::EmptyCallStack);
+                        return Err(VmError::EmptyCallStack);
                     }
                     let (_, ret_args) = decoder.read_args();
 
@@ -827,7 +817,7 @@ impl<'a> VirtualMachine<'a> {
 
                     // Allocate registers for callee
                     let regs_base = self.reg_top;
-                    let regs_needed_top = regs_base.checked_add(callee_regs).ok_or(VMError::RegisterOverflow)?;
+                    let regs_needed_top = regs_base.checked_add(callee_regs).ok_or(VmError::RegisterOverflow)?;
                     self.ensure_register_capacity(regs_needed_top);
 
                     let mut values = SmallVec::<[_; 8]>::new();
@@ -847,7 +837,7 @@ impl<'a> VirtualMachine<'a> {
 
                     #[cfg(debug_assertions)]
                     if new_sp as usize >= self.stack_memory.len() {
-                        return Err(VMError::StackOverflow);
+                        return Err(VmError::StackOverflow);
                     }
 
                     let ret_pc = decoder.get_pos(chunk.code.as_ptr()) as _;
@@ -882,7 +872,7 @@ impl<'a> VirtualMachine<'a> {
 
                     #[cfg(debug_assertions)]
                     if hook_id.index() >= self.hooks.len() {
-                        return Err(VMError::InvalidHookId(hook_id));
+                        return Err(VmError::InvalidHookId(hook_id));
                     }
 
                     let mut hook_args = SmallVec::<[_; 8]>::new();
@@ -968,7 +958,7 @@ impl<'a> VirtualMachine<'a> {
                         let data_ptr = self.data_memory.as_ptr() as u64 + u64::from(offset);
                         self.reg_write(dst, data_ptr as _);
                     } else {
-                        return Err(VMError::InvalidDataId(data_id));
+                        return Err(VmError::InvalidDataId(data_id));
                     }
                 }
 
@@ -1046,7 +1036,7 @@ impl<'a> VirtualMachine<'a> {
                     let frame_size = decoder.read_u32();
                     *self.sp_mut() += frame_size;
                     if self.sp() as usize >= self.stack_memory.len() {
-                        return Err(VMError::StackOverflow);
+                        return Err(VmError::StackOverflow);
                     }
                 }
 
@@ -1167,7 +1157,7 @@ impl<'a> VirtualMachine<'a> {
                 // @Incomplete: Implement all ops handling and remove this `_` case
                 other => {
                     println!("{other:#?}");
-                    return Err(VMError::InvalidOpcode(opcode_byte));
+                    return Err(VmError::InvalidOpcode(opcode_byte));
                 }
             }
 
@@ -1180,7 +1170,7 @@ impl<'a> VirtualMachine<'a> {
 }
 
 impl VirtualMachine<'_> {
-    fn try_run<T>(f: impl FnOnce() -> Result<T, VMError>) -> Result<T, VMError> {
+    fn try_run<T>(f: impl FnOnce() -> Result<T, VmError>) -> Result<T, VmError> {
         let result = catch_unwind(AssertUnwindSafe(f));
 
         match result {
@@ -1194,7 +1184,7 @@ impl VirtualMachine<'_> {
                 } else {
                     "non-string panic".to_string()
                 };
-                Err(VMError::InterpreterPanic(panic_msg))
+                Err(VmError::InterpreterPanic(panic_msg))
             }
         }
     }
