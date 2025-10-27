@@ -413,7 +413,7 @@ macro_rules! def_op_icmp {
         let src2 = $decoder.read_u32();
         let val1 = $self.reg_read(src1 as _) as $ty;
         let val2 = $self.reg_read(src2 as _) as $ty;
-        $self.reg_write(dst as _, (val1 $op val2) as u64);
+        $self.reg_write(dst as _, ((val1 $op val2) as bool) as u64);
     };
 }
 
@@ -618,8 +618,8 @@ impl<'a> VirtualMachine<'a> {
 
                 Opcode::FConst32 => {
                     let reg = decoder.read_u32();
-                    let value = u64::from(decoder.read_f32().to_bits());
-                    self.reg_write(reg as _, value);
+                    let value = decoder.read_f32().to_bits();
+                    self.reg_write(reg as _, value as _);
                 }
 
                 Opcode::FConst64 => {
@@ -648,6 +648,10 @@ impl<'a> VirtualMachine<'a> {
                     def_op_binary!(self, decoder, wrapping_shl);
                 }
 
+                Opcode::Ushr => {
+                    def_op_binary!(self, decoder, wrapping_shr);
+                }
+
                 Opcode::Ireduce => {
                     let dst = decoder.read_u32();
                     let src = decoder.read_u32();
@@ -664,6 +668,31 @@ impl<'a> VirtualMachine<'a> {
                     let _to_bits = decoder.read_u8();
                     let val = self.reg_read(src as _);
                     self.reg_write(dst as _, val);
+                }
+
+                Opcode::FPromote => {
+                    let dst = decoder.read_u32();
+                    let src = decoder.read_u32();
+                    let val = f32::from_bits(self.reg_read(src as _) as _);
+                    self.reg_write(dst as _, (val as f64).to_bits());
+                }
+
+                Opcode::Band => {
+                    let dst = decoder.read_u32();
+                    let a = decoder.read_u32();
+                    let b = decoder.read_u32();
+                    let a = self.reg_read(a as _);
+                    let b = self.reg_read(b as _);
+                    self.reg_write(dst as _, a & b);
+                }
+
+                Opcode::Or => {
+                    let dst = decoder.read_u32();
+                    let a = decoder.read_u32();
+                    let b = decoder.read_u32();
+                    let a = self.reg_read(a as _);
+                    let b = self.reg_read(b as _);
+                    self.reg_write(dst as _, ((a | b) != 0) as _);
                 }
 
                 Opcode::Bitcast => {

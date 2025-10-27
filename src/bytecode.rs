@@ -376,14 +376,14 @@ define_opcodes! {
     },
 
     Call(key: u64) = 29,
-    @ IData::Call { func_id, args, parent } => |results, chunk, inst_id| {
+    @ IData::Call { func_id: _, args, parent, foreign_func_id } => |results, chunk, inst_id| {
         chunk.append(Opcode::Call);
         if let Some(result) = results.and_then(|v| v.first()) {
             chunk.append(result.as_u32());
         } else {
             chunk.append(u32::MAX); // sentinel
         }
-        let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
+        let key: u64 = ((*parent as u64) << 32) | (foreign_func_id.index() as u64);
         chunk.append(key);
         self.append_args(chunk, args);
     },
@@ -446,7 +446,16 @@ define_opcodes! {
         chunk.append(dst);
         chunk.append(src);
     },
-
+    FPromote(dst: u32, src: u32) = 67,
+    @ IData::Unary { unop: UnaryOp::FPromote, arg } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        // @Note: We only support f32 and f64, so we're not
+        // encoding the dst type ..
+        chunk.append(Opcode::FPromote);
+        chunk.append(dst);
+        chunk.append(src);
+    },
     Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
@@ -996,6 +1005,14 @@ pub fn disassemble_instruction(chunk: &BytecodeChunk, offset: usize) -> usize {
             offset + 13
         }
 
+        Opcode::FConst32 => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let val =
+                f32::from_le_bytes(chunk.code[offset + 5..offset + 9].try_into().unwrap());
+            print_aligned("FCONST32", &format!("v{dst}, {val}_f64"));
+            offset + 9
+        }
+
         Opcode::FConst64 => {
             let dst = read_u32_le(&chunk.code, offset + 1);
             let val =
@@ -1006,7 +1023,7 @@ pub fn disassemble_instruction(chunk: &BytecodeChunk, offset: usize) -> usize {
 
         // Binary int ops
         Opcode::Ishl | Opcode::IAdd | Opcode::ISub | Opcode::IMul | Opcode::IDiv |
-        Opcode::And  | Opcode::Or   | Opcode::Xor  |
+        Opcode::And  | Opcode::Or   | Opcode::Xor  | Opcode::Band |
         Opcode::IEq | Opcode::INe | Opcode::ISGt | Opcode::ISGe |
         Opcode::ISLt | Opcode::ISLe | Opcode::IUGt | Opcode::IUGe | Opcode::IULt | Opcode::IULe => {
             let dst = read_u32_le(&chunk.code, offset + 1);
@@ -1019,6 +1036,7 @@ pub fn disassemble_instruction(chunk: &BytecodeChunk, offset: usize) -> usize {
                 Opcode::IMul => "IMUL",
                 Opcode::IDiv => "IDIV",
                 Opcode::And  => "AND",
+                Opcode::Band => "BAND",
                 Opcode::Or   => "OR",
                 Opcode::Xor  => "XOR",
                 Opcode::IEq  => "IEQ",
@@ -1164,6 +1182,13 @@ pub fn disassemble_instruction(chunk: &BytecodeChunk, offset: usize) -> usize {
             offset + 10
         }
 
+        Opcode::Sextend => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let src = read_u32_le(&chunk.code, offset + 5);
+            print_aligned("SEXTEND", &format!("v{dst}, v{src}"));
+            offset + 9
+        }
+
         Opcode::Uextend => {
             let dst = read_u32_le(&chunk.code, offset + 1);
             let src = read_u32_le(&chunk.code, offset + 5);
@@ -1171,6 +1196,13 @@ pub fn disassemble_instruction(chunk: &BytecodeChunk, offset: usize) -> usize {
             let to_bits   = chunk.code[offset + 10];
             print_aligned("UEXTEND", &format!("v{dst}, v{src}, {from_bits}, {to_bits}"));
             offset + 11
+        }
+
+        Opcode::FPromote => {
+            let dst = read_u32_le(&chunk.code, offset + 1);
+            let src = read_u32_le(&chunk.code, offset + 5);
+            print_aligned("FPROMOTE", &format!("v{dst}, v{src}"));
+            offset + 9
         }
 
         Opcode::Bitcast => {

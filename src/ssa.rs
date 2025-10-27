@@ -180,9 +180,9 @@ impl SsaFunc {
     }
 
     #[inline(always)]
-    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
+    pub fn create_stack_slot(&mut self, ty: Type, size: u32, align: u16) -> StackSlot {
         let id = StackSlot::from_u32(self.stack_slots.len() as _);
-        self.stack_slots.push(StackSlotData { ty, size });
+        self.stack_slots.push(StackSlotData { ty, size, align });
         id
     }
 
@@ -212,6 +212,16 @@ impl SsaFunc {
 
     #[inline]
     #[must_use]
+    pub fn inst_results(&self, inst: Inst) -> &[Value] {
+        if let Some(rs) = self.dfg.inst_results.get(&inst) {
+            rs
+        } else {
+            &[]
+        }
+    }
+
+    #[inline]
+    #[must_use]
     pub fn pretty_print_inst(&self, inst: Inst) -> String {
         let mut inst_string = String::with_capacity(128);
         self.fmt_inst(&mut inst_string, inst).unwrap();
@@ -237,6 +247,7 @@ pub struct Layout {
 pub struct StackSlotData {
     pub ty: Type,
     pub size: u32,
+    pub align: u16
 }
 
 /// Metadata for the function.
@@ -260,7 +271,15 @@ pub enum InstructionData {
     FConst { value: f64 },
     Jump { destination: Block, args: SmallVec<[Value; 4]> },
     Branch { destinations: [Block; 2], args: SmallVec<[Value; 4]>, arg: Value },
-    Call { parent: u16, func_id: FuncId, args: SmallVec<[Value; 8]> },
+    // @Hack:
+    // @Performance:
+    // TODO: Pack big SmallVec's into an EntityList
+    Call {
+        parent: u16,
+        foreign_func_id: FuncId,
+        func_id: FuncId,
+        args: SmallVec<[Value; 8]>
+    },
     CallExt { parent: u16, func_id: ExtFuncId, args: SmallVec<[Value; 8]> },
     Return { args: SmallVec<[Value; 2]> },
     StackLoad { slot: StackSlot },
@@ -347,6 +366,7 @@ pub enum UnaryOp {
     Uextend,
     Sextend,
     Bitcast,
+    FPromote
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -434,9 +454,9 @@ impl Module {
             hook_id: HookId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Option<Value> {
-            let result_ty = self.hooks[hook_id].signature.returns.first().copied();
-            ir_builder.ins().call_hook(result_ty, hook_id, args)
+        ) -> Inst {
+            let result_tys = &self.hooks[hook_id].signature.returns;
+            ir_builder.ins().call_hook(result_tys, hook_id, args)
         }
     }
 
@@ -464,13 +484,14 @@ impl Module {
         pub fn call(
             &self,
             func_id: FuncId,
+            foreign_func_id: FuncId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Option<Value> {
+        ) -> Inst {
             let func = &self.funcs[func_id];
             let parent = func.parent_module_id;
-            let result_ty = func.signature.returns.first().copied();
-            ir_builder.ins().call(result_ty, func_id, args, parent as _)
+            let result_tys = &func.signature.returns;
+            ir_builder.ins().call(result_tys, func_id, foreign_func_id, args, parent as _)
         }
     }
 
@@ -611,8 +632,8 @@ impl<'a> FunctionBuilder<'a> {
     // TODO(#12): Names for stack slots?
     // TODO(#10): Why do we need to take in Type in create_stack_slot
     #[inline(always)]
-    pub fn create_stack_slot(&mut self, ty: Type, size: u32) -> StackSlot {
-        self.func.create_stack_slot(ty, size)
+    pub fn create_stack_slot(&mut self, ty: Type, size: u32, align: u16) -> StackSlot {
+        self.func.create_stack_slot(ty, size, align)
     }
 
     #[inline(always)]
@@ -937,6 +958,15 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
+        fpromote_with_comment,
+        #[inline]
+        pub fn fpromote(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FPromote, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
         bitcast_with_comment,
         #[inline]
         #[track_caller]
@@ -1151,15 +1181,22 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call(
             &mut self,
-            result_ty: Option<Type>,
+            result_tys: &[Type],
             func_id: FuncId,
+            foreign_func_id: FuncId,
             args: &[Value],
             parent: u16
-        ) -> Option<Value> {
+        ) -> Inst {
             let inst = self.insert_inst(InstructionData::Call {
-                func_id, parent, args: args.into()
+                func_id,
+                parent,
+                args: args.into(),
+                foreign_func_id
             });
-            result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
+            for (i, ty) in result_tys.iter().enumerate() {
+                self.make_inst_result(inst, *ty, i as _);
+            }
+            inst
         }
     }
 
@@ -1168,15 +1205,18 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call_hook(
             &mut self,
-            result_ty: Option<Type>,
+            result_tys: &[Type],
             hook_id: HookId,
             args: &[Value]
-        ) -> Option<Value> {
+        ) -> Inst {
             let inst = self.insert_inst(InstructionData::CallHook {
                 hook_id,
                 args: args.into()
             });
-            result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
+            for (i, ty) in result_tys.iter().enumerate() {
+                self.make_inst_result(inst, *ty, i as _);
+            }
+            inst
         }
     }
 
