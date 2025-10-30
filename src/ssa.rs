@@ -365,8 +365,17 @@ pub enum UnaryOp {
     Ireduce,
     Uextend,
     Sextend,
+
     Bitcast,
-    FPromote
+
+    FPromote,
+    FDemote,
+    FNeg,
+
+    FloatToSInt,
+    FloatToUInt,
+    SIntToFloat,
+    UIntToFloat
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -962,6 +971,61 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn fpromote(&mut self, ty: Type, arg: Value) -> Value {
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FPromote, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        fdemote_with_comment,
+        #[inline]
+        pub fn fdemote(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FDemote, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        float_to_sint_with_comment,
+        #[inline]
+        pub fn float_to_sint(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FloatToSInt, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        float_to_uint_with_comment,
+        #[inline]
+        pub fn float_to_uint(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FloatToUInt, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        sint_to_float_with_comment,
+        #[inline]
+        pub fn sint_to_float(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::SIntToFloat, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        uint_to_float_with_comment,
+        #[inline]
+        pub fn uint_to_float(&mut self, ty: Type, arg: Value) -> Value {
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::UIntToFloat, arg });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        fneg_with_comment,
+        #[inline]
+        pub fn fneg(&mut self, arg: Value) -> Value {
+            let ty = self.builder.func.dfg.values[arg.index()].ty;
+            let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FNeg, arg });
             self.make_inst_result(inst, ty, 0)
         }
     }

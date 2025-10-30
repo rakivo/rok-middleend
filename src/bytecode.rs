@@ -456,6 +456,30 @@ define_opcodes! {
         chunk.append(dst);
         chunk.append(src);
     },
+    FDemote(dst: u32, src: u32) = 200,
+    @ IData::Unary { unop: UnaryOp::FDemote, arg } => |results, chunk| {
+        todo!()
+    },
+    FloatToSInt(dst: u32, src: u32) = 200,
+    @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } => |results, chunk| {
+        todo!()
+    },
+    FloatToUInt(dst: u32, src: u32) = 201,
+    @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } => |results, chunk| {
+        todo!()
+    },
+    SIntToFloat(dst: u32, src: u32) = 202,
+    @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } => |results, chunk| {
+        todo!()
+    },
+    UIntToFloat(dst: u32, src: u32) = 203,
+    @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } => |results, chunk| {
+        todo!()
+    },
+    FNeg(dst: u32, src: u32) = 69,
+    @ IData::Unary { unop: UnaryOp::FNeg, arg } => |results, chunk| {
+        todo!()
+    },
     Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
