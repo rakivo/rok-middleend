@@ -478,10 +478,10 @@ impl Module {
             ext_func_id: ExtFuncId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Option<Value> {
+        ) -> Inst {
             let func = &self.ext_funcs[ext_func_id];
             let parent = func.parent_module_id;
-            let result_ty = func.signature.returns.first().copied();
+            let result_ty = &func.signature.returns;
             ir_builder.ins().call_ext(result_ty, ext_func_id, args, parent)
         }
     }
@@ -525,7 +525,7 @@ impl Module {
                 },
             });
 
-            ir_builder.call_ext(Some(Type::Ptr), libc_memcpy, &[dest, src, size], parent);
+            ir_builder.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size], parent);
         }
     }
 
@@ -550,7 +550,7 @@ impl Module {
                 }
             });
 
-            ir_builder.call_ext(Some(Type::Ptr), libc_memset, &[dest, c, n], parent);
+            ir_builder.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n], parent);
         }
     }
 
@@ -565,7 +565,7 @@ impl Module {
                 signature: Signature::default()
             });
 
-            ir_builder.call_ext(None, libc_abort, &[], parent);
+            ir_builder.call_ext(&[], libc_abort, &[], parent);
         }
     }
 }
@@ -1289,15 +1289,20 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call_ext(
             &mut self,
-            result_ty: Option<Type>,
+            result_tys: &[Type],
             func_id: ExtFuncId,
             args: &[Value],
             parent: u16
-        ) -> Option<Value> {
+        ) -> Inst {
             let inst = self.insert_inst(InstructionData::CallExt {
-                func_id, parent, args: args.into()
+                func_id,
+                parent,
+                args: args.into(),
             });
-            result_ty.map(|result_ty| self.make_inst_result(inst, result_ty, 0))
+            for (i, ty) in result_tys.iter().enumerate() {
+                self.make_inst_result(inst, *ty, i as _);
+            }
+            inst
         }
     }
 
@@ -1320,7 +1325,8 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            self.call_ext(Some(Type::Ptr), libc_memcpy, &[dest, src, size], parent.module_id).unwrap()
+            let inst = self.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size], parent.module_id);
+            self.func.inst_results(inst)[0]
         }
     }
 
@@ -1343,7 +1349,8 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            self.call_ext(Some(Type::Ptr), libc_memset, &[dest, c, n], parent.module_id).unwrap()
+            let inst = self.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n], parent.module_id);
+            self.func.inst_results(inst)[0]
         }
     }
 
@@ -1357,7 +1364,7 @@ impl InstBuilder<'_, '_> {
                 signature: Signature::default()
             });
 
-            self.call_ext(None, libc_abort, &[], parent.module_id);
+            self.call_ext(&[], libc_abort, &[], parent.module_id);
         }
     }
 
