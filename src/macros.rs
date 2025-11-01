@@ -16,7 +16,6 @@ macro_rules! define_opcodes {
         ),*
     ) => { paste::paste!{
         #[repr(u8)]
-        #[non_exhaustive]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Opcode {
             $( $opcode, )*

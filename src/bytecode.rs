@@ -378,10 +378,13 @@ define_opcodes! {
     Call(key: u64) = 29,
     @ IData::Call { func_id: _, args, parent, foreign_func_id } => |results, chunk, inst_id| {
         chunk.append(Opcode::Call);
-        if let Some(result) = results.and_then(|v| v.first()) {
-            chunk.append(result.as_u32());
+        if let Some(results) = results {
+            chunk.append(results.len() as u8);
+            for result in results {
+                chunk.append(result.as_u32());
+            }
         } else {
-            chunk.append(u32::MAX); // sentinel
+            chunk.append(0u8);
         }
         let key: u64 = ((*parent as u64) << 32) | (foreign_func_id.index() as u64);
         chunk.append(key);
@@ -403,10 +406,13 @@ define_opcodes! {
     CallExt(key: u64) = 136,
     @ IData::CallExt { func_id, args, parent } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallExt);
-        if let Some(result) = results.and_then(|v| v.first()) {
-            chunk.append(result.as_u32());
+        if let Some(results) = results {
+            chunk.append(results.len() as u8);
+            for result in results {
+                chunk.append(result.as_u32());
+            }
         } else {
-            chunk.append(u32::MAX); // sentinel
+            chunk.append(0u8);
         }
         let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
         chunk.append(key);
@@ -458,27 +464,51 @@ define_opcodes! {
     },
     FDemote(dst: u32, src: u32) = 200,
     @ IData::Unary { unop: UnaryOp::FDemote, arg } => |results, chunk| {
-        todo!()
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FDemote);
+        chunk.append(dst);
+        chunk.append(src);
     },
-    FloatToSInt(dst: u32, src: u32) = 200,
+    FloatToSInt(dst: u32, src: u32) = 201,
     @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } => |results, chunk| {
-        todo!()
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FloatToSInt);
+        chunk.append(dst);
+        chunk.append(src);
     },
-    FloatToUInt(dst: u32, src: u32) = 201,
+    FloatToUInt(dst: u32, src: u32) = 202,
     @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } => |results, chunk| {
-        todo!()
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FloatToUInt);
+        chunk.append(dst);
+        chunk.append(src);
     },
-    SIntToFloat(dst: u32, src: u32) = 202,
+    SIntToFloat(dst: u32, src: u32) = 203,
     @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } => |results, chunk| {
-        todo!()
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::SIntToFloat);
+        chunk.append(dst);
+        chunk.append(src);
     },
-    UIntToFloat(dst: u32, src: u32) = 203,
+    UIntToFloat(dst: u32, src: u32) = 204,
     @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } => |results, chunk| {
-        todo!()
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::UIntToFloat);
+        chunk.append(dst);
+        chunk.append(src);
     },
     FNeg(dst: u32, src: u32) = 69,
     @ IData::Unary { unop: UnaryOp::FNeg, arg } => |results, chunk| {
-        todo!()
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FNeg);
+        chunk.append(dst);
+        chunk.append(src);
     },
     Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {

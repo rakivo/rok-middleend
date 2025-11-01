@@ -30,7 +30,6 @@
 #[macro_use]
 mod macros;
 
-pub mod vm;
 pub mod ssa;
 pub mod util;
 pub mod iter;

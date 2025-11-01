@@ -1,8 +1,14 @@
 /// A minimal SSA-based intermediate representation.
 use crate::entity::EntityRef;
 use crate::primary::PrimaryMap;
-use crate::vm::VmCallback;
 use crate::with_comment;
+
+use std::sync::Arc;
+
+// VmCallback is a trait object for VM callbacks
+// The actual type is defined in rok_frontend::vm with VirtualMachine
+// This is just a placeholder that allows us to store it in the IR
+pub type VmCallback = Arc<dyn std::any::Any + Send + Sync>;
 
 use std::fmt;
 use std::hash::Hash;

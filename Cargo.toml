@@ -18,5 +18,3 @@ parking_lot.workspace = true
 smallvec.workspace = true
 rustc-hash.workspace = true
 paste.workspace = true
-
-libffi = { version = "4.1.2",  features = [] }
