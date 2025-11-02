@@ -3,13 +3,6 @@ use crate::entity::EntityRef;
 use crate::primary::PrimaryMap;
 use crate::with_comment;
 
-use std::sync::Arc;
-
-// VmCallback is a trait object for VM callbacks
-// The actual type is defined in rok_frontend::vm with VirtualMachine
-// This is just a placeholder that allows us to store it in the IR
-pub type VmCallback = Arc<dyn std::any::Any + Send + Sync>;
-
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
@@ -26,6 +19,8 @@ crate::entity_ref!(FuncId, "FuncId");
 crate::entity_ref!(DataId, "DataId");
 crate::entity_ref!(GlobalValue, "GlobalValue");
 crate::entity_ref!(ExtFuncId, "ExternalFuncId");
+
+impl nohash_hasher::IsEnabled for HookId {}
 
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,16 +93,6 @@ impl Signature {
     }
 }
 
-/// Represents a compiler hook
-#[derive(Clone)]
-pub struct HookData {
-    pub name: Box<str>,
-    pub signature: Signature,
-    pub vm_callback: VmCallback
-}
-
-unsafe impl Send for HookData {}
-unsafe impl Sync for HookData {}
 
 /// Represents an external function, defined outside the module.
 #[derive(Debug, Clone)]
@@ -126,12 +111,14 @@ pub struct DataFlowGraph {
 }
 
 impl DataFlowGraph {
+    #[inline]
     pub fn make_value(&mut self, data: ValueData) -> Value {
         let id = Value::from_u32(self.values.len() as _);
         self.values.push(data);
         id
     }
 
+    #[inline]
     pub fn make_inst(&mut self, data: InstructionData) -> Inst {
         let id = Inst::from_u32(self.insts.len() as _);
         self.insts.push(data);
@@ -396,15 +383,12 @@ pub enum ValueDef {
     Param { block: Block, param_idx: u8 },
 }
 
-pub type Hooks = PrimaryMap<HookId, HookData>;
-
 #[derive(Default)]
 pub struct Module {
     pub module_id: u16,
 
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFunc>,
-    pub hooks: Hooks,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
 
@@ -418,11 +402,6 @@ impl Module {
     #[inline(always)]
     pub fn import_function(&mut self, data: ExtFunc) -> ExtFuncId {
         self.ext_funcs.push(data)
-    }
-
-    #[inline(always)]
-    pub fn add_hook(&mut self, data: HookData) -> HookId {
-        self.hooks.push(data)
     }
 
     #[inline]
@@ -467,10 +446,10 @@ impl Module {
         pub fn call_hook(
             &self,
             hook_id: HookId,
+            result_tys: &[Type],
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
         ) -> Inst {
-            let result_tys = &self.hooks[hook_id].signature.returns;
             ir_builder.ins().call_hook(result_tys, hook_id, args)
         }
     }
@@ -575,7 +554,6 @@ impl Module {
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct GlobalValueData {

@@ -15,6 +15,7 @@ exclude = ["assets/*", "README.md"]
 cfg-if.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true
+nohash-hasher.workspace = true
 smallvec.workspace = true
 rustc-hash.workspace = true
 paste.workspace = true
