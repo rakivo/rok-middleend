@@ -75,10 +75,10 @@ impl<'a> LoweringContext<'a> {
     #[must_use]
     pub fn lower(mut self) -> LoweredSsaFunc<'a> {
         // Create chunk but DON'T copy frame_info yet
-        let mut chunk = BytecodeChunk::default();
-
-        // NOW copy the finalized frame_info to chunk
-        chunk.frame_info = self.frame_info.clone();
+        let mut chunk = BytecodeChunk {
+            frame_info: self.frame_info.clone(),
+            ..Default::default()
+        };
 
         // Emit frame setup (uses correct total_size now)
         self.emit_frame_setup(&mut chunk);

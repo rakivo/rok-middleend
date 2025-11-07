@@ -39,3 +39,4 @@ pub mod entity;
 pub mod primary;
 pub mod bytecode;
 pub mod boxed_slice;
+pub mod disassemble;
