@@ -1,5 +1,11 @@
+// @Refactor
+#![allow(
+    clippy::uninlined_format_args,
+    clippy::single_char_add_str,
+    clippy::format_push_string
+)]
+
 use crate::bytecode::Opcode;
-use crate::entity::EntityRef;
 use crate::lower::LoweredSsaFunc;
 
 use std::fmt::{self, Write};
@@ -11,6 +17,7 @@ pub struct BytecodeReader<'a> {
 }
 
 impl<'a> BytecodeReader<'a> {
+    #[must_use]
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, offset: 0 }
     }
@@ -77,10 +84,12 @@ impl<'a> BytecodeReader<'a> {
         f64::from_bits(self.read_u64())
     }
 
+    #[must_use]
     pub fn position(&self) -> usize {
         self.offset
     }
 
+    #[must_use]
     pub fn remaining(&self) -> usize {
         self.data.len() - self.offset
     }
@@ -92,6 +101,7 @@ impl<'a> BytecodeReader<'a> {
 impl Opcode {
     /// Converts a u8 discriminant to an Opcode variant
     /// Returns None if the discriminant doesn't match any opcode
+    #[must_use]
     pub fn from_u8(val: u8) -> Option<Self> {
         // This uses the discriminants from define_opcodes! macro
         match val {
@@ -819,9 +829,11 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
 }
 
 /// Disassembles bytecode with optional metadata annotations in compiler assembly style
-pub fn disassemble(bytecode: &[u8], lowered: Option<&LoweredSsaFunc>) -> String {
+#[must_use]
+pub fn disassemble(bytecode: &[u8], _lowered: Option<&LoweredSsaFunc>) -> String {
     let mut reader = BytecodeReader::new(bytecode);
     let mut output = String::new();
+    #[allow(unused_mut, unused)]
     let mut curr_block: Option<crate::ssa::Block> = None;
 
     while reader.remaining() > 0 {
@@ -830,36 +842,37 @@ pub fn disassemble(bytecode: &[u8], lowered: Option<&LoweredSsaFunc>) -> String 
 
         // Print metadata if available
         #[cfg(debug_assertions)]
-        if let Some(lowered) = lowered {
-            if let Some(crate::lower::LoInstMeta { pc, inst, size }) =
-                lowered.context.pc_to_inst_meta.get(&offset)
+        if let Some(lowered) = _lowered
+        && let Some(crate::lower::LoInstMeta { pc, inst, size }) =
+            lowered.context.pc_to_inst_meta.get(&offset)
+        {
+            use crate::entity::EntityRef;
+
+            // Look up the block this instruction belongs to
+            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst)
+            && Some(block) != curr_block
             {
-                // Look up the block this instruction belongs to
-                if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst) {
-                    if Some(block) != curr_block {
-                        curr_block = Some(block);
-                        output.push_str("\n");
-                        output.push_str(&format!("{} ; block({})\n", offset_str, block.index()));
-                    }
-                }
-
+                curr_block = Some(block);
                 output.push_str("\n");
-                output.push_str(&format!("{} ;\n", offset_str));
-                output.push_str(&format!("{} ; original SSA instruction:\n", offset_str));
-                output.push_str(&format!("{} ; {}\n", offset_str,
-                    lowered.context.func.pretty_print_inst(*inst)));
-
-                if let Some(comment) = lowered.context.func.metadata.comments.get(inst) {
-                    output.push_str(&format!("{} ;\n", offset_str));
-                    output.push_str(&format!("{} ; comment:\n", offset_str));
-                    output.push_str(&format!("{} ; {}\n", offset_str, comment));
-                }
-
-                output.push_str(&format!("{} ;\n", offset_str));
-                output.push_str(&format!("{} ;   pc={:?} inst_id={:?}, size={}\n",
-                    offset_str, pc, inst, size));
-                output.push_str(&format!("{} ;\n", offset_str));
+                output.push_str(&format!("{} ; block({})\n", offset_str, block.index()));
             }
+
+            output.push_str("\n");
+            output.push_str(&format!("{} ;\n", offset_str));
+            output.push_str(&format!("{} ; original SSA instruction:\n", offset_str));
+            output.push_str(&format!("{} ; {}\n", offset_str,
+                lowered.context.func.pretty_print_inst(*inst)));
+
+            if let Some(comment) = lowered.context.func.metadata.comments.get(inst) {
+                output.push_str(&format!("{} ;\n", offset_str));
+                output.push_str(&format!("{} ; comment:\n", offset_str));
+                output.push_str(&format!("{} ; {}\n", offset_str, comment));
+            }
+
+            output.push_str(&format!("{} ;\n", offset_str));
+            output.push_str(&format!("{} ;   pc={:?} inst_id={:?}, size={}\n",
+                offset_str, pc, inst, size));
+            output.push_str(&format!("{} ;\n", offset_str));
         }
 
         // Print the instruction
