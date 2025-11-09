@@ -21,6 +21,7 @@ crate::entity_ref!(GlobalValue, "GlobalValue");
 crate::entity_ref!(ExtFuncId, "ExternalFuncId");
 
 impl nohash_hasher::IsEnabled for HookId {}
+impl nohash_hasher::IsEnabled for DataId {}
 
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
