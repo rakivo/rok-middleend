@@ -227,6 +227,12 @@ impl SsaFunc {
     pub fn inst_to_block(&self, inst: Inst) -> Option<Block> {
         self.layout.inst_blocks.get(&inst).copied()
     }
+
+    #[inline]
+    #[must_use]
+    pub fn all_blocks_sealed(&self) -> bool {
+        self.cfg.blocks.iter().all(|b| b.is_sealed)
+    }
 }
 
 /// Maps logical entities (Inst, Block) to their container.
@@ -384,13 +390,23 @@ pub enum ValueDef {
     Param { block: Block, param_idx: u8 },
 }
 
-#[derive(Default)]
 pub struct Module {
     pub module_id: u16,
 
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFunc>,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
+}
+
+impl Default for Module {
+    fn default() -> Self {
+        Self {
+            module_id: 0,
+            funcs: PrimaryMap::with_capacity(32),
+            ext_funcs: PrimaryMap::with_capacity(32),
+            global_values: PrimaryMap::with_capacity(32),
+        }
+    }
 }
 
 impl Module {
