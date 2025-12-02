@@ -1,7 +1,7 @@
 /// A minimal SSA-based intermediate representation.
 use crate::with_comment;
 
-use rok_entity::{EntityRef, PrimaryMap};
+use rok_entity::{EntityList, EntityRef, ListPool, PrimaryMap};
 
 use std::fmt;
 use std::hash::Hash;
@@ -96,7 +96,6 @@ impl Signature {
     }
 }
 
-
 /// Represents an external function, defined outside the module.
 #[derive(Debug, Clone)]
 pub struct ExtFunc {
@@ -160,6 +159,7 @@ pub struct SsaFunc {
     pub layout: Layout,
     pub stack_slots: Vec<StackSlotData>,
     pub metadata: FunctionMetadata,
+    pub inst_values_pool: ListPool<Value>,
 }
 
 impl SsaFunc {
@@ -263,20 +263,17 @@ pub struct FunctionMetadata {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    CallHook { hook_id: HookId, args: SmallVec<[Value; 8]> },
+    CallHook { hook_id: HookId, args: EntityList<Value> },
     Binary { binop: BinaryOp, args: [Value; 2] },
     Icmp { code: IntCC, args: [Value; 2] },
     Unary { unop: UnaryOp, arg: Value },
     IConst { value: i64 },
     FConst { value: f64 },
-    Jump { destination: Block, args: SmallVec<[Value; 4]> },
-    Branch { destinations: [Block; 2], args: SmallVec<[Value; 4]>, arg: Value },
-    // @Hack:
-    // @Performance:
-    // TODO: Pack big SmallVec's into an EntityList
-    Call { func_id: FuncId, args: SmallVec<[Value; 8]> },
-    CallExt { func_id: ExtFuncId, args: SmallVec<[Value; 8]> },
-    Return { args: SmallVec<[Value; 2]> },
+    Jump { destination: Block, args: EntityList<Value> },
+    Branch { destinations: [Block; 2], args: EntityList<Value>, arg: Value },
+    Call { func_id: FuncId, args: EntityList<Value> },
+    CallExt { func_id: ExtFuncId, args: EntityList<Value> },
+    Return { args: EntityList<Value> },
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
     StackStore { slot: StackSlot, arg: Value },
@@ -1173,7 +1170,7 @@ impl InstBuilder<'_, '_> {
         pub fn jump(&mut self, dest: Block) {
             self.insert_inst(InstructionData::Jump {
                 destination: dest,
-                args: SmallVec::new()
+                args: EntityList::new()
             });
             let from = self.position.current_block;
             self.builder.func.cfg.add_pred(from, dest);
@@ -1184,9 +1181,13 @@ impl InstBuilder<'_, '_> {
         jump_params_with_comment,
         #[inline]
         pub fn jump_params(&mut self, dest: Block, params: &[Value]) {
+            let args = EntityList::from_slice(
+                params,
+                &mut self.func.inst_values_pool
+            );
             self.insert_inst(InstructionData::Jump {
                 destination: dest,
-                args: params.into()
+                args,
             });
             let from = self.position.current_block;
             self.builder.func.cfg.add_pred(from, dest);
@@ -1197,10 +1198,14 @@ impl InstBuilder<'_, '_> {
         brif_params_with_comment,
         #[inline]
         pub fn brif_params(&mut self, cond: Value, true_dest: Block, false_dest: Block, args: &[Value]) {
+            let args = EntityList::from_slice(
+                args,
+                &mut self.func.inst_values_pool
+            );
             self.insert_inst(InstructionData::Branch {
                 destinations: [true_dest, false_dest],
                 arg: cond,
-                args: args.into()
+                args
             });
             let from = self.position.current_block;
             self.builder.func.cfg.add_pred(from, true_dest);
@@ -1215,7 +1220,7 @@ impl InstBuilder<'_, '_> {
             self.insert_inst(InstructionData::Branch {
                 destinations: [true_dest, false_dest],
                 arg: cond,
-                args: SmallVec::new()
+                args: EntityList::new()
             });
             let from = self.position.current_block;
             self.builder.func.cfg.add_pred(from, true_dest);
@@ -1232,9 +1237,14 @@ impl InstBuilder<'_, '_> {
             func_id: FuncId,
             args: &[Value],
         ) -> Inst {
+            let args = EntityList::from_slice(
+                args,
+                &mut self.func.inst_values_pool
+            );
+
             let inst = self.insert_inst(InstructionData::Call {
                 func_id,
-                args: args.into(),
+                args
             });
             for (i, ty) in result_tys.iter().enumerate() {
                 self.make_inst_result(inst, *ty, i as _);
@@ -1252,9 +1262,13 @@ impl InstBuilder<'_, '_> {
             hook_id: HookId,
             args: &[Value]
         ) -> Inst {
+            let args = EntityList::from_slice(
+                args,
+                &mut self.func.inst_values_pool
+            );
             let inst = self.insert_inst(InstructionData::CallHook {
                 hook_id,
-                args: args.into()
+                args
             });
             for (i, ty) in result_tys.iter().enumerate() {
                 self.make_inst_result(inst, *ty, i as _);
@@ -1272,9 +1286,13 @@ impl InstBuilder<'_, '_> {
             func_id: ExtFuncId,
             args: &[Value],
         ) -> Inst {
+            let args = EntityList::from_slice(
+                args,
+                &mut self.func.inst_values_pool
+            );
             let inst = self.insert_inst(InstructionData::CallExt {
                 func_id,
-                args: args.into(),
+                args
             });
             for (i, ty) in result_tys.iter().enumerate() {
                 self.make_inst_result(inst, *ty, i as _);
@@ -1346,9 +1364,11 @@ impl InstBuilder<'_, '_> {
         ret_with_comment,
         #[inline]
         pub fn ret(&mut self, vals: &[Value]) {
-            self.insert_inst(InstructionData::Return {
-                args: vals.into()
-            });
+            let args = EntityList::from_slice(
+                vals,
+                &mut self.func.inst_values_pool
+            );
+            self.insert_inst(InstructionData::Return { args });
         }
     }
 
@@ -1398,12 +1418,12 @@ impl SsaFunc {
             InstructionData::Unary { unop, arg } => s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg))),
             InstructionData::IConst { value } => s.push_str(&format!("iconst {value}")),
             InstructionData::FConst { value } => s.push_str(&format!("fconst {value}")),
-            InstructionData::Jump { destination, args } => s.push_str(&format!("jump {}({})", destination, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::Call { func_id, args, .. } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::CallHook { hook_id, args } => s.push_str(&format!("call_hook {} ({})", hook_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::Return { args } => s.push_str(&format!("return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Jump { destination, args } => s.push_str(&format!("jump {}({})", destination, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Call { func_id, args, .. } => s.push_str(&format!("call {} ({})", func_id, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallHook { hook_id, args } => s.push_str(&format!("call_hook {} ({})", hook_id, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Return { args } => s.push_str(&format!("return {}", args.as_slice(&self.inst_values_pool).iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
             InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
             InstructionData::StackStore { slot, arg } => s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg))),

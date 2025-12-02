@@ -11,7 +11,7 @@ use crate::ssa::{
     Block, Inst, InstructionData, SsaFunc, StackSlot, Type, Value
 };
 
-use rok_entity::EntityRef;
+use rok_entity::{EntityList, EntityRef};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 pub struct LoweredSsaFunc<'a> {
@@ -136,23 +136,28 @@ impl<'a> LoweringContext<'a> {
         slot
     }
 
-    pub fn append_args(&self, chunk: &mut BytecodeChunk, args: &[Value]) {
-        assert!(args.len() <= 255, "Too many arguments (max 255)");
-        chunk.append(args.len() as u8);
-        for &arg in args {
+    pub fn append_args(&self, chunk: &mut BytecodeChunk, args: &EntityList<Value>) {
+        let args_len = args.len(&self.func.inst_values_pool);
+
+        assert!(args_len <= 255, "Too many arguments (max 255)");
+        chunk.append(args_len as u8);
+        for &arg in args.as_slice(&self.func.inst_values_pool).iter() {
             chunk.append(arg.as_u32());
         }
     }
 
-    pub fn jump_with_args(&mut self, chunk: &mut BytecodeChunk, target: Block, args: &[Value]) {
+    pub fn jump_with_args(&mut self, chunk: &mut BytecodeChunk, target: Block, args: &EntityList<Value>) {
         let params = &self.func.cfg.blocks[target.index()].params;
 
-        debug_assert_eq!(params.len(), args.len());
-        assert!(args.len() <= 255, "Too many arguments (max 255)");
+        let args_len = args.len(&self.func.inst_values_pool);
 
-        self.append_jump_placeholder::<i16>(chunk, args.len() as _, target);
-        chunk.append(args.len() as u8);
-        for (&param, &arg) in args.iter().zip(params) {
+        debug_assert_eq!(params.len(), args_len);
+
+        assert!(args_len <= 255, "Too many arguments (max 255)");
+
+        self.append_jump_placeholder::<i16>(chunk, args_len as _, target);
+        chunk.append(args_len as u8);
+        for (&param, &arg) in args.as_slice(&self.func.inst_values_pool).iter().zip(params) {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
         }
