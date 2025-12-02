@@ -31,8 +31,6 @@ pub struct LoInstMeta {
 // Lowering from SSA to Bytecode
 //
 pub struct LoweringContext<'a> {
-    pub module_id: u32,
-
     pub func: &'a SsaFunc,
 
     next_stack_slot: StackSlot,
@@ -57,9 +55,8 @@ impl<'a> LoweringContext<'a> {
     pub const RETURN_VALUES_REGISTERS_COUNT : u32 = 8;
 
     #[must_use]
-    pub fn new(module_id: u32, func: &'a SsaFunc) -> Self {
+    pub fn new(func: &'a SsaFunc) -> Self {
         Self {
-            module_id,
             block_order: Vec::new(),
             next_stack_slot: StackSlot::from_u32(func.stack_slots.len() as _),
             #[cfg(debug_assertions)]

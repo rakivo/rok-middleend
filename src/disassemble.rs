@@ -430,7 +430,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             for _ in 0..num_results {
                 results.push(reader.read_u32());
             }
-            let key = reader.read_u64();
+            let func_id = reader.read_u32();
 
             // Read arguments
             let num_args = reader.read_u8();
@@ -450,15 +450,15 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             };
 
             if results.is_empty() {
-                write!(f, "{:<16} func_{:016x}{}", "call", key, args_str)
+                write!(f, "{:<16} func_{func_id}{}", "call", args_str)
             } else if results.len() == 1 {
-                write!(f, "{:<16} r{} = func_{:016x}{}", "call", results[0], key, args_str)
+                write!(f, "{:<16} r{} = func_{func_id}{}", "call", results[0], args_str)
             } else {
                 let results_str = results.iter()
                     .map(|r| format!("r{}", r))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(f, "{:<16} ({}) = func_{:016x}{}", "call", results_str, key, args_str)
+                write!(f, "{:<16} ({}) = func_{func_id}{}", "call", results_str, args_str)
             }
         }
 
@@ -495,7 +495,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             for _ in 0..num_results {
                 results.push(reader.read_u32());
             }
-            let key = reader.read_u64();
+            let func_id = reader.read_u32();
 
             // Read arguments
             let num_args = reader.read_u8();
@@ -515,15 +515,15 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             };
 
             if results.is_empty() {
-                write!(f, "{:<16} extfunc_{:016x}{}", "call.ext", key, args_str)
+                write!(f, "{:<16} extfunc_{}{}", "call.ext", func_id, args_str)
             } else if results.len() == 1 {
-                write!(f, "{:<16} r{} = extfunc_{:016x}{}", "call.ext", results[0], key, args_str)
+                write!(f, "{:<16} r{} = extfunc_{}{}", "call.ext", results[0], func_id, args_str)
             } else {
                 let results_str = results.iter()
                     .map(|r| format!("r{}", r))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(f, "{:<16} ({}) = extfunc_{:016x}{}", "call.ext", results_str, key, args_str)
+                write!(f, "{:<16} ({}) = extfunc_{}{}", "call.ext", results_str, func_id, args_str)
             }
         }
 

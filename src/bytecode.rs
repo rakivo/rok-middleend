@@ -373,8 +373,8 @@ define_opcodes! {
         self.append_args(chunk, args);
     },
 
-    Call(key: u64) = 29,
-    @ IData::Call { func_id: _, args, parent, foreign_func_id } => |results, chunk, inst_id| {
+    Call(func_id: u32) = 29,
+    @ IData::Call { func_id, args } => |results, chunk, inst_id| {
         chunk.append(Opcode::Call);
         if let Some(results) = results {
             chunk.append(results.len() as u8);
@@ -384,8 +384,7 @@ define_opcodes! {
         } else {
             chunk.append(0u8);
         }
-        let key: u64 = ((*parent as u64) << 32) | (foreign_func_id.index() as u64);
-        chunk.append(key);
+        chunk.append(*func_id);
         self.append_args(chunk, args);
     },
 
@@ -401,8 +400,8 @@ define_opcodes! {
         self.append_args(chunk, args);
     },
 
-    CallExt(key: u64) = 136,
-    @ IData::CallExt { func_id, args, parent } => |results, chunk, inst_id| {
+    CallExt(func_id: u32) = 136,
+    @ IData::CallExt { func_id, args } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallExt);
         if let Some(results) = results {
             chunk.append(results.len() as u8);
@@ -412,8 +411,7 @@ define_opcodes! {
         } else {
             chunk.append(0u8);
         }
-        let key: u64 = ((*parent as u64) << 32) | (func_id.index() as u64);
-        chunk.append(key);
+        chunk.append(*func_id);
         self.append_args(chunk, args);
     },
 

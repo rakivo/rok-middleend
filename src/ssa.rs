@@ -22,6 +22,8 @@ crate::entity_ref!(ExtFuncId, "ExternalFuncId");
 
 impl nohash_hasher::IsEnabled for HookId {}
 impl nohash_hasher::IsEnabled for DataId {}
+impl nohash_hasher::IsEnabled for FuncId {}
+impl nohash_hasher::IsEnabled for ExtFuncId {}
 
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +102,6 @@ impl Signature {
 pub struct ExtFunc {
     pub name: Box<str>,
     pub signature: Signature,
-    pub parent_module_id: u16
 }
 
 /// The core data flow graph, containing all instructions and values.
@@ -152,7 +153,6 @@ pub struct BasicBlockData {
 /// The top-level structure for a single function's IR.
 #[derive(Debug, Clone, Default)]
 pub struct SsaFunc {
-    pub parent_module_id: u16,
     pub name: Box<str>,
     pub signature: Signature,
     pub dfg: DataFlowGraph,
@@ -274,13 +274,8 @@ pub enum InstructionData {
     // @Hack:
     // @Performance:
     // TODO: Pack big SmallVec's into an EntityList
-    Call {
-        parent: u16,
-        foreign_func_id: FuncId,
-        func_id: FuncId,
-        args: SmallVec<[Value; 8]>
-    },
-    CallExt { parent: u16, func_id: ExtFuncId, args: SmallVec<[Value; 8]> },
+    Call { func_id: FuncId, args: SmallVec<[Value; 8]> },
+    CallExt { func_id: ExtFuncId, args: SmallVec<[Value; 8]> },
     Return { args: SmallVec<[Value; 2]> },
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
@@ -391,8 +386,6 @@ pub enum ValueDef {
 }
 
 pub struct Module {
-    pub module_id: u16,
-
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFunc>,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
@@ -401,7 +394,6 @@ pub struct Module {
 impl Default for Module {
     fn default() -> Self {
         Self {
-            module_id: 0,
             funcs: PrimaryMap::with_capacity(32),
             ext_funcs: PrimaryMap::with_capacity(32),
             global_values: PrimaryMap::with_capacity(32),
@@ -426,7 +418,6 @@ impl Module {
         &mut self,
         name: impl AsRef<str>,
         signature: Signature,
-        parent_module_id: u16
     ) -> FuncId {
         self.funcs.push(SsaFunc {
             name: name.as_ref().into(),
@@ -435,7 +426,6 @@ impl Module {
                 is_external: true,
                 ..Default::default()
             },
-            parent_module_id,
             ..Default::default()
         })
     }
@@ -482,9 +472,8 @@ impl Module {
             ir_builder: &mut InstBuilder<'_, '_>
         ) -> Inst {
             let func = &self.ext_funcs[ext_func_id];
-            let parent = func.parent_module_id;
             let result_ty = &func.signature.returns;
-            ir_builder.ins().call_ext(result_ty, ext_func_id, args, parent)
+            ir_builder.ins().call_ext(result_ty, ext_func_id, args)
         }
     }
 
@@ -495,14 +484,12 @@ impl Module {
         pub fn call(
             &self,
             func_id: FuncId,
-            foreign_func_id: FuncId,
             args: &[Value],
             ir_builder: &mut InstBuilder<'_, '_>
         ) -> Inst {
             let func = &self.funcs[func_id];
-            let parent = func.parent_module_id;
             let result_tys = &func.signature.returns;
-            ir_builder.ins().call(result_tys, func_id, foreign_func_id, args, parent as _)
+            ir_builder.ins().call(result_tys, func_id, args)
         }
     }
 
@@ -515,11 +502,9 @@ impl Module {
             dest: Value,
             src: Value,
             size: Value,
-            parent: u16,
             ir_builder: &mut InstBuilder<'_, '_>
         ) {
             let libc_memcpy = self.import_function(ExtFunc {
-                parent_module_id: parent,
                 name: "memcpy".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::Ptr, Type::I64],
@@ -527,7 +512,7 @@ impl Module {
                 },
             });
 
-            ir_builder.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size], parent);
+            ir_builder.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size]);
         }
     }
 
@@ -540,11 +525,9 @@ impl Module {
             dest: Value,
             c: Value,
             n: Value,
-            parent: u16,
             ir_builder: &mut InstBuilder<'_, '_>
         ) {
             let libc_memset = self.import_function(ExtFunc {
-                parent_module_id: parent,
                 name: "memset".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::I32, Type::I64],
@@ -552,7 +535,7 @@ impl Module {
                 }
             });
 
-            ir_builder.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n], parent);
+            ir_builder.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n]);
         }
     }
 
@@ -560,14 +543,13 @@ impl Module {
         ir_builder,
         call_abort_with_comment,
         #[inline]
-        pub fn call_abort(&mut self, parent: u16, ir_builder: &mut InstBuilder<'_, '_>) {
+        pub fn call_abort(&mut self, ir_builder: &mut InstBuilder<'_, '_>) {
             let libc_abort = self.import_function(ExtFunc {
-                parent_module_id: parent,
                 name: "abort".into(),
                 signature: Signature::default()
             });
 
-            ir_builder.call_ext(&[], libc_abort, &[], parent);
+            ir_builder.call_ext(&[], libc_abort, &[]);
         }
     }
 }
@@ -1248,15 +1230,11 @@ impl InstBuilder<'_, '_> {
             &mut self,
             result_tys: &[Type],
             func_id: FuncId,
-            foreign_func_id: FuncId,
             args: &[Value],
-            parent: u16
         ) -> Inst {
             let inst = self.insert_inst(InstructionData::Call {
                 func_id,
-                parent,
                 args: args.into(),
-                foreign_func_id
             });
             for (i, ty) in result_tys.iter().enumerate() {
                 self.make_inst_result(inst, *ty, i as _);
@@ -1293,11 +1271,9 @@ impl InstBuilder<'_, '_> {
             result_tys: &[Type],
             func_id: ExtFuncId,
             args: &[Value],
-            parent: u16
         ) -> Inst {
             let inst = self.insert_inst(InstructionData::CallExt {
                 func_id,
-                parent,
                 args: args.into(),
             });
             for (i, ty) in result_tys.iter().enumerate() {
@@ -1318,7 +1294,6 @@ impl InstBuilder<'_, '_> {
             size: Value,
         ) -> Value {
             let libc_memcpy = parent.import_function(ExtFunc {
-                parent_module_id: parent.module_id,
                 name: "memcpy".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::Ptr, Type::I64],
@@ -1326,7 +1301,7 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            let inst = self.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size], parent.module_id);
+            let inst = self.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size]);
             self.func.inst_results(inst)[0]
         }
     }
@@ -1342,7 +1317,6 @@ impl InstBuilder<'_, '_> {
             n: Value,
         ) -> Value {
             let libc_memset = parent.import_function(ExtFunc {
-                parent_module_id: parent.module_id,
                 name: "memset".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::I32, Type::I64],
@@ -1350,7 +1324,7 @@ impl InstBuilder<'_, '_> {
                 }
             });
 
-            let inst = self.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n], parent.module_id);
+            let inst = self.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n]);
             self.func.inst_results(inst)[0]
         }
     }
@@ -1360,12 +1334,11 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call_abort(&mut self, parent: &mut Module) {
             let libc_abort = parent.import_function(ExtFunc {
-                parent_module_id: parent.module_id,
                 name: "abort".into(),
                 signature: Signature::default()
             });
 
-            self.call_ext(&[], libc_abort, &[], parent.module_id);
+            self.call_ext(&[], libc_abort, &[]);
         }
     }
 
@@ -1429,7 +1402,7 @@ impl SsaFunc {
             InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Call { func_id, args, .. } => s.push_str(&format!("call {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::CallHook { hook_id, args } => s.push_str(&format!("call_hook {} ({})", hook_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::CallExt { func_id, args, parent } => s.push_str(&format!("call_ext {} ModuleId({parent}) ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
+            InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
             InstructionData::Return { args } => s.push_str(&format!("return {}", args.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
             InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
