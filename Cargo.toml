@@ -12,6 +12,8 @@ categories = ["development-tools", "programming-languages", "virtual-machines"]
 exclude = ["assets/*", "README.md"]
 
 [dependencies]
+rok_entity = { path = "../rok_entity" }
+
 cfg-if.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true

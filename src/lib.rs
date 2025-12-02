@@ -32,11 +32,6 @@ mod macros;
 
 pub mod ssa;
 pub mod util;
-pub mod iter;
-pub mod keys;
 pub mod lower;
-pub mod entity;
-pub mod primary;
 pub mod bytecode;
-pub mod boxed_slice;
 pub mod disassemble;

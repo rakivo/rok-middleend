@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
 use crate::util;
-use crate::entity::EntityRef;
 use crate::bytecode::{
     StackFrameInfo,
     StackSlotAllocation,
@@ -12,6 +11,7 @@ use crate::ssa::{
     Block, Inst, InstructionData, SsaFunc, StackSlot, Type, Value
 };
 
+use rok_entity::EntityRef;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 pub struct LoweredSsaFunc<'a> {

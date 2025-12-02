@@ -1,7 +1,7 @@
 /// A minimal SSA-based intermediate representation.
-use crate::entity::EntityRef;
-use crate::primary::PrimaryMap;
 use crate::with_comment;
+
+use rok_entity::{EntityRef, PrimaryMap};
 
 use std::fmt;
 use std::hash::Hash;
@@ -10,15 +10,15 @@ use std::ops::{Deref, DerefMut};
 use smallvec::SmallVec;
 use rustc_hash::{FxHashSet, FxHashMap};
 
-crate::entity_ref!(Value, "Value");
-crate::entity_ref!(Inst, "Inst");
-crate::entity_ref!(Block, "Block");
-crate::entity_ref!(StackSlot, "StackSlot");
-crate::entity_ref!(HookId, "HookId");
-crate::entity_ref!(FuncId, "FuncId");
-crate::entity_ref!(DataId, "DataId");
-crate::entity_ref!(GlobalValue, "GlobalValue");
-crate::entity_ref!(ExtFuncId, "ExternalFuncId");
+rok_entity::entity_ref!(Value, "Value");
+rok_entity::entity_ref!(Inst, "Inst");
+rok_entity::entity_ref!(Block, "Block");
+rok_entity::entity_ref!(StackSlot, "StackSlot");
+rok_entity::entity_ref!(HookId, "HookId");
+rok_entity::entity_ref!(FuncId, "FuncId");
+rok_entity::entity_ref!(DataId, "DataId");
+rok_entity::entity_ref!(GlobalValue, "GlobalValue");
+rok_entity::entity_ref!(ExtFuncId, "ExternalFuncId");
 
 impl nohash_hasher::IsEnabled for HookId {}
 impl nohash_hasher::IsEnabled for DataId {}

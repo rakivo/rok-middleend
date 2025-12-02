@@ -60,7 +60,7 @@ define_opcodes! {
         let dst = results.unwrap()[0];;
         let val = *value as f32;
         chunk.append(Opcode::FConst32);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         chunk.append(val);
     },
 
@@ -68,7 +68,7 @@ define_opcodes! {
     @ IData::FConst { value, .. } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];;
         chunk.append(Opcode::FConst64);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         chunk.append(*value);
     },
 
@@ -79,9 +79,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IAdd);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     ISub(dst: u32, a: u32, b: u32)           = 11,
     @ IData::Binary { binop: BinaryOp::ISub, args } => |results, chunk| {
@@ -89,9 +89,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::ISub);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     IMul(dst: u32, a: u32, b: u32)           = 12,
     @ IData::Binary { binop: BinaryOp::IMul, args } => |results, chunk| {
@@ -99,9 +99,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IMul);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     IDiv(dst: u32, a: u32, b: u32)           = 13,
     @ IData::Binary { binop: BinaryOp::IDiv, args } => |results, chunk| {
@@ -109,9 +109,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IDiv);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     And(dst: u32, a: u32, b: u32)            = 14,
@@ -120,9 +120,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::And);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     Or(dst: u32, a: u32, b: u32)             = 15,
     @ IData::Binary { binop: BinaryOp::Or, args } => |results, chunk| {
@@ -130,9 +130,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::Or);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     Xor(dst: u32, a: u32, b: u32)            = 16,
     @ IData::Binary { binop: BinaryOp::Xor, args } => |results, chunk| {
@@ -140,9 +140,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::Xor);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     Ushr(dst: u32, a: u32, b: u32)            = 17,
@@ -151,9 +151,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::Ushr);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     Ishl(dst: u32, a: u32, b: u32)            = 18,
@@ -162,9 +162,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::Ishl);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     Band(dst: u32, a: u32, b: u32)            = 19,
@@ -173,9 +173,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::Band);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     Bor(dst: u32, a: u32, b: u32)             = 20,
@@ -184,9 +184,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::Bor);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
 
@@ -196,9 +196,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IEq);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     INe(dst: u32, a: u32, b: u32)            = 97,
@@ -207,9 +207,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::INe);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     ISGt(dst: u32, a: u32, b: u32)           = 98,
@@ -218,9 +218,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::ISGt);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     ISGe(dst: u32, a: u32, b: u32)           = 99,
@@ -229,9 +229,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::ISGe);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     ISLt(dst: u32, a: u32, b: u32)           = 100,
@@ -240,9 +240,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::ISLt);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     ISLe(dst: u32, a: u32, b: u32)           = 101,
@@ -251,9 +251,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::ISLe);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     IUGt(dst: u32, a: u32, b: u32)           = 102,
@@ -262,9 +262,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IUGt);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     IUGe(dst: u32, a: u32, b: u32)           = 103,
@@ -273,9 +273,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IUGe);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     IULt(dst: u32, a: u32, b: u32)           = 104,
@@ -284,9 +284,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IULt);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     IULe(dst: u32, a: u32, b: u32)           = 105,
@@ -295,9 +295,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::IULe);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     FAdd(dst: u32, a: u32, b: u32)          = 22,
@@ -306,9 +306,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::FAdd);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     FSub(dst: u32, a: u32, b: u32)          = 23,
     @ IData::Binary { binop: BinaryOp::FSub, args } => |results, chunk| {
@@ -316,9 +316,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::FSub);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     FMul(dst: u32, a: u32, b: u32)          = 24,
     @ IData::Binary { binop: BinaryOp::FMul, args } => |results, chunk| {
@@ -326,9 +326,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::FMul);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
     FDiv(dst: u32, a: u32, b: u32)          = 25,
     @ IData::Binary { binop: BinaryOp::FDiv, args } => |results, chunk| {
@@ -336,9 +336,9 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::FDiv);
-        chunk.append(dst);
-        chunk.append(a);
-        chunk.append(b);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
     },
 
     Jump16(offset: i16) = 26,
@@ -355,7 +355,7 @@ define_opcodes! {
 
         let cond_reg = *arg;
         chunk.append(Opcode::BranchIf16);
-        chunk.append(cond_reg);
+        chunk.append(cond_reg.as_u32());
         self.jump_with_args(chunk, t, args);
 
         // Unconditional jump for the false branch
@@ -384,7 +384,7 @@ define_opcodes! {
         } else {
             chunk.append(0u8);
         }
-        chunk.append(*func_id);
+        chunk.append(func_id.as_u32());
         self.append_args(chunk, args);
     },
 
@@ -411,7 +411,7 @@ define_opcodes! {
         } else {
             chunk.append(0u8);
         }
-        chunk.append(*func_id);
+        chunk.append(func_id.as_u32());
         self.append_args(chunk, args);
     },
 
@@ -422,8 +422,8 @@ define_opcodes! {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Ireduce);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
         chunk.append(bits);
     },
     Uextend(dst: u32, src: u32, from_bits: u32, to_bits: u32) = 31,
@@ -435,8 +435,8 @@ define_opcodes! {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Uextend);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
         chunk.append(from_bits);
         chunk.append(to_bits);
     },
@@ -445,8 +445,8 @@ define_opcodes! {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Sextend);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     FPromote(dst: u32, src: u32) = 67,
     @ IData::Unary { unop: UnaryOp::FPromote, arg } => |results, chunk| {
@@ -455,56 +455,56 @@ define_opcodes! {
         // @Note: We only support f32 and f64, so we're not
         // encoding the dst type ..
         chunk.append(Opcode::FPromote);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     FDemote(dst: u32, src: u32) = 200,
     @ IData::Unary { unop: UnaryOp::FDemote, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FDemote);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     FloatToSInt(dst: u32, src: u32) = 201,
     @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FloatToSInt);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     FloatToUInt(dst: u32, src: u32) = 202,
     @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FloatToUInt);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     SIntToFloat(dst: u32, src: u32) = 203,
     @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::SIntToFloat);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     UIntToFloat(dst: u32, src: u32) = 204,
     @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::UIntToFloat);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     FNeg(dst: u32, src: u32) = 69,
     @ IData::Unary { unop: UnaryOp::FNeg, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FNeg);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
     },
     Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
@@ -512,8 +512,8 @@ define_opcodes! {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Bitcast);
-        chunk.append(dst);
-        chunk.append(src);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
         chunk.append(result_ty.bits() as u8);
     },
 
@@ -523,32 +523,32 @@ define_opcodes! {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load8);
-        chunk.append(dst);
-        chunk.append(addr);
+        chunk.append(dst.as_u32());
+        chunk.append(addr.as_u32());
     },
     Load16(dst: u32, addr: u32)        = 41,
     @ IData::LoadNoOffset { ty, addr } if bits == 16 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load16);
-        chunk.append(dst);
-        chunk.append(addr);
+        chunk.append(dst.as_u32());
+        chunk.append(addr.as_u32());
     },
     Load32(dst: u32, addr: u32)        = 42,
     @ IData::LoadNoOffset { ty, addr } if bits == 32 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load32);
-        chunk.append(dst);
-        chunk.append(addr);
+        chunk.append(dst.as_u32());
+        chunk.append(addr.as_u32());
     },
     Load64(dst: u32, addr: u32)        = 43,
     @ IData::LoadNoOffset { ty, addr } if bits == 64 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load64);
-        chunk.append(dst);
-        chunk.append(addr);
+        chunk.append(dst.as_u32());
+        chunk.append(addr.as_u32());
     },
 
     Store8(addr: u32, val: u32) = 44,
@@ -557,8 +557,8 @@ define_opcodes! {
         let val = args[1];
         let opcode = Opcode::Store8;
         chunk.append(opcode);
-        chunk.append(addr);
-        chunk.append(val);
+        chunk.append(addr.as_u32());
+        chunk.append(val.as_u32());
     },
 
     Store16(addr: u32, val: u32) = 45,
@@ -567,8 +567,8 @@ define_opcodes! {
         let val = args[1];
         let opcode = Opcode::Store16;
         chunk.append(opcode);
-        chunk.append(addr);
-        chunk.append(val);
+        chunk.append(addr.as_u32());
+        chunk.append(val.as_u32());
     },
 
     Store32(addr: u32, val: u32) = 47,
@@ -577,8 +577,8 @@ define_opcodes! {
         let val = args[1];
         let opcode = Opcode::Store32;
         chunk.append(opcode);
-        chunk.append(addr);
-        chunk.append(val);
+        chunk.append(addr.as_u32());
+        chunk.append(val.as_u32());
     },
 
     Store64(addr: u32, val: u32) = 47,
@@ -587,8 +587,8 @@ define_opcodes! {
         let val = args[1];
         let opcode = Opcode::Store64;
         chunk.append(opcode);
-        chunk.append(addr);
-        chunk.append(val);
+        chunk.append(addr.as_u32());
+        chunk.append(val.as_u32());
     },
 
     // Stack operations
@@ -609,7 +609,7 @@ define_opcodes! {
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad8;
         chunk.append(opcode);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
     },
     FpLoad16(dst: u32, offset: i32)      = 71,
@@ -618,7 +618,7 @@ define_opcodes! {
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad16;
         chunk.append(opcode);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
     },
     FpLoad32(dst: u32, offset: i32)      = 72,
@@ -627,7 +627,7 @@ define_opcodes! {
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad32;
         chunk.append(opcode);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
     },
     FpLoad64(dst: u32, offset: i32)      = 73,
@@ -636,7 +636,7 @@ define_opcodes! {
         let allocation = &self.frame_info.slot_allocations[slot];
         let opcode = Opcode::FpLoad64;
         chunk.append(opcode);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
     },
     FpStore8(offset: i32, src: u32)      = 74,
@@ -646,7 +646,7 @@ define_opcodes! {
         let opcode = Opcode::FpStore8;
         chunk.append(opcode);
         chunk.append(allocation.offset);
-        chunk.append(src);
+        chunk.append(src.as_u32());
     },
     FpStore16(offset: i32, src: u32)     = 75,
     @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
@@ -655,7 +655,7 @@ define_opcodes! {
         let opcode = Opcode::FpStore16;
         chunk.append(opcode);
         chunk.append(allocation.offset);
-        chunk.append(src);
+        chunk.append(src.as_u32());
     },
     FpStore32(offset: i32, src: u32)     = 76,
     @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
@@ -664,7 +664,7 @@ define_opcodes! {
         let opcode = Opcode::FpStore32;
         chunk.append(opcode);
         chunk.append(allocation.offset);
-        chunk.append(src);
+        chunk.append(src.as_u32());
     },
     FpStore64(offset: i32, src: u32)     = 77,
     @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
@@ -673,7 +673,7 @@ define_opcodes! {
         let opcode = Opcode::FpStore64;
         chunk.append(opcode);
         chunk.append(allocation.offset);
-        chunk.append(src);
+        chunk.append(src.as_u32());
     },
 
     // Stack pointer relative operations
@@ -691,7 +691,7 @@ define_opcodes! {
     @ IData::StackAddr { slot, .. } => |results, chunk| {
         let dst = results.unwrap()[0];
         chunk.append(Opcode::FpAddr);
-        chunk.append(dst);
+        chunk.append(dst.as_u32());
         let allocation = &self.frame_info.slot_allocations[slot];
         chunk.append(allocation.offset);
     },
@@ -701,8 +701,8 @@ define_opcodes! {
     @ IData::DataAddr { data_id } => |results, chunk| {
         let dst = results.unwrap()[0];
         chunk.append(Opcode::LoadDataAddr);
-        chunk.append(dst);
-        chunk.append(*data_id);
+        chunk.append(dst.as_u32());
+        chunk.append(data_id.as_u32());
     },
 
     Nop() = 128,

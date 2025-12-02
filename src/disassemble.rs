@@ -846,7 +846,7 @@ pub fn disassemble(bytecode: &[u8], _lowered: Option<&LoweredSsaFunc>) -> String
         && let Some(crate::lower::LoInstMeta { pc, inst, size }) =
             lowered.context.pc_to_inst_meta.get(&offset)
         {
-            use crate::entity::EntityRef;
+            use rok_entity::EntityRef;
 
             // Look up the block this instruction belongs to
             if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst)
