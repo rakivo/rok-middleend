@@ -79,7 +79,7 @@ impl Type {
 }
 
 /// Represents a function signature.
-#[derive(Debug, Clone, Default)]
+#[derive(Eq, Debug, Clone, Default, PartialEq)]
 pub struct Signature {
     pub params: Vec<Type>,
     pub returns: Vec<Type>,
@@ -432,12 +432,14 @@ impl Module {
         self.global_values.push(data)
     }
 
+    #[track_caller]
     #[inline(always)]
     pub fn define_function(&mut self, id: FuncId) {
         let func = self.get_func_mut(id);
         func.metadata.is_external = false;
     }
 
+    #[track_caller]
     #[inline(always)]
     pub fn get_func_mut(&mut self, id: FuncId) -> &mut SsaFunc {
         &mut self.funcs[id]
@@ -447,6 +449,7 @@ impl Module {
         ir_builder,
         call_hook_with_comment,
         #[inline]
+        #[track_caller]
         pub fn call_hook(
             &self,
             hook_id: HookId,
@@ -462,6 +465,7 @@ impl Module {
         ir_builder,
         call_ext_with_comment,
         #[inline]
+        #[track_caller]
         pub fn call_ext(
             &self,
             ext_func_id: ExtFuncId,
@@ -478,6 +482,7 @@ impl Module {
         ir_builder,
         call_with_comment,
         #[inline]
+        #[track_caller]
         pub fn call(
             &self,
             func_id: FuncId,
