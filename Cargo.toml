@@ -16,7 +16,6 @@ rok_entity = { path = "../rok_entity" }
 
 cfg-if.workspace = true
 indexmap.workspace = true
-parking_lot.workspace = true
 nohash-hasher.workspace = true
 smallvec.workspace = true
 rustc-hash.workspace = true
