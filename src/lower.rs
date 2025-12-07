@@ -141,7 +141,7 @@ impl<'a> LoweringContext<'a> {
 
         assert!(args_len <= 255, "Too many arguments (max 255)");
         chunk.append(args_len as u8);
-        for &arg in args.as_slice(&self.func.inst_values_pool).iter() {
+        for &arg in args.as_slice(&self.func.inst_values_pool) {
             chunk.append(arg.as_u32());
         }
     }
