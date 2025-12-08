@@ -531,14 +531,14 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
         Opcode::Ireduce => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            let bits = reader.read_u32();
+            let bits = reader.read_u8();
             write!(f, "{:<16} r{}, r{}, i{}", "ireduce", dst, src, bits)
         }
         Opcode::Uextend => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            let from_bits = reader.read_u32();
-            let to_bits = reader.read_u32();
+            let from_bits = reader.read_u8();
+            let to_bits = reader.read_u8();
             write!(f, "{:<16} r{}, r{}, i{} -> i{}", "uextend", dst, src, from_bits, to_bits)
         }
         Opcode::Sextend => {
@@ -549,8 +549,8 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
         Opcode::Bitcast => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            let ty = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}, i{}", "bitcast", dst, src, ty)
+            let bits = reader.read_u8();
+            write!(f, "{:<16} r{}, r{}, i{}", "bitcast", dst, src, bits)
         }
 
         // Memory Operations - Load
