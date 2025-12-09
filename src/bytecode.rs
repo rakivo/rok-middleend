@@ -370,7 +370,7 @@ define_opcodes! {
         chunk.append(Opcode::Call);
         if let Some(results) = results {
             chunk.append(results.len() as u8);
-            for result in results {
+            for result in results.iter() {
                 chunk.append(result.as_u32());
             }
         } else {
@@ -397,7 +397,7 @@ define_opcodes! {
         chunk.append(Opcode::CallExt);
         if let Some(results) = results {
             chunk.append(results.len() as u8);
-            for result in results {
+            for result in results.iter() {
                 chunk.append(result.as_u32());
             }
         } else {

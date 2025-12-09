@@ -1,14 +1,14 @@
 /// A minimal SSA-based intermediate representation.
 use crate::with_comment;
 
-use rok_entity::{EntityList, EntityRef, ListPool, PrimaryMap, SecondaryMap};
+use rok_entity::{sparse_pair, EntityList, EntityRef, ListPool, PrimaryMap, SecondaryMap, SparseMap};
 
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
-use rustc_hash::{FxHashMap, FxHashSet};
-use smallvec::SmallVec;
+use rustc_hash::FxHashSet;
+use smallvec::{smallvec, SmallVec};
 
 rok_entity::entity_ref!(Value, "Value");
 rok_entity::entity_ref!(Inst, "Inst");
@@ -110,12 +110,14 @@ pub struct ExtFunc {
     pub signature: Signature,
 }
 
+sparse_pair!{SparseInstResults: Inst => SmallVec<[Value; 2]>}
+
 /// The core data flow graph, containing all instructions and values.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct DataFlowGraph {
     pub insts: Vec<InstructionData>,
     pub values: Vec<ValueData>,
-    pub inst_results: FxHashMap<Inst, SmallVec<[Value; 2]>>,
+    pub inst_results: SparseMap<Inst, SparseInstResults>,
 }
 
 impl DataFlowGraph {
@@ -134,17 +136,27 @@ impl DataFlowGraph {
     }
 }
 
+sparse_pair!{SparseBlockPred: Block => SmallVec<[Block; 3]>}
+
 /// The control flow graph, containing all basic blocks.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct ControlFlowGraph {
     // TODO(#11): Make .blocks in ControlFlowGraph a PrimaryMap
     pub blocks: Vec<BasicBlockData>,
-    pub predecessors: FxHashMap<Block, SmallVec<[Block; 4]>>,
+    pub predecessors: SparseMap<Block, SparseBlockPred>,
 }
 
 impl ControlFlowGraph {
     pub fn add_pred(&mut self, from: Block, to: Block) {
-        self.predecessors.entry(to).or_default().push(from);
+        if let Some(e) = self.predecessors.get_mut(to) {
+            e.value.push(from);
+            return
+        }
+
+        self.predecessors.insert(SparseBlockPred {
+            key: to,
+            value: smallvec![from]
+        });
     }
 }
 
@@ -157,7 +169,7 @@ pub struct BasicBlockData {
 }
 
 /// The top-level structure for a single function's IR.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct SsaFunc {
     pub is_external: bool,
 
@@ -217,7 +229,7 @@ impl SsaFunc {
     #[inline]
     #[must_use]
     pub fn inst_results(&self, inst: Inst) -> &[Value] {
-        if let Some(rs) = self.dfg.inst_results.get(&inst) {
+        if let Some(rs) = self.dfg.inst_results.get(inst) {
             rs
         } else {
             &[]
@@ -266,68 +278,23 @@ pub struct StackSlotData {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    CallHook {
-        hook_id: HookId,
-        args: EntityList<Value>,
-    },
-    Binary {
-        binop: BinaryOp,
-        args: [Value; 2],
-    },
-    Icmp {
-        code: IntCC,
-        args: [Value; 2],
-    },
-    Unary {
-        unop: UnaryOp,
-        arg: Value,
-    },
-    IConst {
-        value: i64,
-    },
-    FConst {
-        value: f64,
-    },
-    Jump {
-        destination: Block,
-        args: EntityList<Value>,
-    },
-    Branch {
-        destinations: [Block; 2],
-        args: EntityList<Value>,
-        arg: Value,
-    },
-    Call {
-        func_id: FuncId,
-        args: EntityList<Value>,
-    },
-    CallExt {
-        func_id: ExtFuncId,
-        args: EntityList<Value>,
-    },
-    Return {
-        args: EntityList<Value>,
-    },
-    StackLoad {
-        slot: StackSlot,
-    },
-    StackAddr {
-        slot: StackSlot,
-    },
-    StackStore {
-        slot: StackSlot,
-        arg: Value,
-    },
-    LoadNoOffset {
-        ty: Type,
-        addr: Value,
-    },
-    StoreNoOffset {
-        args: [Value; 2],
-    },
-    DataAddr {
-        data_id: DataId,
-    },
+    CallHook { hook_id: HookId, args: EntityList<Value> },
+    Binary { binop: BinaryOp, args: [Value; 2] },
+    Unary { unop: UnaryOp, arg: Value },
+    Icmp { ecode: IntCC, args: [Value; 2] },
+    IConst { value: i64 },
+    FConst { value: f64 },
+    Jump { destination: Block, args: EntityList<Value> },
+    Branch { destinations: [Block; 2], args: EntityList<Value>, arg: Value },
+    Call { func_id: FuncId, args: EntityList<Value> },
+    CallExt { func_id: ExtFuncId, args: EntityList<Value> },
+    Return { args: EntityList<Value> },
+    StackLoad { slot: StackSlot },
+    StackAddr { slot: StackSlot },
+    StackStore { slot: StackSlot, arg: Value },
+    LoadNoOffset { ty: Type,  addr: Value },
+    StoreNoOffset { args: [Value; 2] },
+    DataAddr { data_id: DataId },
     // GlobalValue { global_value: GlobalValue },
     Unreachable,
     Nop,
@@ -335,10 +302,10 @@ pub enum InstructionData {
 
 impl InstructionData {
     #[must_use]
-    pub fn bits(&self, inst_id: Inst, context: &SsaFunc) -> u32 {
+    pub fn bits(&self, inst: Inst, context: &SsaFunc) -> u32 {
         let vbits = |v: &Value| context.dfg.values[v.index()].ty.bits();
         let rbits = |idx: usize| {
-            let r = &context.dfg.inst_results[&inst_id];
+            let r = unsafe { &context.dfg.inst_results.get(inst).unwrap_unchecked() };
             context.dfg.values[r[idx].index()].ty.bits()
         };
 
@@ -785,13 +752,21 @@ impl InstBuilder<'_, '_> {
             ty,
             def: ValueDef::Inst { inst, result_idx },
         });
-        self.builder
+
+        let results = &mut self.builder
             .func
             .dfg
-            .inst_results
-            .entry(inst)
-            .or_default()
-            .push(value);
+            .inst_results;
+
+        if let Some(results) = results.get_mut(inst) {
+            results.push(value);
+        } else {
+            results.insert(SparseInstResults {
+                key: inst,
+                value: smallvec![value]
+            });
+        }
+
         value
     }
 
@@ -1501,11 +1476,11 @@ impl SsaFunc {
                     .join(", ")
             )?;
         }
-        if let Some(preds) = self.cfg.predecessors.get(&block_id) {
+        if let Some(preds) = self.cfg.predecessors.get(block_id) {
             write!(
                 f,
                 "  ; preds: {}",
-                preds
+                preds.value
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
@@ -1523,7 +1498,7 @@ impl SsaFunc {
     pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
         let inst = &self.dfg.insts[inst_id.index()];
         let mut s = String::new();
-        if let Some(results) = self.dfg.inst_results.get(&inst_id)
+        if let Some(results) = self.dfg.inst_results.get(inst_id)
             && !results.is_empty()
         {
             s.push_str(
