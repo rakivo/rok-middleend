@@ -281,7 +281,7 @@ pub enum InstructionData {
     CallHook { hook_id: HookId, args: EntityList<Value> },
     Binary { binop: BinaryOp, args: [Value; 2] },
     Unary { unop: UnaryOp, arg: Value },
-    Icmp { ecode: IntCC, args: [Value; 2] },
+    Icmp { code: IntCC, args: [Value; 2] },
     IConst { value: i64 },
     FConst { value: f64 },
     Jump { destination: Block, args: EntityList<Value> },
