@@ -1,18 +1,13 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
+use crate::bytecode::{BytecodeChunk, Opcode, StackFrameInfo, StackSlotAllocation};
+use crate::ssa::{Block, Inst, InstructionData, SsaFunc, StackSlot, Type, Value};
 use crate::util;
-use crate::bytecode::{
-    StackFrameInfo,
-    StackSlotAllocation,
-    Opcode,
-    BytecodeChunk
-};
-use crate::ssa::{
-    Block, Inst, InstructionData, SsaFunc, StackSlot, Type, Value
-};
 
-use rok_entity::{EntityList, EntityRef};
+use rok_entity::{EntityList, EntityRef, SparseMap, SparseMapValue};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+rok_entity::entity_ref!(Pc);
 
 pub struct LoweredSsaFunc<'a> {
     pub context: LoweringContext<'a>,
@@ -23,8 +18,12 @@ pub struct LoweredSsaFunc<'a> {
 #[derive(Clone, Debug)]
 pub struct LoInstMeta {
     pub inst: Inst,
-    pub pc: usize,
-    pub size: u8,
+    pub pc: Pc,
+}
+
+#[cfg(debug_assertions)]
+impl SparseMapValue<Pc> for LoInstMeta {
+    fn key(&self) -> Pc { self.pc }
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -37,22 +36,23 @@ pub struct LoweringContext<'a> {
 
     block_offsets: FxHashMap<Block, u32>,
 
-    /// For patching jumps.
-    //                       pos  arg count  target
-    jump_placeholders: Vec<(usize,   u8,     Block)>,
+    //
+    // for patching jumps
+    //                    pos  arg-count  target
+    jump_placeholders: Vec<(usize, u8, Block)>,
 
     block_order: Vec<Block>,
 
     pub frame_info: StackFrameInfo,
 
     #[cfg(debug_assertions)]
-    pub pc_to_inst_meta: FxHashMap<usize, LoInstMeta>,  // index == inst index in lowered list
+    pub inst_meta: SparseMap<Pc, LoInstMeta>,
 }
 
 #[cfg_attr(not(debug_assertions), allow(unused, dead_code))]
 impl<'a> LoweringContext<'a> {
-    pub const ARG_REGISTERS_COUNT           : u32 = 8;
-    pub const RETURN_VALUES_REGISTERS_COUNT : u32 = 8;
+    pub const ARG_REGISTERS_COUNT: u32 = 8;
+    pub const RETURN_VALUES_REGISTERS_COUNT: u32 = 8;
 
     #[must_use]
     pub fn new(func: &'a SsaFunc) -> Self {
@@ -60,7 +60,7 @@ impl<'a> LoweringContext<'a> {
             block_order: Vec::new(),
             next_stack_slot: StackSlot::from_u32(func.stack_slots.len() as _),
             #[cfg(debug_assertions)]
-            pc_to_inst_meta: FxHashMap::default(),
+            inst_meta: SparseMap::default(),
             frame_info: StackFrameInfo::calculate_layout(func),
             func,
             block_offsets: FxHashMap::default(),
@@ -88,7 +88,10 @@ impl<'a> LoweringContext<'a> {
         // Patch jump instructions with correct offsets
         self.patch_jumps(&mut chunk);
 
-        LoweredSsaFunc { context: self, chunk }
+        LoweredSsaFunc {
+            context: self,
+            chunk,
+        }
     }
 
     #[inline(always)]
@@ -96,7 +99,7 @@ impl<'a> LoweringContext<'a> {
         &mut self,
         chunk: &mut BytecodeChunk,
         arg_count: u8,
-        dst: Block
+        dst: Block,
     ) {
         let pos = chunk.code.len();
         chunk.append_placeholder::<T>();
@@ -115,17 +118,17 @@ impl<'a> LoweringContext<'a> {
 
         let slot = self.create_stack_slot(ty, size as u32);
 
-        self.frame_info.slot_allocations.insert(slot, StackSlotAllocation {
-            offset,
-            size: size as u32,
-            ty,
-        });
+        self.frame_info.slot_allocations.insert(
+            slot,
+            StackSlotAllocation {
+                offset,
+                size: size as u32,
+                ty,
+            },
+        );
 
         // update total_size
-        self.frame_info.total_size = util::align_up(
-            offset + size as u32,
-            16
-        );
+        self.frame_info.total_size = util::align_up(offset + size as u32, 16);
 
         slot
     }
@@ -146,7 +149,12 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    pub fn jump_with_args(&mut self, chunk: &mut BytecodeChunk, target: Block, args: &EntityList<Value>) {
+    pub fn jump_with_args(
+        &mut self,
+        chunk: &mut BytecodeChunk,
+        target: Block,
+        args: &EntityList<Value>,
+    ) {
         let params = &self.func.cfg.blocks[target.index()].params;
 
         let args_len = args.len(&self.func.inst_values_pool);
@@ -157,7 +165,11 @@ impl<'a> LoweringContext<'a> {
 
         self.append_jump_placeholder::<i16>(chunk, args_len as _, target);
         chunk.append(args_len as u8);
-        for (&param, &arg) in args.as_slice(&self.func.inst_values_pool).iter().zip(params) {
+        for (&param, &arg) in args
+            .as_slice(&self.func.inst_values_pool)
+            .iter()
+            .zip(params)
+        {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
         }
@@ -179,14 +191,15 @@ impl<'a> LoweringContext<'a> {
     }
 
     fn compute_block_order(&mut self) -> Result<(), String> {
-        let entry = self.func.layout.block_entry
-            .ok_or("No entry block")?;
+        let entry = self.func.layout.block_entry.ok_or("No entry block")?;
 
         let mut visited = FxHashSet::default();
         let mut stack = vec![entry];
 
         while let Some(block) = stack.pop() {
-            if visited.contains(&block) { continue; }
+            if visited.contains(&block) {
+                continue;
+            }
             visited.insert(block);
             self.block_order.push(block);
 
@@ -197,8 +210,7 @@ impl<'a> LoweringContext<'a> {
                 let succs = match &self.func.dfg.insts[inst_idx] {
                     InstructionData::Jump { destination, .. } => vec![*destination],
                     InstructionData::Branch { destinations, .. } => destinations.to_vec(),
-                    InstructionData::Return { .. } |
-                    InstructionData::Unreachable => vec![],
+                    InstructionData::Return { .. } | InstructionData::Unreachable => vec![],
                     _ => {
                         // Non-terminator: implicit fallthrough
                         if block.index() + 1 < self.func.cfg.blocks.len() {
@@ -226,25 +238,15 @@ impl<'a> LoweringContext<'a> {
 
             let n = self.func.cfg.blocks[block_id.index()].insts.len();
 
-            #[cfg(debug_assertions)]
-            self.pc_to_inst_meta.reserve(n);
-
             for i in 0..n {
-                let pc = chunk.code.len();
+                let pc = Pc::from_u32(chunk.code.len() as _);
 
-                let inst_id = self.func.cfg.blocks[block_id.index()].insts[i];
+                let inst = self.func.cfg.blocks[block_id.index()].insts[i];
 
-                self.generated_emit_inst(inst_id, chunk);
+                self.generated_emit_inst(inst, chunk);
 
                 #[cfg(debug_assertions)]
-                self.pc_to_inst_meta.insert(
-                    pc,
-                    LoInstMeta {
-                        inst: inst_id,
-                        pc,
-                        size: (chunk.code.len() - pc) as u8
-                    }
-                );
+                self.inst_meta.insert(LoInstMeta { inst, pc });
             }
         }
     }

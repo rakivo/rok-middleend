@@ -1,7 +1,7 @@
 //! Helper trait for converting T to bytes
 
-use std::vec::Vec;
 use std::borrow::Cow;
+use std::vec::Vec;
 
 use smallvec::SmallVec;
 
@@ -41,7 +41,7 @@ pub trait IntoBytes<'a> {
     #[inline(always)]
     fn copy_into(self, dst: &mut [u8])
     where
-        Self: Sized
+        Self: Sized,
     {
         dst.copy_from_slice(&self.into_bytes());
     }
@@ -108,7 +108,7 @@ macro_rules! impl_into_bytes_for_int {
 }
 
 // implement for signed/unsigned integer scalars (including pointer-sized)
-impl_into_bytes_for_int!{
+impl_into_bytes_for_int! {
     f32, f64,
     u8, u16, u32, u64, u128,
     i8, i16, i32, i64, i128,

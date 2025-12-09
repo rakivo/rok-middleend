@@ -1,17 +1,18 @@
 /// A minimal SSA-based intermediate representation.
 use crate::with_comment;
 
-use rok_entity::{EntityList, EntityRef, ListPool, PrimaryMap};
+use rok_entity::{EntityList, EntityRef, ListPool, PrimaryMap, SecondaryMap};
 
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
-use rustc_hash::{FxHashSet, FxHashMap};
 
 rok_entity::entity_ref!(Value, "Value");
 rok_entity::entity_ref!(Inst, "Inst");
+rok_entity::entity_ref!(SourceLoc, "SourceLoc");
 rok_entity::entity_ref!(Block, "Block");
 rok_entity::entity_ref!(StackSlot, "StackSlot");
 rok_entity::entity_ref!(HookId, "HookId");
@@ -28,10 +29,17 @@ impl nohash_hasher::IsEnabled for ExtFuncId {}
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
-    U8, U16, U32, U64,
-    I8, I16, I32, I64,
-    F32, F64,
-    Ptr
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    Ptr,
 }
 
 impl Type {
@@ -39,7 +47,7 @@ impl Type {
     #[inline(always)]
     pub const fn bytes(self) -> u32 {
         match self {
-            Type::I8  | Type::U8 => 1,
+            Type::I8 | Type::U8 => 1,
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 => 4,
             Type::U64 | Type::I64 | Type::F64 | Type::Ptr => 8,
@@ -70,10 +78,9 @@ impl Type {
         match self {
             Self::F32 => Self::I32,
 
-            Self::Ptr |
-            Self::F64 => Self::I64,
+            Self::Ptr | Self::F64 => Self::I64,
 
-            other => other
+            other => other,
         }
     }
 }
@@ -85,7 +92,7 @@ pub struct Signature {
     pub returns: Vec<Type>,
     // for codegen and debugging purposes only
     /// The amount of fixed arguments in a var-args def
-    pub is_var_arg: Option<u8>
+    pub is_var_arg: Option<u8>,
 }
 
 impl Signature {
@@ -152,14 +159,17 @@ pub struct BasicBlockData {
 /// The top-level structure for a single function's IR.
 #[derive(Debug, Clone, Default)]
 pub struct SsaFunc {
+    pub is_external: bool,
+
     pub name: Box<str>,
     pub signature: Signature,
     pub dfg: DataFlowGraph,
     pub cfg: ControlFlowGraph,
     pub layout: Layout,
     pub stack_slots: Vec<StackSlotData>,
-    pub metadata: FunctionMetadata,
     pub inst_values_pool: ListPool<Value>,
+    pub srclocs: PrimaryMap<Inst, SourceLoc>,
+    pub comments: SecondaryMap<Inst, Box<str>>,
 }
 
 impl SsaFunc {
@@ -225,7 +235,7 @@ impl SsaFunc {
     #[inline]
     #[must_use]
     pub fn inst_to_block(&self, inst: Inst) -> Option<Block> {
-        self.layout.inst_blocks.get(&inst).copied()
+        self.layout.inst_blocks.get(inst).copied()
     }
 
     #[inline]
@@ -238,7 +248,7 @@ impl SsaFunc {
 /// Maps logical entities (Inst, Block) to their container.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
-    pub inst_blocks: FxHashMap<Inst, Block>,
+    pub inst_blocks: PrimaryMap<Inst, Block>,
     pub block_entry: Option<Block>,
 }
 
@@ -247,14 +257,7 @@ pub struct Layout {
 pub struct StackSlotData {
     pub ty: Type,
     pub size: u32,
-    pub align: u16
-}
-
-/// Metadata for the function.
-#[derive(Debug, Clone, Default)]
-pub struct FunctionMetadata {
-    pub is_external: bool,
-    pub comments: FxHashMap<Inst, Box<str>>
+    pub align: u16,
 }
 
 //-////////////////////////////////////////////////////////////////////
@@ -263,23 +266,68 @@ pub struct FunctionMetadata {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    CallHook { hook_id: HookId, args: EntityList<Value> },
-    Binary { binop: BinaryOp, args: [Value; 2] },
-    Icmp { code: IntCC, args: [Value; 2] },
-    Unary { unop: UnaryOp, arg: Value },
-    IConst { value: i64 },
-    FConst { value: f64 },
-    Jump { destination: Block, args: EntityList<Value> },
-    Branch { destinations: [Block; 2], args: EntityList<Value>, arg: Value },
-    Call { func_id: FuncId, args: EntityList<Value> },
-    CallExt { func_id: ExtFuncId, args: EntityList<Value> },
-    Return { args: EntityList<Value> },
-    StackLoad { slot: StackSlot },
-    StackAddr { slot: StackSlot },
-    StackStore { slot: StackSlot, arg: Value },
-    LoadNoOffset { ty: Type, addr: Value },
-    StoreNoOffset { args: [Value; 2] },
-    DataAddr { data_id: DataId },
+    CallHook {
+        hook_id: HookId,
+        args: EntityList<Value>,
+    },
+    Binary {
+        binop: BinaryOp,
+        args: [Value; 2],
+    },
+    Icmp {
+        code: IntCC,
+        args: [Value; 2],
+    },
+    Unary {
+        unop: UnaryOp,
+        arg: Value,
+    },
+    IConst {
+        value: i64,
+    },
+    FConst {
+        value: f64,
+    },
+    Jump {
+        destination: Block,
+        args: EntityList<Value>,
+    },
+    Branch {
+        destinations: [Block; 2],
+        args: EntityList<Value>,
+        arg: Value,
+    },
+    Call {
+        func_id: FuncId,
+        args: EntityList<Value>,
+    },
+    CallExt {
+        func_id: ExtFuncId,
+        args: EntityList<Value>,
+    },
+    Return {
+        args: EntityList<Value>,
+    },
+    StackLoad {
+        slot: StackSlot,
+    },
+    StackAddr {
+        slot: StackSlot,
+    },
+    StackStore {
+        slot: StackSlot,
+        arg: Value,
+    },
+    LoadNoOffset {
+        ty: Type,
+        addr: Value,
+    },
+    StoreNoOffset {
+        args: [Value; 2],
+    },
+    DataAddr {
+        data_id: DataId,
+    },
     // GlobalValue { global_value: GlobalValue },
     Unreachable,
     Nop,
@@ -288,7 +336,7 @@ pub enum InstructionData {
 impl InstructionData {
     #[must_use]
     pub fn bits(&self, inst_id: Inst, context: &SsaFunc) -> u32 {
-        let vbits = |v: &Value|  context.dfg.values[v.index()].ty.bits();
+        let vbits = |v: &Value| context.dfg.values[v.index()].ty.bits();
         let rbits = |idx: usize| {
             let r = &context.dfg.inst_results[&inst_id];
             context.dfg.values[r[idx].index()].ty.bits()
@@ -313,15 +361,13 @@ impl InstructionData {
             Self::CallExt { .. } => 32,
             Self::Return { .. } => 32,
 
-            Self::CallHook { .. } |
-            Self::Unreachable |
-            Self::Nop => 0
+            Self::CallHook { .. } | Self::Unreachable | Self::Nop => 0,
         }
     }
 
     #[must_use]
     pub fn is_terminator(&self) -> bool {
-        matches!{
+        matches! {
             self,
             Self::Jump { .. }   |
             Self::Branch { .. } |
@@ -347,9 +393,21 @@ pub enum IntCC {
 
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
-    IAdd, ISub, IMul, IDiv,
-    And, Or, Xor, Ushr, Ishl, Band, Bor,
-    FAdd, FSub, FMul, FDiv,
+    IAdd,
+    ISub,
+    IMul,
+    IDiv,
+    And,
+    Or,
+    Xor,
+    Ushr,
+    Ishl,
+    Band,
+    Bor,
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -367,7 +425,7 @@ pub enum UnaryOp {
     FloatToSInt,
     FloatToUInt,
     SIntToFloat,
-    UIntToFloat
+    UIntToFloat,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -411,18 +469,11 @@ impl Module {
     }
 
     #[inline]
-    pub fn declare_function(
-        &mut self,
-        name: impl AsRef<str>,
-        signature: Signature,
-    ) -> FuncId {
+    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
         self.funcs.push(SsaFunc {
             name: name.as_ref().into(),
             signature,
-            metadata: FunctionMetadata {
-                is_external: true,
-                ..Default::default()
-            },
+            is_external: false,
             ..Default::default()
         })
     }
@@ -436,7 +487,7 @@ impl Module {
     #[inline(always)]
     pub fn define_function(&mut self, id: FuncId) {
         let func = self.get_func_mut(id);
-        func.metadata.is_external = false;
+        func.is_external = false;
     }
 
     #[track_caller]
@@ -574,6 +625,7 @@ pub struct FunctionBuilder<'a> {
 #[derive(Debug, Clone, Copy)]
 struct Cursor {
     current_block: Block,
+    current_srcloc: SourceLoc,
 }
 
 impl<'a> FunctionBuilder<'a> {
@@ -587,7 +639,13 @@ impl<'a> FunctionBuilder<'a> {
             func.layout.block_entry = Some(block);
             block
         };
-        Self { func, cursor: Cursor { current_block: entry_block } }
+        Self {
+            func,
+            cursor: Cursor {
+                current_block: entry_block,
+                current_srcloc: Default::default(),
+            },
+        }
     }
 
     #[inline(always)]
@@ -616,11 +674,36 @@ impl<'a> FunctionBuilder<'a> {
         for (i, &ty) in types.iter().enumerate() {
             let value = self.func.dfg.make_value(ValueData {
                 ty,
-                def: ValueDef::Param { block, param_idx: (param_idx_start + i) as u8 },
+                def: ValueDef::Param {
+                    block,
+                    param_idx: (param_idx_start + i) as u8,
+                },
             });
             block_data.params.push(value);
         }
         &block_data.params[param_idx_start..]
+    }
+
+    #[inline(always)]
+    pub fn set_srcloc(&mut self, srcloc: SourceLoc) -> Option<SourceLoc> {
+        let old = self.cursor.current_srcloc;
+        self.cursor.current_srcloc = srcloc;
+
+        if old == SourceLoc::default() {
+            None
+        } else {
+            Some(old)
+        }
+    }
+
+    #[inline(always)]
+    pub fn unset_srcloc(&mut self) {
+        self.cursor.current_srcloc = SourceLoc::default();
+    }
+
+    #[inline(always)]
+    pub fn srcloc(&self) -> SourceLoc {
+        self.cursor.current_srcloc
     }
 
     // TODO(#12): Names for stack slots?
@@ -631,18 +714,13 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     #[inline(always)]
-    pub fn insert_comment(
-        &mut self,
-        inst: Inst,
-        comment: impl Into<Box<str>>
-    ) {
-        self.func.metadata.comments.insert(inst, comment.into());
+    pub fn insert_comment(&mut self, inst: Inst, comment: impl Into<Box<str>>) {
+        self.func.comments.insert(inst, comment.into());
     }
 
     #[inline(always)]
     pub fn ins<'short>(&'short mut self) -> InstBuilder<'short, 'a> {
-        let position = self.cursor;
-        InstBuilder { builder: self, position }
+        InstBuilder { builder: self }
     }
 
     #[inline(always)]
@@ -661,25 +739,33 @@ impl<'a> FunctionBuilder<'a> {
 
 pub struct InstBuilder<'short, 'long> {
     builder: &'short mut FunctionBuilder<'long>,
-    position: Cursor,
 }
 
 impl<'long> Deref for InstBuilder<'_, 'long> {
     type Target = FunctionBuilder<'long>;
-    fn deref(&self) -> &Self::Target { self.builder }
+    fn deref(&self) -> &Self::Target {
+        self.builder
+    }
 }
 
 impl DerefMut for InstBuilder<'_, '_> {
-    fn deref_mut(&mut self) -> &mut Self::Target { self.builder }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.builder
+    }
 }
 
 impl InstBuilder<'_, '_> {
     #[inline]
     fn insert_inst(&mut self, data: InstructionData) -> Inst {
         let inst = self.builder.func.dfg.make_inst(data);
-        let block = self.position.current_block;
+        let block = self.cursor.current_block;
+        let srcloc = self.cursor.current_srcloc;
+
         self.builder.func.cfg.blocks[block.index()].insts.push(inst);
-        self.builder.func.layout.inst_blocks.insert(inst, block);
+
+        debug_assert_eq!(self.builder.func.srclocs.push(srcloc), inst);
+        debug_assert_eq!(self.builder.func.layout.inst_blocks.push(block), inst);
+
         inst
     }
 
@@ -687,7 +773,10 @@ impl InstBuilder<'_, '_> {
     #[must_use]
     pub fn get_last_inst(&self) -> Option<Inst> {
         let block = self.current_block();
-        self.builder.func.cfg.blocks[block.index()].insts.last().copied()
+        self.builder.func.cfg.blocks[block.index()]
+            .insts
+            .last()
+            .copied()
     }
 
     #[inline]
@@ -696,7 +785,13 @@ impl InstBuilder<'_, '_> {
             ty,
             def: ValueDef::Inst { inst, result_idx },
         });
-        self.builder.func.dfg.inst_results.entry(inst).or_default().push(value);
+        self.builder
+            .func
+            .dfg
+            .inst_results
+            .entry(inst)
+            .or_default()
+            .push(value);
         value
     }
 
@@ -1177,7 +1272,7 @@ impl InstBuilder<'_, '_> {
                 destination: dest,
                 args: EntityList::new()
             });
-            let from = self.position.current_block;
+            let from = self.cursor.current_block;
             self.builder.func.cfg.add_pred(from, dest);
         }
     }
@@ -1194,7 +1289,7 @@ impl InstBuilder<'_, '_> {
                 destination: dest,
                 args,
             });
-            let from = self.position.current_block;
+            let from = self.cursor.current_block;
             self.builder.func.cfg.add_pred(from, dest);
         }
     }
@@ -1212,7 +1307,7 @@ impl InstBuilder<'_, '_> {
                 arg: cond,
                 args
             });
-            let from = self.position.current_block;
+            let from = self.cursor.current_block;
             self.builder.func.cfg.add_pred(from, true_dest);
             self.builder.func.cfg.add_pred(from, false_dest);
         }
@@ -1227,7 +1322,7 @@ impl InstBuilder<'_, '_> {
                 arg: cond,
                 args: EntityList::new()
             });
-            let from = self.position.current_block;
+            let from = self.cursor.current_block;
             self.builder.func.cfg.add_pred(from, true_dest);
             self.builder.func.cfg.add_pred(from, false_dest);
         }
@@ -1395,10 +1490,27 @@ impl SsaFunc {
         let block_data = &self.cfg.blocks[block_id.index()];
         write!(f, "{block_id}:")?;
         if !block_data.params.is_empty() {
-            write!(f, "({})", block_data.params.iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))?;
+            write!(
+                f,
+                "({})",
+                block_data
+                    .params
+                    .iter()
+                    .map(|v| self.fmt_value(*v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
         }
         if let Some(preds) = self.cfg.predecessors.get(&block_id) {
-            write!(f, "  ; preds: {}", preds.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))?;
+            write!(
+                f,
+                "  ; preds: {}",
+                preds
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
         }
         writeln!(f)?;
         for &inst_id in &block_data.insts {
@@ -1412,28 +1524,113 @@ impl SsaFunc {
         let inst = &self.dfg.insts[inst_id.index()];
         let mut s = String::new();
         if let Some(results) = self.dfg.inst_results.get(&inst_id)
-            && !results.is_empty() {
-                s.push_str(&results.iter().map(|r| self.fmt_value(*r)).collect::<Vec<_>>().join(", "));
-                s.push_str(" = ");
-            }
+            && !results.is_empty()
+        {
+            s.push_str(
+                &results
+                    .iter()
+                    .map(|r| self.fmt_value(*r))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            s.push_str(" = ");
+        }
         #[allow(clippy::format_push_string)]
         match inst {
-            InstructionData::Binary { binop: opcode, args } => s.push_str(&format!("{:?} {}, {}", opcode, self.fmt_value(args[0]), self.fmt_value(args[1]))),
-            InstructionData::Icmp { code, args } => s.push_str(&format!("icmp_{:?} {}, {}", code, self.fmt_value(args[0]), self.fmt_value(args[1]))),
-            InstructionData::Unary { unop, arg } => s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg))),
+            InstructionData::Binary {
+                binop: opcode,
+                args,
+            } => s.push_str(&format!(
+                "{:?} {}, {}",
+                opcode,
+                self.fmt_value(args[0]),
+                self.fmt_value(args[1])
+            )),
+            InstructionData::Icmp { code, args } => s.push_str(&format!(
+                "icmp_{:?} {}, {}",
+                code,
+                self.fmt_value(args[0]),
+                self.fmt_value(args[1])
+            )),
+            InstructionData::Unary { unop, arg } => {
+                s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg)))
+            }
             InstructionData::IConst { value } => s.push_str(&format!("iconst {value}")),
             InstructionData::FConst { value } => s.push_str(&format!("fconst {value}")),
-            InstructionData::Jump { destination, args } => s.push_str(&format!("jump {}({})", destination, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::Branch { destinations, arg, args } => s.push_str(&format!("brif {}, {}, {}({})", self.fmt_value(*arg), destinations[0], destinations[1], args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::Call { func_id, args, .. } => s.push_str(&format!("call {} ({})", func_id, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::CallHook { hook_id, args } => s.push_str(&format!("call_hook {} ({})", hook_id, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::CallExt { func_id, args } => s.push_str(&format!("call_ext {} ({})", func_id, args.as_slice(&self.inst_values_pool).iter().map(|a| self.fmt_value(*a)).collect::<Vec<_>>().join(", "))),
-            InstructionData::Return { args } => s.push_str(&format!("return {}", args.as_slice(&self.inst_values_pool).iter().map(|v| self.fmt_value(*v)).collect::<Vec<_>>().join(", "))),
+            InstructionData::Jump { destination, args } => s.push_str(&format!(
+                "jump {}({})",
+                destination,
+                args.as_slice(&self.inst_values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::Branch {
+                destinations,
+                arg,
+                args,
+            } => s.push_str(&format!(
+                "brif {}, {}, {}({})",
+                self.fmt_value(*arg),
+                destinations[0],
+                destinations[1],
+                args.as_slice(&self.inst_values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::Call { func_id, args, .. } => s.push_str(&format!(
+                "call {} ({})",
+                func_id,
+                args.as_slice(&self.inst_values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::CallHook { hook_id, args } => s.push_str(&format!(
+                "call_hook {} ({})",
+                hook_id,
+                args.as_slice(&self.inst_values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::CallExt { func_id, args } => s.push_str(&format!(
+                "call_ext {} ({})",
+                func_id,
+                args.as_slice(&self.inst_values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::Return { args } => s.push_str(&format!(
+                "return {}",
+                args.as_slice(&self.inst_values_pool)
+                    .iter()
+                    .map(|v| self.fmt_value(*v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
             InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
-            InstructionData::StackStore { slot, arg } => s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg))),
-            InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!("load_no_offset {}:{:?}", self.fmt_value(*addr), ty)),
-            InstructionData::StoreNoOffset { args } => s.push_str(&format!("store_no_offset {}, {}", self.fmt_value(args[0]), self.fmt_value(args[1]))),
+            InstructionData::StackStore { slot, arg } => {
+                s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg)))
+            }
+            InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!(
+                "load_no_offset {}:{:?}",
+                self.fmt_value(*addr),
+                ty
+            )),
+            InstructionData::StoreNoOffset { args } => s.push_str(&format!(
+                "store_no_offset {}, {}",
+                self.fmt_value(args[0]),
+                self.fmt_value(args[1])
+            )),
             InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {data_id}")),
             // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
             InstructionData::Unreachable => s.push_str("unreachable"),
@@ -1442,7 +1639,7 @@ impl SsaFunc {
 
         write!(f, "  {s:<70}")?;
 
-        if let Some(comment) = self.metadata.comments.get(&inst_id) {
+        if let Some(comment) = self.comments.get(inst_id) {
             write!(f, "; {comment}")?;
         }
 
@@ -1458,9 +1655,22 @@ impl SsaFunc {
 
 impl fmt::Display for SsaFunc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "function {}({}) -> {}", self.name,
-            self.signature.params.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", "),
-            self.signature.returns.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ")
+        writeln!(
+            f,
+            "function {}({}) -> {}",
+            self.name,
+            self.signature
+                .params
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.signature
+                .returns
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         )?;
         for (i, slot) in self.stack_slots.iter().enumerate() {
             writeln!(f, "  stack_slot{}: {:?}, size={}", i, slot.ty, slot.size)?;
@@ -1469,7 +1679,9 @@ impl fmt::Display for SsaFunc {
             let mut visited = FxHashSet::default();
             let mut worklist = vec![entry];
             while let Some(block_id) = worklist.pop() {
-                if !visited.insert(block_id) { continue; }
+                if !visited.insert(block_id) {
+                    continue;
+                }
                 self.fmt_block(f, block_id)?;
                 let block_data = &self.cfg.blocks[block_id.index()];
                 if let Some(last_inst_id) = block_data.insts.last() {
@@ -1479,7 +1691,7 @@ impl fmt::Display for SsaFunc {
                         InstructionData::Branch { destinations, .. } => {
                             worklist.push(destinations[1]);
                             worklist.push(destinations[0]);
-                        },
+                        }
                         _ => {}
                     }
                 }

@@ -1,8 +1,4 @@
-#![warn(
-    clippy::all,
-    clippy::pedantic,
-    dead_code
-)]
+#![warn(clippy::all, clippy::pedantic, dead_code)]
 #![allow(
     clippy::wildcard_imports,
     clippy::missing_transmute_annotations,
@@ -24,14 +20,14 @@
     clippy::unnested_or_patterns,
     clippy::blocks_in_conditions,
     clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
+    clippy::missing_panics_doc
 )]
 
 #[macro_use]
 mod macros;
 
-pub mod ssa;
-pub mod util;
-pub mod lower;
 pub mod bytecode;
 pub mod disassemble;
+pub mod lower;
+pub mod ssa;
+pub mod util;

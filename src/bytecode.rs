@@ -1,15 +1,7 @@
-use crate::util::{self, IntoBytes};
 use crate::ssa::{
-    Inst,
-    DataId,
-    InstructionData as IData,
-    SsaFunc,
-    BinaryOp,
-    StackSlot,
-    UnaryOp,
-    Type,
-    IntCC
+    BinaryOp, DataId, Inst, InstructionData as IData, IntCC, SsaFunc, StackSlot, Type, UnaryOp,
 };
+use crate::util::{self, IntoBytes};
 
 use std::mem;
 
@@ -755,11 +747,11 @@ impl Opcode {
     #[must_use]
     pub const fn fp_load(bits: u32) -> Option<Self> {
         Some(match bits {
-             8 => Opcode::FpLoad8,
+            8 => Opcode::FpLoad8,
             16 => Opcode::FpLoad16,
             32 => Opcode::FpLoad32,
             64 => Opcode::FpLoad64,
-            _ => return None
+            _ => return None,
         })
     }
 
@@ -767,11 +759,11 @@ impl Opcode {
     #[must_use]
     pub const fn fp_store(bits: u32) -> Option<Self> {
         Some(match bits {
-             8 => Opcode::FpStore8,
+            8 => Opcode::FpStore8,
             16 => Opcode::FpStore16,
             32 => Opcode::FpStore32,
             64 => Opcode::FpStore64,
-            _ => return None
+            _ => return None,
         })
     }
 }
@@ -779,9 +771,9 @@ impl Opcode {
 /// Stack slot allocation information
 #[derive(Debug, Clone)]
 pub struct StackSlotAllocation {
-    pub offset: u32,    // Offset from frame pointer (negative for locals)
-    pub size: u32,      // Size in bytes
-    pub ty: Type,       // Type of the slot
+    pub offset: u32, // Offset from frame pointer (negative for locals)
+    pub size: u32,   // Size in bytes
+    pub ty: Type,    // Type of the slot
 }
 
 /// Stack frame layout information
@@ -808,11 +800,14 @@ impl StackFrameInfo {
             curr_offset = util::align_up(curr_offset, align);
 
             let size = slot_data.size;
-            frame_info.slot_allocations.insert(slot, StackSlotAllocation {
-                size,
-                offset: curr_offset,
-                ty: slot_data.ty,
-            });
+            frame_info.slot_allocations.insert(
+                slot,
+                StackSlotAllocation {
+                    size,
+                    offset: curr_offset,
+                    ty: slot_data.ty,
+                },
+            );
 
             // Move current offset past this slot
             curr_offset += size;

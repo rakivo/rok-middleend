@@ -1,12 +1,9 @@
-// @Refactor
-#![allow(
-    clippy::uninlined_format_args,
-    clippy::single_char_add_str,
-    clippy::format_push_string
-)]
+#![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
-use crate::bytecode::Opcode;
 use crate::lower::LoweredSsaFunc;
+#[cfg(debug_assertions)]
+use crate::lower::Pc;
+use crate::{bytecode::Opcode, ssa::SourceLoc};
 
 use std::fmt::{self, Write};
 
@@ -349,7 +346,8 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             if moves.is_empty() {
                 write!(f, "{:<16} {:05X}", "jump", offset)
             } else {
-                let moves_str = moves.iter()
+                let moves_str = moves
+                    .iter()
                     .map(|(arg, param)| format!("r{} -> r{}", arg, param))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -386,23 +384,34 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let true_moves_str = if moves_true.is_empty() {
                 String::new()
             } else {
-                format!(" ({})", moves_true.iter()
-                    .map(|(arg, param)| format!("r{} -> r{}", arg, param))
-                    .collect::<Vec<_>>()
-                    .join(", "))
+                format!(
+                    " ({})",
+                    moves_true
+                        .iter()
+                        .map(|(arg, param)| format!("r{} -> r{}", arg, param))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
 
             let false_moves_str = if moves_false.is_empty() {
                 String::new()
             } else {
-                format!(" ({})", moves_false.iter()
-                    .map(|(arg, param)| format!("r{} -> r{}", arg, param))
-                    .collect::<Vec<_>>()
-                    .join(", "))
+                format!(
+                    " ({})",
+                    moves_false
+                        .iter()
+                        .map(|(arg, param)| format!("r{} -> r{}", arg, param))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
 
-            write!(f, "{:<16} r{}, true:{:05X}{}, false:{:05X}{}",
-                   "branchif", cond, true_offset, true_moves_str, false_offset, false_moves_str)
+            write!(
+                f,
+                "{:<16} r{}, true:{:05X}{}, false:{:05X}{}",
+                "branchif", cond, true_offset, true_moves_str, false_offset, false_moves_str
+            )
         }
 
         Opcode::Return => {
@@ -416,7 +425,8 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             if args.is_empty() {
                 write!(f, "{:<16}", "return")
             } else {
-                let args_str = args.iter()
+                let args_str = args
+                    .iter()
                     .map(|a| format!("r{}", a))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -443,22 +453,34 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let args_str = if args.is_empty() {
                 String::new()
             } else {
-                format!("({})", args.iter()
-                    .map(|a| format!("r{}", a))
-                    .collect::<Vec<_>>()
-                    .join(", "))
+                format!(
+                    "({})",
+                    args.iter()
+                        .map(|a| format!("r{}", a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
 
             if results.is_empty() {
                 write!(f, "{:<16} func_{func_id}{}", "call", args_str)
             } else if results.len() == 1 {
-                write!(f, "{:<16} r{} = func_{func_id}{}", "call", results[0], args_str)
+                write!(
+                    f,
+                    "{:<16} r{} = func_{func_id}{}",
+                    "call", results[0], args_str
+                )
             } else {
-                let results_str = results.iter()
+                let results_str = results
+                    .iter()
                     .map(|r| format!("r{}", r))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(f, "{:<16} ({}) = func_{func_id}{}", "call", results_str, args_str)
+                write!(
+                    f,
+                    "{:<16} ({}) = func_{func_id}{}",
+                    "call", results_str, args_str
+                )
             }
         }
 
@@ -476,16 +498,23 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let args_str = if args.is_empty() {
                 String::new()
             } else {
-                format!("({})", args.iter()
-                    .map(|a| format!("r{}", a))
-                    .collect::<Vec<_>>()
-                    .join(", "))
+                format!(
+                    "({})",
+                    args.iter()
+                        .map(|a| format!("r{}", a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
 
             if result == u32::MAX {
                 write!(f, "{:<16} hook_{}{}", "call.hook", hook_id, args_str)
             } else {
-                write!(f, "{:<16} r{} = hook_{}{}", "call.hook", result, hook_id, args_str)
+                write!(
+                    f,
+                    "{:<16} r{} = hook_{}{}",
+                    "call.hook", result, hook_id, args_str
+                )
             }
         }
 
@@ -508,22 +537,34 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let args_str = if args.is_empty() {
                 String::new()
             } else {
-                format!("({})", args.iter()
-                    .map(|a| format!("r{}", a))
-                    .collect::<Vec<_>>()
-                    .join(", "))
+                format!(
+                    "({})",
+                    args.iter()
+                        .map(|a| format!("r{}", a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
 
             if results.is_empty() {
                 write!(f, "{:<16} extfunc_{}{}", "call.ext", func_id, args_str)
             } else if results.len() == 1 {
-                write!(f, "{:<16} r{} = extfunc_{}{}", "call.ext", results[0], func_id, args_str)
+                write!(
+                    f,
+                    "{:<16} r{} = extfunc_{}{}",
+                    "call.ext", results[0], func_id, args_str
+                )
             } else {
-                let results_str = results.iter()
+                let results_str = results
+                    .iter()
                     .map(|r| format!("r{}", r))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(f, "{:<16} ({}) = extfunc_{}{}", "call.ext", results_str, func_id, args_str)
+                write!(
+                    f,
+                    "{:<16} ({}) = extfunc_{}{}",
+                    "call.ext", results_str, func_id, args_str
+                )
             }
         }
 
@@ -539,7 +580,11 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let src = reader.read_u32();
             let from_bits = reader.read_u8();
             let to_bits = reader.read_u8();
-            write!(f, "{:<16} r{}, r{}, i{} -> i{}", "uextend", dst, src, from_bits, to_bits)
+            write!(
+                f,
+                "{:<16} r{}, r{}, i{} -> i{}",
+                "uextend", dst, src, from_bits, to_bits
+            )
         }
         Opcode::Sextend => {
             let dst = reader.read_u32();
@@ -830,62 +875,65 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
 
 /// Disassembles bytecode with optional metadata annotations in compiler assembly style
 #[must_use]
-pub fn disassemble(bytecode: &[u8], _lowered: Option<&LoweredSsaFunc>) -> String {
+pub fn disassemble(
+    bytecode: &[u8],
+    _lowered: Option<&LoweredSsaFunc>,
+    _srcloc_formatter: Option<impl Fn(SourceLoc) -> Option<String>>,
+) -> String {
     let mut reader = BytecodeReader::new(bytecode);
     let mut output = String::new();
     #[allow(unused_mut, unused)]
     let mut curr_block: Option<crate::ssa::Block> = None;
 
+    if let Some(lowered) = _lowered {
+        print!("function {}\n{:05X} ;", lowered.context.func.name, 0);
+    }
+
     while reader.remaining() > 0 {
-        let offset = reader.position();
-        let offset_str = format!("{:05X}", offset);
+        let pc = reader.position();
+        let offset_str = format!("{:05X}", pc);
 
         // Print metadata if available
         #[cfg(debug_assertions)]
         if let Some(lowered) = _lowered
-        && let Some(crate::lower::LoInstMeta { pc, inst, size }) =
-            lowered.context.pc_to_inst_meta.get(&offset)
+        && let Some(crate::lower::LoInstMeta { inst, .. }) =
+                lowered.context.inst_meta.get(Pc::from_u32(pc as _))
         {
             use rok_entity::EntityRef;
 
             // Look up the block this instruction belongs to
-            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(inst)
-            && Some(block) != curr_block
+            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(*inst)
+                && Some(block) != curr_block
             {
                 curr_block = Some(block);
-                output.push_str("\n");
-                output.push_str(&format!("{} ; block({})\n", offset_str, block.index()));
+                _ = write!(
+                    &mut output,
+                    "\n{} ; block({}) -------------------------------------",
+                    offset_str,
+                    block.index()
+                );
             }
 
-            output.push_str("\n");
-            output.push_str(&format!("{} ;\n", offset_str));
-            output.push_str(&format!("{} ; original SSA instruction:\n", offset_str));
-            output.push_str(&format!("{} ; {}\n", offset_str,
-                lowered.context.func.pretty_print_inst(*inst)));
+            output.push('\n');
 
-            if let Some(comment) = lowered.context.func.metadata.comments.get(inst) {
-                output.push_str(&format!("{} ;\n", offset_str));
-                output.push_str(&format!("{} ; comment:\n", offset_str));
-                output.push_str(&format!("{} ; {}\n", offset_str, comment));
+            if let Some(srcloc_formatter) = &_srcloc_formatter {
+                let srcloc = lowered.context.func.srclocs[*inst];
+                if let Some(snippet) = srcloc_formatter(srcloc) {
+                    for line in snippet.lines() {
+                        _ = writeln!(&mut output, "{} ; {}", offset_str, line);
+                    }
+                }
+                _ = writeln!(&mut output, "{offset_str} ;");
             }
-
-            output.push_str(&format!("{} ;\n", offset_str));
-            output.push_str(&format!("{} ;   pc={:?} inst_id={:?}, size={}\n",
-                offset_str, pc, inst, size));
-            output.push_str(&format!("{} ;\n", offset_str));
         }
 
-        // Print the instruction
-        output.push_str(&format!("{}   ", offset_str));
+        _ = write!(&mut output, "{}   ", offset_str);
 
-        let mut inst_buf = String::new();
-        if print_instruction(&mut reader, &mut inst_buf).is_ok() {
-            output.push_str(&inst_buf);
-        } else {
+        if print_instruction(&mut reader, &mut output).is_err() {
             output.push_str("<error>");
         }
 
-        output.push_str("\n");
+        output.push('\n');
     }
 
     output
