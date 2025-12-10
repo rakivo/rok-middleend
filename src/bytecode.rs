@@ -5,7 +5,7 @@ use crate::util::{self, IntoBytes};
 
 use std::mem;
 
-use indexmap::IndexMap;
+use rok_entity::SecondaryMap;
 
 define_opcodes! {
     self,
@@ -335,7 +335,7 @@ define_opcodes! {
 
     Jump16(offset: i16) = 26,
     @ IData::Jump { destination, args, .. } => |_results, chunk| {
-        let dest_block = &self.func.cfg.blocks[destination.index()];
+        let dest_block = &self.func.cfg.blocks[*destination];
 
         chunk.append(Opcode::Jump16);
         self.jump_with_args(chunk, *destination, args);
@@ -409,7 +409,7 @@ define_opcodes! {
 
     Ireduce(dst: u32, src: u32, bits: u32) = 30,
     @ IData::Unary { unop: UnaryOp::Ireduce, arg } => |results, chunk| {
-        let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
+        let result_ty = self.func.dfg.values[results.unwrap()[0]].ty;
         let bits = result_ty.bits() as u8;
         let dst = results.unwrap()[0];
         let src = *arg;
@@ -420,8 +420,8 @@ define_opcodes! {
     },
     Uextend(dst: u32, src: u32, from_bits: u32, to_bits: u32) = 31,
     @ IData::Unary { unop: UnaryOp::Uextend, arg } => |results, chunk| {
-        let src_ty = self.func.dfg.values[arg.index()].ty;
-        let dst_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
+        let src_ty = self.func.dfg.values[*arg].ty;
+        let dst_ty = self.func.dfg.values[results.unwrap()[0]].ty;
         let from_bits = src_ty.bits() as u8;
         let to_bits = dst_ty.bits() as u8;
         let dst = results.unwrap()[0];
@@ -500,7 +500,7 @@ define_opcodes! {
     },
     Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
-        let result_ty = self.func.dfg.values[results.unwrap()[0].index()].ty;
+        let result_ty = self.func.dfg.values[results.unwrap()[0]].ty;
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Bitcast);
@@ -598,7 +598,7 @@ define_opcodes! {
     FpLoad8(dst: u32, offset: i32)       = 70,
     @ IData::StackLoad { slot, .. } if bits == 8 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpLoad8;
         chunk.append(opcode);
         chunk.append(dst.as_u32());
@@ -607,7 +607,7 @@ define_opcodes! {
     FpLoad16(dst: u32, offset: i32)      = 71,
     @ IData::StackLoad { slot, .. } if bits == 16 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpLoad16;
         chunk.append(opcode);
         chunk.append(dst.as_u32());
@@ -616,7 +616,7 @@ define_opcodes! {
     FpLoad32(dst: u32, offset: i32)      = 72,
     @ IData::StackLoad { slot, .. } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpLoad32;
         chunk.append(opcode);
         chunk.append(dst.as_u32());
@@ -625,7 +625,7 @@ define_opcodes! {
     FpLoad64(dst: u32, offset: i32)      = 73,
     @ IData::StackLoad { slot, .. } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpLoad64;
         chunk.append(opcode);
         chunk.append(dst.as_u32());
@@ -634,7 +634,7 @@ define_opcodes! {
     FpStore8(offset: i32, src: u32)      = 74,
     @ IData::StackStore { slot, arg, .. } if bits == 8 => |_results, chunk| {
         let src = *arg;
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpStore8;
         chunk.append(opcode);
         chunk.append(allocation.offset);
@@ -643,7 +643,7 @@ define_opcodes! {
     FpStore16(offset: i32, src: u32)     = 75,
     @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
         let src = *arg;
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpStore16;
         chunk.append(opcode);
         chunk.append(allocation.offset);
@@ -652,7 +652,7 @@ define_opcodes! {
     FpStore32(offset: i32, src: u32)     = 76,
     @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
         let src = *arg;
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpStore32;
         chunk.append(opcode);
         chunk.append(allocation.offset);
@@ -661,7 +661,7 @@ define_opcodes! {
     FpStore64(offset: i32, src: u32)     = 77,
     @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
         let src = *arg;
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         let opcode = Opcode::FpStore64;
         chunk.append(opcode);
         chunk.append(allocation.offset);
@@ -684,7 +684,7 @@ define_opcodes! {
         let dst = results.unwrap()[0];
         chunk.append(Opcode::FpAddr);
         chunk.append(dst.as_u32());
-        let allocation = &self.frame_info.slot_allocations[slot];
+        let allocation = &self.frame_info.slot_allocations[*slot];
         chunk.append(allocation.offset);
     },
     SpAddr(dst: u32, offset: i32)        = 91,
@@ -769,19 +769,39 @@ impl Opcode {
 }
 
 /// Stack slot allocation information
-#[derive(Debug, Clone)]
+#[derive(Eq, Debug, Clone, PartialEq)]
 pub struct StackSlotAllocation {
-    pub offset: u32, // Offset from frame pointer (negative for locals)
-    pub size: u32,   // Size in bytes
+    pub offset: u32, // Offset from frame pointer
+    pub size: u16,   // Size in bytes
     pub ty: Type,    // Type of the slot
 }
 
+impl Default for StackSlotAllocation {
+    fn default() -> Self {
+        Self {
+            offset: u32::MAX,
+            size: u16::MAX,
+            ty: Type::Ptr
+        }
+    }
+}
+
 /// Stack frame layout information
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct StackFrameInfo {
     pub regs_used: u32,
     pub total_size: u32,
-    pub slot_allocations: IndexMap<StackSlot, StackSlotAllocation>,
+    pub slot_allocations: SecondaryMap<StackSlot, StackSlotAllocation>,
+}
+
+impl Default for StackFrameInfo {
+    fn default() -> Self {
+        Self {
+            regs_used: u32::MAX,
+            total_size: u32::MAX,
+            slot_allocations: SecondaryMap::default()
+        }
+    }
 }
 
 impl StackFrameInfo {
@@ -810,7 +830,7 @@ impl StackFrameInfo {
             );
 
             // Move current offset past this slot
-            curr_offset += size;
+            curr_offset += size as u32;
         }
 
         // Total frame size (still aligned to 16 bytes for ABI)

@@ -50,7 +50,7 @@ macro_rules! define_opcodes {
             ) {
                 use rok_entity::EntityRef;
 
-                let inst = unsafe { $crate::util::reborrow(&$context.func.dfg.insts[inst_id.index()]) };
+                let inst = unsafe { $crate::util::reborrow(&$context.func.dfg.insts[inst_id]) };
                 let results = $context.func.dfg.inst_results.get(inst_id);
 
                 #[allow(unused, dead_code)]

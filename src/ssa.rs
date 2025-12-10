@@ -21,24 +21,12 @@ rok_entity::entity_ref!(DataId, "DataId");
 rok_entity::entity_ref!(GlobalValue, "GlobalValue");
 rok_entity::entity_ref!(ExtFuncId, "ExternalFuncId");
 
-impl nohash_hasher::IsEnabled for HookId {}
-impl nohash_hasher::IsEnabled for DataId {}
-impl nohash_hasher::IsEnabled for FuncId {}
-impl nohash_hasher::IsEnabled for ExtFuncId {}
-
 /// Represents a data type in the IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    F32,
-    F64,
+    U8, U16, U32, U64,
+    I8, I16, I32, I64,
+    F32, F64,
     Ptr,
 }
 
@@ -115,56 +103,54 @@ sparse_pair!{SparseInstResults: Inst => SmallVec<[Value; 2]>}
 /// The core data flow graph, containing all instructions and values.
 #[derive(Debug, Default)]
 pub struct DataFlowGraph {
-    pub insts: Vec<InstructionData>,
-    pub values: Vec<ValueData>,
+    pub insts: PrimaryMap<Inst, InstructionData>,
+    pub values: PrimaryMap<Value, ValueData>,
     pub inst_results: SparseMap<Inst, SparseInstResults>,
 }
 
 impl DataFlowGraph {
     #[inline]
     pub fn make_value(&mut self, data: ValueData) -> Value {
-        let id = Value::from_u32(self.values.len() as _);
-        self.values.push(data);
-        id
+        self.values.push(data)
     }
 
     #[inline]
     pub fn make_inst(&mut self, data: InstructionData) -> Inst {
-        let id = Inst::from_u32(self.insts.len() as _);
-        self.insts.push(data);
-        id
+        self.insts.push(data)
     }
 }
 
-sparse_pair!{SparseBlockPred: Block => SmallVec<[Block; 3]>}
+sparse_pair!{SparseBlockPred: Block => EntityList<Block>}
 
 /// The control flow graph, containing all basic blocks.
 #[derive(Debug, Default)]
 pub struct ControlFlowGraph {
+    pub blocks_pool: ListPool<Block>,
+    pub block_insts_pool: ListPool<Inst>,
+
     // TODO(#11): Make .blocks in ControlFlowGraph a PrimaryMap
-    pub blocks: Vec<BasicBlockData>,
+    pub blocks: PrimaryMap<Block, BasicBlockData>,
     pub predecessors: SparseMap<Block, SparseBlockPred>,
 }
 
 impl ControlFlowGraph {
     pub fn add_pred(&mut self, from: Block, to: Block) {
         if let Some(e) = self.predecessors.get_mut(to) {
-            e.value.push(from);
+            e.value.push(from, &mut self.blocks_pool);
             return
         }
 
-        self.predecessors.insert(SparseBlockPred {
-            key: to,
-            value: smallvec![from]
-        });
+        let preds = EntityList::from_slice(&[from], &mut self.blocks_pool);
+
+        self.predecessors.insert(SparseBlockPred { key: to, value: preds });
     }
 }
 
 /// Represents a single basic block in the CFG.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BasicBlockData {
-    pub insts: SmallVec<[Inst; 16]>,
-    pub params: SmallVec<[Value; 4]>,
+    pub insts: EntityList<Inst>,
+    pub params: EntityList<Value>,
     pub is_sealed: bool,
 }
 
@@ -179,7 +165,7 @@ pub struct SsaFunc {
     pub cfg: ControlFlowGraph,
     pub layout: Layout,
     pub stack_slots: Vec<StackSlotData>,
-    pub inst_values_pool: ListPool<Value>,
+    pub values_pool: ListPool<Value>,
     pub srclocs: PrimaryMap<Inst, SourceLoc>,
     pub comments: SecondaryMap<Inst, Box<str>>,
 }
@@ -198,32 +184,32 @@ impl SsaFunc {
     #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32, align: u16) -> StackSlot {
         let id = StackSlot::from_u32(self.stack_slots.len() as _);
-        self.stack_slots.push(StackSlotData { ty, size, align });
+        self.stack_slots.push(StackSlotData { ty, size: size as _, align });
         id
     }
 
     #[must_use]
     pub fn value_type(&self, v: Value) -> Type {
-        self.dfg.values[v.index()].ty
+        self.dfg.values[v].ty
     }
 
     #[inline(always)]
     #[must_use]
     pub fn is_instruction_terminator(&self, inst: Inst) -> bool {
-        self.dfg.insts[inst.index()].is_terminator()
+        self.dfg.insts[inst].is_terminator()
     }
 
     #[inline(always)]
     #[must_use]
     pub fn is_block_terminated(&self, block: Block) -> bool {
-        let last_inst = self.cfg.blocks[block.index()].insts.last().copied();
+        let last_inst = self.cfg.blocks[block].insts.as_slice(&self.cfg.block_insts_pool).last().copied();
         last_inst.is_some_and(|inst| self.is_instruction_terminator(inst))
     }
 
     #[inline]
     #[must_use]
     pub fn instruction_data(&self, inst: Inst) -> &InstructionData {
-        &self.dfg.insts[inst.index()]
+        &self.dfg.insts[inst]
     }
 
     #[inline]
@@ -253,7 +239,7 @@ impl SsaFunc {
     #[inline]
     #[must_use]
     pub fn all_blocks_sealed(&self) -> bool {
-        self.cfg.blocks.iter().all(|b| b.is_sealed)
+        self.cfg.blocks.iter().all(|(_, b)| b.is_sealed)
     }
 }
 
@@ -268,7 +254,7 @@ pub struct Layout {
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
     pub ty: Type,
-    pub size: u32,
+    pub size: u16,
     pub align: u16,
 }
 
@@ -303,24 +289,24 @@ pub enum InstructionData {
 impl InstructionData {
     #[must_use]
     pub fn bits(&self, inst: Inst, context: &SsaFunc) -> u32 {
-        let vbits = |v: &Value| context.dfg.values[v.index()].ty.bits();
+        let vbits = |v: Value| context.dfg.values[v].ty.bits();
         let rbits = |idx: usize| {
             let r = unsafe { &context.dfg.inst_results.get(inst).unwrap_unchecked() };
-            context.dfg.values[r[idx].index()].ty.bits()
+            context.dfg.values[r[idx]].ty.bits()
         };
 
         match self {
-            Self::Binary { args, .. } => vbits(&args[0]),
-            Self::Icmp { args, .. } => vbits(&args[0]),
-            Self::Unary { arg, .. } => vbits(arg),
+            Self::Binary { args, .. } => vbits(args[0]),
+            Self::Icmp { args, .. } => vbits(args[0]),
+            Self::Unary { arg, .. } => vbits(*arg),
             Self::IConst { .. } => rbits(0),
             Self::FConst { .. } => rbits(0),
             Self::StackLoad { .. } => rbits(0),
             Self::DataAddr { .. } => rbits(0),
             Self::StackAddr { .. } => rbits(0),
-            Self::StackStore { arg, .. } => vbits(arg),
+            Self::StackStore { arg, .. } => vbits(*arg),
             Self::LoadNoOffset { ty, .. } => ty.bits(),
-            Self::StoreNoOffset { args, .. } => vbits(&args[1]),
+            Self::StoreNoOffset { args, .. } => vbits(args[1]),
 
             Self::Jump { .. } => 32,
             Self::Branch { .. } => 32,
@@ -636,8 +622,8 @@ impl<'a> FunctionBuilder<'a> {
     #[inline]
     pub fn add_block_params(&mut self, types: &[Type]) -> &[Value] {
         let block = self.current_block();
-        let block_data = &mut self.func.cfg.blocks[block.index()];
-        let param_idx_start = block_data.params.len();
+        let block_data = &mut self.func.cfg.blocks[block];
+        let param_idx_start = block_data.params.len(&self.func.values_pool);
         for (i, &ty) in types.iter().enumerate() {
             let value = self.func.dfg.make_value(ValueData {
                 ty,
@@ -646,9 +632,9 @@ impl<'a> FunctionBuilder<'a> {
                     param_idx: (param_idx_start + i) as u8,
                 },
             });
-            block_data.params.push(value);
+            block_data.params.push(value, &mut self.func.values_pool);
         }
-        &block_data.params[param_idx_start..]
+        &block_data.params.as_slice(&self.func.values_pool)[param_idx_start..]
     }
 
     #[inline(always)]
@@ -692,7 +678,7 @@ impl<'a> FunctionBuilder<'a> {
 
     #[inline(always)]
     pub fn seal_block(&mut self, block: Block) {
-        self.func.cfg.blocks[block.index()].is_sealed = true;
+        self.func.cfg.blocks[block].is_sealed = true;
     }
 
     #[inline(always)]
@@ -728,7 +714,8 @@ impl InstBuilder<'_, '_> {
         let block = self.cursor.current_block;
         let srcloc = self.cursor.current_srcloc;
 
-        self.builder.func.cfg.blocks[block.index()].insts.push(inst);
+        let cfg = &mut self.builder.func.cfg;
+        cfg.blocks[block].insts.push(inst, &mut cfg.block_insts_pool);
 
         debug_assert_eq!(self.builder.func.srclocs.push(srcloc), inst);
         debug_assert_eq!(self.builder.func.layout.inst_blocks.push(block), inst);
@@ -740,8 +727,9 @@ impl InstBuilder<'_, '_> {
     #[must_use]
     pub fn get_last_inst(&self) -> Option<Inst> {
         let block = self.current_block();
-        self.builder.func.cfg.blocks[block.index()]
+        self.builder.func.cfg.blocks[block]
             .insts
+            .as_slice(&self.func.cfg.block_insts_pool)
             .last()
             .copied()
     }
@@ -783,7 +771,7 @@ impl InstBuilder<'_, '_> {
         iadd_with_comment,
         #[inline]
         pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary {
                 binop: BinaryOp::IAdd, args: [lhs, rhs]
             });
@@ -795,7 +783,7 @@ impl InstBuilder<'_, '_> {
         isub_with_comment,
         #[inline]
         pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ISub, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -805,7 +793,7 @@ impl InstBuilder<'_, '_> {
         imul_with_comment,
         #[inline]
         pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IMul, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -815,7 +803,7 @@ impl InstBuilder<'_, '_> {
         idiv_with_comment,
         #[inline]
         pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -834,7 +822,7 @@ impl InstBuilder<'_, '_> {
         and_with_comment,
         #[inline]
         pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::And, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -844,7 +832,7 @@ impl InstBuilder<'_, '_> {
         or_with_comment,
         #[inline]
         pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Or, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -854,7 +842,7 @@ impl InstBuilder<'_, '_> {
         xor_with_comment,
         #[inline]
         pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Xor, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -930,7 +918,7 @@ impl InstBuilder<'_, '_> {
         ushr_with_comment,
         #[inline]
         pub fn ushr(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ushr, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -940,7 +928,7 @@ impl InstBuilder<'_, '_> {
         ishl_with_comment,
         #[inline]
         pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ishl, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -950,7 +938,7 @@ impl InstBuilder<'_, '_> {
         band_with_comment,
         #[inline]
         pub fn band(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Band, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -960,7 +948,7 @@ impl InstBuilder<'_, '_> {
         bor_with_comment,
         #[inline]
         pub fn bor(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Bor, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1079,7 +1067,7 @@ impl InstBuilder<'_, '_> {
         fneg_with_comment,
         #[inline]
         pub fn fneg(&mut self, arg: Value) -> Value {
-            let ty = self.builder.func.dfg.values[arg.index()].ty;
+            let ty = self.builder.func.dfg.values[arg].ty;
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FNeg, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1136,7 +1124,7 @@ impl InstBuilder<'_, '_> {
         fadd_with_comment,
         #[inline]
         pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FAdd, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1146,7 +1134,7 @@ impl InstBuilder<'_, '_> {
         fsub_with_comment,
         #[inline]
         pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FSub, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1156,7 +1144,7 @@ impl InstBuilder<'_, '_> {
         fmul_with_comment,
         #[inline]
         pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMul, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1166,7 +1154,7 @@ impl InstBuilder<'_, '_> {
         fdiv_with_comment,
         #[inline]
         pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs.index()].ty;
+            let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1258,7 +1246,7 @@ impl InstBuilder<'_, '_> {
         pub fn jump_params(&mut self, dest: Block, params: &[Value]) {
             let args = EntityList::from_slice(
                 params,
-                &mut self.func.inst_values_pool
+                &mut self.func.values_pool
             );
             self.insert_inst(InstructionData::Jump {
                 destination: dest,
@@ -1275,7 +1263,7 @@ impl InstBuilder<'_, '_> {
         pub fn brif_params(&mut self, cond: Value, true_dest: Block, false_dest: Block, args: &[Value]) {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.inst_values_pool
+                &mut self.func.values_pool
             );
             self.insert_inst(InstructionData::Branch {
                 destinations: [true_dest, false_dest],
@@ -1314,7 +1302,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.inst_values_pool
+                &mut self.func.values_pool
             );
 
             let inst = self.insert_inst(InstructionData::Call {
@@ -1339,7 +1327,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.inst_values_pool
+                &mut self.func.values_pool
             );
             let inst = self.insert_inst(InstructionData::CallHook {
                 hook_id,
@@ -1363,7 +1351,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.inst_values_pool
+                &mut self.func.values_pool
             );
             let inst = self.insert_inst(InstructionData::CallExt {
                 func_id,
@@ -1441,7 +1429,7 @@ impl InstBuilder<'_, '_> {
         pub fn ret(&mut self, vals: &[Value]) {
             let args = EntityList::from_slice(
                 vals,
-                &mut self.func.inst_values_pool
+                &mut self.func.values_pool
             );
             self.insert_inst(InstructionData::Return { args });
         }
@@ -1462,7 +1450,7 @@ impl InstBuilder<'_, '_> {
 
 impl SsaFunc {
     pub fn fmt_block(&self, f: &mut dyn fmt::Write, block_id: Block) -> fmt::Result {
-        let block_data = &self.cfg.blocks[block_id.index()];
+        let block_data = &self.cfg.blocks[block_id];
         write!(f, "{block_id}:")?;
         if !block_data.params.is_empty() {
             write!(
@@ -1470,6 +1458,7 @@ impl SsaFunc {
                 "({})",
                 block_data
                     .params
+                    .as_slice(&self.values_pool)
                     .iter()
                     .map(|v| self.fmt_value(*v))
                     .collect::<Vec<_>>()
@@ -1481,6 +1470,7 @@ impl SsaFunc {
                 f,
                 "  ; preds: {}",
                 preds.value
+                    .as_slice(&self.cfg.blocks_pool)
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
@@ -1488,7 +1478,7 @@ impl SsaFunc {
             )?;
         }
         writeln!(f)?;
-        for &inst_id in &block_data.insts {
+        for &inst_id in block_data.insts.as_slice(&self.cfg.block_insts_pool) {
             self.fmt_inst(f, inst_id)?;
             writeln!(f)?;
         }
@@ -1496,7 +1486,7 @@ impl SsaFunc {
     }
 
     pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
-        let inst = &self.dfg.insts[inst_id.index()];
+        let inst = &self.dfg.insts[inst_id];
         let mut s = String::new();
         if let Some(results) = self.dfg.inst_results.get(inst_id)
             && !results.is_empty()
@@ -1535,7 +1525,7 @@ impl SsaFunc {
             InstructionData::Jump { destination, args } => s.push_str(&format!(
                 "jump {}({})",
                 destination,
-                args.as_slice(&self.inst_values_pool)
+                args.as_slice(&self.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -1550,7 +1540,7 @@ impl SsaFunc {
                 self.fmt_value(*arg),
                 destinations[0],
                 destinations[1],
-                args.as_slice(&self.inst_values_pool)
+                args.as_slice(&self.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -1559,7 +1549,7 @@ impl SsaFunc {
             InstructionData::Call { func_id, args, .. } => s.push_str(&format!(
                 "call {} ({})",
                 func_id,
-                args.as_slice(&self.inst_values_pool)
+                args.as_slice(&self.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -1568,7 +1558,7 @@ impl SsaFunc {
             InstructionData::CallHook { hook_id, args } => s.push_str(&format!(
                 "call_hook {} ({})",
                 hook_id,
-                args.as_slice(&self.inst_values_pool)
+                args.as_slice(&self.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -1577,7 +1567,7 @@ impl SsaFunc {
             InstructionData::CallExt { func_id, args } => s.push_str(&format!(
                 "call_ext {} ({})",
                 func_id,
-                args.as_slice(&self.inst_values_pool)
+                args.as_slice(&self.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -1585,7 +1575,7 @@ impl SsaFunc {
             )),
             InstructionData::Return { args } => s.push_str(&format!(
                 "return {}",
-                args.as_slice(&self.inst_values_pool)
+                args.as_slice(&self.values_pool)
                     .iter()
                     .map(|v| self.fmt_value(*v))
                     .collect::<Vec<_>>()
@@ -1623,7 +1613,7 @@ impl SsaFunc {
 
     #[must_use]
     pub fn fmt_value(&self, val: Value) -> String {
-        let data = &self.dfg.values[val.index()];
+        let data = &self.dfg.values[val];
         format!("v{}:{:?}", val.index(), data.ty)
     }
 }
@@ -1657,10 +1647,12 @@ impl fmt::Display for SsaFunc {
                 if !visited.insert(block_id) {
                     continue;
                 }
+
                 self.fmt_block(f, block_id)?;
-                let block_data = &self.cfg.blocks[block_id.index()];
-                if let Some(last_inst_id) = block_data.insts.last() {
-                    let inst_data = &self.dfg.insts[last_inst_id.index()];
+
+                let block_data = &self.cfg.blocks[block_id];
+                if let Some(last_inst_id) = block_data.insts.as_slice(&self.cfg.block_insts_pool).last() {
+                    let inst_data = &self.dfg.insts[*last_inst_id];
                     match inst_data {
                         InstructionData::Jump { destination, .. } => worklist.push(*destination),
                         InstructionData::Branch { destinations, .. } => {
@@ -1672,6 +1664,7 @@ impl fmt::Display for SsaFunc {
                 }
             }
         }
+
         Ok(())
     }
 }
