@@ -1,13 +1,12 @@
-/// A minimal SSA-based intermediate representation.
 use crate::with_comment;
 
+use nohash_hasher::IntSet;
 use rok_entity::{sparse_pair, EntityList, EntityRef, ListPool, PrimaryMap, SecondaryMap, SparseMap};
 
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
-use rustc_hash::FxHashSet;
 use smallvec::{smallvec, SmallVec};
 
 rok_entity::entity_ref!(Value, "Value");
@@ -127,8 +126,6 @@ sparse_pair!{SparseBlockPred: Block => EntityList<Block>}
 pub struct ControlFlowGraph {
     pub blocks_pool: ListPool<Block>,
     pub block_insts_pool: ListPool<Inst>,
-
-    // TODO(#11): Make .blocks in ControlFlowGraph a PrimaryMap
     pub blocks: PrimaryMap<Block, BasicBlockData>,
     pub predecessors: SparseMap<Block, SparseBlockPred>,
 }
@@ -164,9 +161,9 @@ pub struct SsaFunc {
     pub dfg: DataFlowGraph,
     pub cfg: ControlFlowGraph,
     pub layout: Layout,
-    pub stack_slots: Vec<StackSlotData>,
+    pub stack_slots: PrimaryMap<StackSlot, StackSlotData>,
     pub values_pool: ListPool<Value>,
-    pub srclocs: PrimaryMap<Inst, SourceLoc>,
+    pub srclocs: SecondaryMap<Inst, SourceLoc>,
     pub comments: SecondaryMap<Inst, Box<str>>,
 }
 
@@ -183,9 +180,7 @@ impl SsaFunc {
 
     #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32, align: u16) -> StackSlot {
-        let id = StackSlot::from_u32(self.stack_slots.len() as _);
-        self.stack_slots.push(StackSlotData { ty, size: size as _, align });
-        id
+        self.stack_slots.push(StackSlotData { ty, size: size as _, align })
     }
 
     #[must_use]
@@ -215,11 +210,7 @@ impl SsaFunc {
     #[inline]
     #[must_use]
     pub fn inst_results(&self, inst: Inst) -> &[Value] {
-        if let Some(rs) = self.dfg.inst_results.get(inst) {
-            rs
-        } else {
-            &[]
-        }
+        self.dfg.inst_results.get(inst).map_or(&[], |s| s.value.as_slice())
     }
 
     #[inline]
@@ -246,7 +237,7 @@ impl SsaFunc {
 /// Maps logical entities (Inst, Block) to their container.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
-    pub inst_blocks: PrimaryMap<Inst, Block>,
+    pub inst_blocks: SecondaryMap<Inst, Block>,
     pub block_entry: Option<Block>,
 }
 
@@ -258,7 +249,7 @@ pub struct StackSlotData {
     pub align: u16,
 }
 
-//-////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
 // Instructions & Values
 //
 
@@ -287,6 +278,7 @@ pub enum InstructionData {
 }
 
 impl InstructionData {
+    #[inline]
     #[must_use]
     pub fn bits(&self, inst: Inst, context: &SsaFunc) -> u32 {
         let vbits = |v: Value| context.dfg.values[v].ty.bits();
@@ -318,8 +310,9 @@ impl InstructionData {
         }
     }
 
+    #[inline]
     #[must_use]
-    pub fn is_terminator(&self) -> bool {
+    pub const fn is_terminator(&self) -> bool {
         matches! {
             self,
             Self::Jump { .. }   |
@@ -393,20 +386,11 @@ pub enum ValueDef {
     Param { block: Block, param_idx: u8 },
 }
 
+#[derive(Default)]
 pub struct Module {
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFunc>,
     pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
-}
-
-impl Default for Module {
-    fn default() -> Self {
-        Self {
-            funcs: PrimaryMap::with_capacity(32),
-            ext_funcs: PrimaryMap::with_capacity(32),
-            global_values: PrimaryMap::with_capacity(32),
-        }
-    }
 }
 
 impl Module {
@@ -655,6 +639,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     #[inline(always)]
+    #[must_use] 
     pub fn srcloc(&self) -> SourceLoc {
         self.cursor.current_srcloc
     }
@@ -696,12 +681,14 @@ pub struct InstBuilder<'short, 'long> {
 
 impl<'long> Deref for InstBuilder<'_, 'long> {
     type Target = FunctionBuilder<'long>;
+    #[inline]
     fn deref(&self) -> &Self::Target {
         self.builder
     }
 }
 
 impl DerefMut for InstBuilder<'_, '_> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.builder
     }
@@ -717,8 +704,8 @@ impl InstBuilder<'_, '_> {
         let cfg = &mut self.builder.func.cfg;
         cfg.blocks[block].insts.push(inst, &mut cfg.block_insts_pool);
 
-        debug_assert_eq!(self.builder.func.srclocs.push(srcloc), inst);
-        debug_assert_eq!(self.builder.func.layout.inst_blocks.push(block), inst);
+        self.builder.func.srclocs.insert(inst, srcloc);
+        self.builder.func.layout.inst_blocks.insert(inst, block);
 
         inst
     }
@@ -1444,7 +1431,7 @@ impl InstBuilder<'_, '_> {
     }
 }
 
-//-////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
 // Analysis & Pretty Printing
 //
 
@@ -1518,7 +1505,7 @@ impl SsaFunc {
                 self.fmt_value(args[1])
             )),
             InstructionData::Unary { unop, arg } => {
-                s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg)))
+                s.push_str(&format!("{:?} {}", unop, self.fmt_value(*arg)));
             }
             InstructionData::IConst { value } => s.push_str(&format!("iconst {value}")),
             InstructionData::FConst { value } => s.push_str(&format!("fconst {value}")),
@@ -1584,7 +1571,7 @@ impl SsaFunc {
             InstructionData::StackAddr { slot } => s.push_str(&format!("stack_addr {slot}")),
             InstructionData::StackLoad { slot } => s.push_str(&format!("stack_load {slot}")),
             InstructionData::StackStore { slot, arg } => {
-                s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg)))
+                s.push_str(&format!("stack_store {}, {}", slot, self.fmt_value(*arg)));
             }
             InstructionData::LoadNoOffset { ty, addr } => s.push_str(&format!(
                 "load_no_offset {}:{:?}",
@@ -1637,11 +1624,14 @@ impl fmt::Display for SsaFunc {
                 .collect::<Vec<_>>()
                 .join(", ")
         )?;
-        for (i, slot) in self.stack_slots.iter().enumerate() {
-            writeln!(f, "  stack_slot{}: {:?}, size={}", i, slot.ty, slot.size)?;
+        for (slot_id, slot) in &self.stack_slots {
+            writeln!(f, "  stack_slot{}: {:?}, size={}", slot_id.as_u32(), slot.ty, slot.size)?;
         }
         if let Some(entry) = self.layout.block_entry {
-            let mut visited = FxHashSet::default();
+            let mut visited = IntSet::with_capacity_and_hasher(
+                self.cfg.blocks.len(),
+                nohash_hasher::BuildNoHashHasher::default()
+            );
             let mut worklist = vec![entry];
             while let Some(block_id) = worklist.pop() {
                 if !visited.insert(block_id) {

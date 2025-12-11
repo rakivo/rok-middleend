@@ -46,7 +46,7 @@ macro_rules! define_opcodes {
             pub fn generated_emit_inst(
                 &mut $context,
                 inst_id: Inst,
-                chunk: &mut BytecodeChunk
+                chunk: &mut BytecodeFunction
             ) {
                 use rok_entity::EntityRef;
 

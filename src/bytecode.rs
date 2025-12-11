@@ -1,11 +1,19 @@
-use crate::ssa::{
-    BinaryOp, DataId, Inst, InstructionData as IData, IntCC, SsaFunc, StackSlot, Type, UnaryOp,
-};
 use crate::util::{self, IntoBytes};
+use crate::ssa::{
+    BinaryOp,
+    DataId,
+    Inst,
+    InstructionData as IData,
+    IntCC,
+    SsaFunc,
+    StackSlot,
+    Type,
+    UnaryOp,
+};
 
-use std::mem;
+use core::mem;
 
-use rok_entity::SecondaryMap;
+use rok_entity::PrimaryMap;
 
 define_opcodes! {
     self,
@@ -791,7 +799,7 @@ impl Default for StackSlotAllocation {
 pub struct StackFrameInfo {
     pub regs_used: u32,
     pub total_size: u32,
-    pub slot_allocations: SecondaryMap<StackSlot, StackSlotAllocation>,
+    pub slot_allocations: PrimaryMap<StackSlot, StackSlotAllocation>,
 }
 
 impl Default for StackFrameInfo {
@@ -799,7 +807,7 @@ impl Default for StackFrameInfo {
         Self {
             regs_used: u32::MAX,
             total_size: u32::MAX,
-            slot_allocations: SecondaryMap::default()
+            slot_allocations: PrimaryMap::default()
         }
     }
 }
@@ -812,16 +820,14 @@ impl StackFrameInfo {
         let mut curr_offset = 0u32; // start at FP+0
 
         // Allocate stack slots (growing upward)
-        for (slot_idx, slot_data) in func.stack_slots.iter().enumerate() {
-            let slot = StackSlot::from_u32(slot_idx as _);
+        for (_, slot_data) in &func.stack_slots {
             let align = slot_data.ty.align_bytes();
 
             // Align current offset upward
             curr_offset = util::align_up(curr_offset, align);
 
             let size = slot_data.size;
-            frame_info.slot_allocations.insert(
-                slot,
+            frame_info.slot_allocations.push(
                 StackSlotAllocation {
                     size,
                     offset: curr_offset,
@@ -829,11 +835,10 @@ impl StackFrameInfo {
                 },
             );
 
-            // Move current offset past this slot
             curr_offset += size as u32;
         }
 
-        // Total frame size (still aligned to 16 bytes for ABI)
+        // Total frame size (still aligned to 16 bytes for ABI..?)
         frame_info.total_size = util::align_up(curr_offset, 16);
 
         frame_info.regs_used = func.dfg.values.len() as _;
@@ -842,14 +847,13 @@ impl StackFrameInfo {
     }
 }
 
-/// A chunk of bytecode for a single function.
 #[derive(Debug, Clone, Default)]
-pub struct BytecodeChunk {
+pub struct BytecodeFunction {
     pub code: Vec<u8>,
     pub frame_info: StackFrameInfo,
 }
 
-impl BytecodeChunk {
+impl BytecodeFunction {
     #[inline(always)]
     pub fn append<'a>(&mut self, x: impl IntoBytes<'a>) {
         self.code.extend_from_slice(&x.into_bytes());

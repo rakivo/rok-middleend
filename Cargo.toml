@@ -15,8 +15,6 @@ exclude = ["assets/*", "README.md"]
 rok_entity = { path = "../rok_entity" }
 
 cfg-if.workspace = true
-indexmap.workspace = true
 nohash-hasher.workspace = true
 smallvec.workspace = true
-rustc-hash.workspace = true
 paste.workspace = true

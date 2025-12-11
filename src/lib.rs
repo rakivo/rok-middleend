@@ -1,5 +1,6 @@
 #![warn(clippy::all, clippy::pedantic, dead_code)]
 #![allow(
+    clippy::default_trait_access,
     clippy::wildcard_imports,
     clippy::missing_transmute_annotations,
     clippy::items_after_statements,

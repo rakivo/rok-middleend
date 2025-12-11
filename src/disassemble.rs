@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
-use crate::lower::LoweredSsaFunc;
+use crate::{lower::LoweredSsaFunc, ssa::SsaFunc};
 #[cfg(debug_assertions)]
 use crate::lower::Pc;
 use crate::{bytecode::Opcode, ssa::SourceLoc};
@@ -348,7 +348,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             } else {
                 let moves_str = moves
                     .iter()
-                    .map(|(arg, param)| format!("r{} -> r{}", arg, param))
+                    .map(|(arg, param)| format!("r{arg} -> r{param}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "{:<16} {:05X} ({})", "jump", offset, moves_str)
@@ -388,7 +388,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                     " ({})",
                     moves_true
                         .iter()
-                        .map(|(arg, param)| format!("r{} -> r{}", arg, param))
+                        .map(|(arg, param)| format!("r{arg} -> r{param}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -401,7 +401,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                     " ({})",
                     moves_false
                         .iter()
-                        .map(|(arg, param)| format!("r{} -> r{}", arg, param))
+                        .map(|(arg, param)| format!("r{arg} -> r{param}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -427,7 +427,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             } else {
                 let args_str = args
                     .iter()
-                    .map(|a| format!("r{}", a))
+                    .map(|a| format!("r{a}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "{:<16} {}", "return", args_str)
@@ -456,7 +456,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                 format!(
                     "({})",
                     args.iter()
-                        .map(|a| format!("r{}", a))
+                        .map(|a| format!("r{a}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -473,7 +473,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             } else {
                 let results_str = results
                     .iter()
-                    .map(|r| format!("r{}", r))
+                    .map(|r| format!("r{r}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(
@@ -501,7 +501,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                 format!(
                     "({})",
                     args.iter()
-                        .map(|a| format!("r{}", a))
+                        .map(|a| format!("r{a}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -540,7 +540,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                 format!(
                     "({})",
                     args.iter()
-                        .map(|a| format!("r{}", a))
+                        .map(|a| format!("r{a}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -557,7 +557,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             } else {
                 let results_str = results
                     .iter()
-                    .map(|r| format!("r{}", r))
+                    .map(|r| format!("r{r}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(
@@ -877,6 +877,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
 #[must_use]
 pub fn disassemble(
     bytecode: &[u8],
+    _ssa: Option<&SsaFunc>,
     _lowered: Option<&LoweredSsaFunc>,
     _srcloc_formatter: Option<impl Fn(SourceLoc) -> Option<String>>,
 ) -> String {
@@ -885,24 +886,25 @@ pub fn disassemble(
     #[allow(unused_mut, unused)]
     let mut curr_block: Option<crate::ssa::Block> = None;
 
-    if let Some(lowered) = _lowered {
-        print!("function {}\n{:05X} ;", lowered.context.func.name, 0);
+    if let Some(ssa) = _ssa {
+        print!("function {}\n{:05X} ;", ssa.name, 0);
     }
 
     while reader.remaining() > 0 {
         let pc = reader.position();
-        let offset_str = format!("{:05X}", pc);
+        let offset_str = format!("{pc:05X}");
 
         // Print metadata if available
         #[cfg(debug_assertions)]
         if let Some(lowered) = _lowered
         && let Some(crate::lower::LoInstMeta { inst, .. }) =
-                lowered.context.inst_meta.get(Pc::from_u32(pc as _))
+                lowered.inst_meta.get(Pc::from_u32(pc as _))
+        && let Some(ssa) = _ssa
         {
             use rok_entity::EntityRef;
 
             // Look up the block this instruction belongs to
-            if let Some(&block) = lowered.context.func.layout.inst_blocks.get(*inst)
+            if let Some(&block) = ssa.layout.inst_blocks.get(*inst)
                 && Some(block) != curr_block
             {
                 curr_block = Some(block);
@@ -917,17 +919,17 @@ pub fn disassemble(
             output.push('\n');
 
             if let Some(srcloc_formatter) = &_srcloc_formatter {
-                let srcloc = lowered.context.func.srclocs[*inst];
+                let srcloc = ssa.srclocs[*inst];
                 if let Some(snippet) = srcloc_formatter(srcloc) {
                     for line in snippet.lines() {
-                        _ = writeln!(&mut output, "{} ; {}", offset_str, line);
+                        _ = writeln!(&mut output, "{offset_str} ; {line}");
                     }
                 }
                 _ = writeln!(&mut output, "{offset_str} ;");
             }
         }
 
-        _ = write!(&mut output, "{}   ", offset_str);
+        _ = write!(&mut output, "{offset_str}   ");
 
         if print_instruction(&mut reader, &mut output).is_err() {
             output.push_str("<error>");
