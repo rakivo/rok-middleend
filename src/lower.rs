@@ -36,8 +36,8 @@ impl SparseMapValue<Pc> for LoInstMeta {
 
 pub struct JumpPlaceholder {
     offset: u32,
-    arg_count: u8,
-    dst: Block
+    dst: Block,
+    instruction_end: u32
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -107,13 +107,14 @@ impl<'a> LoweringContext<'a> {
     pub fn append_jump_placeholder<T>(
         &mut self,
         chunk: &mut BytecodeFunction,
-        arg_count: u8,
         dst: Block,
     ) {
         let offset = chunk.code.len() as u32;
         chunk.append_placeholder::<T>();
         self.jump_placeholders.push(JumpPlaceholder {
-            offset, arg_count, dst
+            offset,
+            dst,
+            instruction_end: offset
         });
     }
 
@@ -139,15 +140,14 @@ impl<'a> LoweringContext<'a> {
         args: &EntityList<Value>,
     ) {
         let params = &self.func.cfg.blocks[target].params;
-
         let args_len = args.len(&self.func.values_pool);
-
         debug_assert_eq!(params.len(&self.func.values_pool), args_len);
         debug_assert!(args_len <= 255, "Too many arguments (max 255)");
 
-        self.append_jump_placeholder::<i16>(chunk, args_len as _, target);
-        chunk.append(args_len as u8);
+        let offset_pos = chunk.code.len() as u32;
+        chunk.append(0xDED_i16); // placeholder
 
+        chunk.append(args_len as u8);
         for (&param, &arg) in args
             .as_slice(&self.func.values_pool)
             .iter()
@@ -156,6 +156,58 @@ impl<'a> LoweringContext<'a> {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
         }
+
+        let instruction_end = chunk.code.len() as u32;
+
+        self.jump_placeholders.push(JumpPlaceholder {
+            offset: offset_pos,
+            dst: target,
+            instruction_end,
+        });
+    }
+
+    #[inline]
+    pub fn brif_with_args(
+        &mut self,
+        chunk: &mut BytecodeFunction,
+        then: Block,
+        els: Block,
+        args: &EntityList<Value>,
+    ) {
+        let args_len = args.len(&self.func.values_pool);
+        debug_assert!(args_len <= 255, "Too many arguments (max 255)");
+
+        let then_offset_pos = chunk.code.len() as u32;
+        chunk.append(0xDED_i16); // then placeholder
+
+        let els_offset_pos = chunk.code.len() as u32;
+        chunk.append(0xDED_i16); // else placeholder
+
+        chunk.append(args_len as u8);
+
+        let params = &self.func.cfg.blocks[then].params;
+        for (&param, &arg) in args
+            .as_slice(&self.func.values_pool)
+            .iter()
+            .zip(params.as_slice(&self.func.values_pool))
+        {
+            chunk.append(arg.as_u32());
+            chunk.append(param.as_u32());
+        }
+
+        let instruction_end = chunk.code.len() as u32;
+
+        self.jump_placeholders.push(JumpPlaceholder {
+            offset: then_offset_pos,
+            dst: then,
+            instruction_end,
+        });
+
+        self.jump_placeholders.push(JumpPlaceholder {
+            offset: els_offset_pos,
+            dst: els,
+            instruction_end,
+        });
     }
 
     #[inline(always)]
@@ -270,20 +322,15 @@ impl<'a> LoweringContext<'a> {
 
     #[inline]
     fn patch_jumps(&mut self, chunk: &mut BytecodeFunction) {
-        for JumpPlaceholder { offset, arg_count, dst } in &self.jump_placeholders {
+        for JumpPlaceholder { offset, instruction_end, dst, .. } in &self.jump_placeholders {
             let target_offset = self.block_offsets[*dst];
 
-            // The jump offset is relative to the position *after* the jump instruction.
-            let opcode_size = 1 +
-                // dst_u32 + src_u32
-                (2 * *arg_count as usize * core::mem::size_of::<u32>());
+            // The offset is relative to the end of the entire instruction
+            // (after all the parallel moves)
+            let jump_offset = target_offset as i32 - *instruction_end as i32;
 
-            let opcode_size = opcode_size as i16;
-            let offset_size = core::mem::size_of::<i16>() as i16;
-            let jump_offset = target_offset as i16 - (*offset as i16 + offset_size + opcode_size);
-
-            let bytes = jump_offset.to_le_bytes();
-            chunk.code[*offset as usize] = bytes[0];
+            let bytes = (jump_offset as i16).to_le_bytes();
+            chunk.code[*offset as usize + 0] = bytes[0];
             chunk.code[*offset as usize + 1] = bytes[1];
         }
     }

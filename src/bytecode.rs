@@ -356,11 +356,7 @@ define_opcodes! {
         let cond_reg = *arg;
         chunk.append(Opcode::BranchIf16);
         chunk.append(cond_reg.as_u32());
-        self.jump_with_args(chunk, t, args);
-
-        // Unconditional jump for the false branch
-        chunk.append(Opcode::Jump16);
-        self.jump_with_args(chunk, e, args);
+        self.brif_with_args(chunk, t, e, args);
     },
 
     Return() = 28,

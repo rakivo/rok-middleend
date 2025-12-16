@@ -358,6 +358,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
         Opcode::BranchIf16 => {
             let cond = reader.read_u32();
             let true_offset = reader.read_i16();
+            let else_offset = reader.read_i16();
 
             // jump_with_args for true branch
             let num_args_true = reader.read_u8();
@@ -368,20 +369,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                 moves_true.push((arg, param));
             }
 
-            let _jump_opcode = reader.read_u8();
-
-            let false_offset = reader.read_i16();
-
-            // jump_with_args for false branch
-            let num_args_false = reader.read_u8();
-            let mut moves_false = Vec::new();
-            for _ in 0..num_args_false {
-                let arg = reader.read_u32();
-                let param = reader.read_u32();
-                moves_false.push((arg, param));
-            }
-
-            let true_moves_str = if moves_true.is_empty() {
+            let moves_str = if moves_true.is_empty() {
                 String::new()
             } else {
                 format!(
@@ -394,23 +382,10 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
                 )
             };
 
-            let false_moves_str = if moves_false.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " ({})",
-                    moves_false
-                        .iter()
-                        .map(|(arg, param)| format!("r{arg} -> r{param}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            };
-
             write!(
                 f,
-                "{:<16} r{}, true:{:05X}{}, false:{:05X}{}",
-                "branchif", cond, true_offset, true_moves_str, false_offset, false_moves_str
+                "{:<16} r{}, then:{:05X}, else:{:05X}{}",
+                "branchif", cond, true_offset, else_offset, moves_str
             )
         }
 
