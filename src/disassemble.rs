@@ -237,6 +237,12 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "iadd", dst, a, b)
         }
+        Opcode::IMod => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "imod", dst, a, b)
+        }
         Opcode::ISub => {
             let dst = reader.read_u32();
             let a = reader.read_u32();

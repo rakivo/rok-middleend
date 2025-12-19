@@ -189,6 +189,16 @@ define_opcodes! {
         chunk.append(b.as_u32());
     },
 
+    IMod(dst: u32, a: u32, b: u32)             = 21,
+    @ IData::Binary { binop: BinaryOp::IMod, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::IMod);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
 
     IEq(dst: u32, a: u32, b: u32)            = 96,
     @ IData::Icmp { code: IntCC::Equal, args } => |results, chunk| {

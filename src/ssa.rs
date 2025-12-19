@@ -344,6 +344,7 @@ pub enum BinaryOp {
     IMul,
     IDiv,
     And,
+    IMod,
     Or,
     Xor,
     Ushr,
@@ -761,6 +762,18 @@ impl InstBuilder<'_, '_> {
             let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary {
                 binop: BinaryOp::IAdd, args: [lhs, rhs]
+            });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        imod_with_comment,
+        #[inline]
+        pub fn imod(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs].ty;
+            let inst = self.insert_inst(InstructionData::Binary {
+                binop: BinaryOp::IMod, args: [lhs, rhs]
             });
             self.make_inst_result(inst, ty, 0)
         }
