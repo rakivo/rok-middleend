@@ -852,7 +852,7 @@ impl InstBuilder<'_, '_> {
         icmp_with_comment,
         #[inline]
         pub fn icmp(&mut self, code: IntCC, lhs: Value, rhs: Value) -> Value {
-            let ty = Type::I64; // Result of comparison is a boolean, but we use i64 for now
+            let ty = Type::U8;
             let inst = self.insert_inst(InstructionData::Icmp { code, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
