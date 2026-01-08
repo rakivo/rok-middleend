@@ -2,6 +2,7 @@ use crate::util::{self, IntoBytes};
 use crate::ssa::{
     BinaryOp,
     DataId,
+    FloatCC,
     Inst,
     InstructionData as IData,
     IntCC,
@@ -310,6 +311,72 @@ define_opcodes! {
         chunk.append(b.as_u32());
     },
 
+    FEq(dst: u32, a: u32, b: u32)            = 106,
+    @ IData::Fcmp { code: FloatCC::Equal, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FEq);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    FNe(dst: u32, a: u32, b: u32)            = 107,
+    @ IData::Fcmp { code: FloatCC::NotEqual, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FNe);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    FGt(dst: u32, a: u32, b: u32)            = 108,
+    @ IData::Fcmp { code: FloatCC::GreaterThan, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FGt);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    FGe(dst: u32, a: u32, b: u32)            = 109,
+    @ IData::Fcmp { code: FloatCC::GreaterThanOrEqual, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FGe);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    FLt(dst: u32, a: u32, b: u32)            = 110,
+    @ IData::Fcmp { code: FloatCC::LessThan, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FLt);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    FLe(dst: u32, a: u32, b: u32)            = 111,
+    @ IData::Fcmp { code: FloatCC::LessThanOrEqual, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FLe);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
     FAdd(dst: u32, a: u32, b: u32)          = 22,
     @ IData::Binary { binop: BinaryOp::FAdd, args } => |results, chunk| {
         let dst = results.unwrap()[0];
@@ -346,6 +413,17 @@ define_opcodes! {
         let a = args[0];
         let b = args[1];
         chunk.append(Opcode::FDiv);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    FMod(dst: u32, a: u32, b: u32)          = 112,
+    @ IData::Binary { binop: BinaryOp::FMod, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::FMod);
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
@@ -740,6 +818,19 @@ impl Opcode {
 
     #[inline]
     #[must_use]
+    pub const fn from_float_cc(cc: FloatCC) -> Option<Self> {
+        Some(match cc {
+            FloatCC::Equal => Opcode::FEq,
+            FloatCC::NotEqual => Opcode::FNe,
+            FloatCC::GreaterThan => Opcode::FGt,
+            FloatCC::GreaterThanOrEqual => Opcode::FGe,
+            FloatCC::LessThan => Opcode::FLt,
+            FloatCC::LessThanOrEqual => Opcode::FLe,
+        })
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn from_binary(op: BinaryOp) -> Option<Self> {
         Some(match op {
             BinaryOp::IAdd => Opcode::IAdd,
@@ -753,7 +844,12 @@ impl Opcode {
             BinaryOp::Ishl => Opcode::Ishl,
             BinaryOp::Band => Opcode::Band,
             BinaryOp::Bor => Opcode::Bor,
-            _ => return None,
+            BinaryOp::IMod => Opcode::IMod,
+            BinaryOp::FAdd => Opcode::FAdd,
+            BinaryOp::FSub => Opcode::FSub,
+            BinaryOp::FMul => Opcode::FMul,
+            BinaryOp::FDiv => Opcode::FDiv,
+            BinaryOp::FMod => Opcode::FMod,
         })
     }
 

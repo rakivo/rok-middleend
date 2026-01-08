@@ -48,6 +48,52 @@ impl Type {
     }
 
     #[must_use]
+    #[track_caller]
+    #[inline(always)]
+    pub const fn int_custom_width_in_bytes(bytes: u32, signed: bool) -> Self {
+        match (bytes, signed) {
+            (1,  true) => Self::I8,
+            (1, false) => Self::U8,
+
+            (2,  true) => Self::I16,
+            (2, false) => Self::U16,
+
+            (4,  true) => Self::I32,
+            (4, false) => Self::U32,
+
+            (8,  true) => Self::I64,
+            (8, false) => Self::U64,
+
+            _ => unreachable!()
+        }
+    }
+
+    #[must_use]
+    #[track_caller]
+    #[inline(always)]
+    pub const fn int_custom_width_in_bits(bits: u32, signed: bool) -> Self {
+        Self::int_custom_width_in_bytes(bits / 8, signed)
+    }
+
+    #[must_use]
+    #[track_caller]
+    #[inline(always)]
+    pub const fn float_custom_width_in_bytes(bytes: u32) -> Self {
+        match bytes {
+            4 => Self::F32,
+            8 => Self::F64,
+            _ => unreachable!()
+        }
+    }
+
+    #[must_use]
+    #[track_caller]
+    #[inline(always)]
+    pub const fn float_custom_width_in_bits(bits: u32) -> Self {
+        Self::float_custom_width_in_bytes(bits / 8)
+    }
+
+    #[must_use]
     #[inline(always)]
     pub const fn align_bytes(self) -> u32 {
         self.bytes()
@@ -69,6 +115,25 @@ impl Type {
 
             other => other,
         }
+    }
+
+    #[must_use]
+    #[inline(always)]
+    pub const fn is_signed(self) -> bool {
+        use Type::*;
+
+        match self {
+            U8 | U16 | U32 | U64 => false,
+            I8 | I16 | I32 | I64 => true,
+            F32 | F64 => true,
+            Ptr => false,
+        }
+    }
+
+    #[must_use]
+    #[inline(always)]
+    pub const fn is_unsigned(self) -> bool {
+        !self.is_signed()
     }
 }
 
@@ -259,6 +324,7 @@ pub enum InstructionData {
     Binary { binop: BinaryOp, args: [Value; 2] },
     Unary { unop: UnaryOp, arg: Value },
     Icmp { code: IntCC, args: [Value; 2] },
+    Fcmp { code: FloatCC, args: [Value; 2] },
     IConst { value: i64 },
     FConst { value: f64 },
     Jump { destination: Block, args: EntityList<Value> },
@@ -290,6 +356,7 @@ impl InstructionData {
         match self {
             Self::Binary { args, .. } => vbits(args[0]),
             Self::Icmp { args, .. } => vbits(args[0]),
+            Self::Fcmp { args, .. } => vbits(args[0]),
             Self::Unary { arg, .. } => vbits(*arg),
             Self::IConst { .. } => rbits(0),
             Self::FConst { .. } => rbits(0),
@@ -338,6 +405,16 @@ pub enum IntCC {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum FloatCC {
+    Equal,
+    NotEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
     IAdd,
     ISub,
@@ -355,6 +432,7 @@ pub enum BinaryOp {
     FSub,
     FMul,
     FDiv,
+    FMod,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -858,6 +936,16 @@ impl InstBuilder<'_, '_> {
         }
     }
 
+    with_comment! {
+        fcmp_with_comment,
+        #[inline]
+        pub fn fcmp(&mut self, code: FloatCC, lhs: Value, rhs: Value) -> Value {
+            let ty = Type::U8;
+            let inst = self.insert_inst(InstructionData::Fcmp { code, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
     #[inline]
     pub fn iadd_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
@@ -912,6 +1000,13 @@ impl InstBuilder<'_, '_> {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.icmp(code, lhs, rhs)
+    }
+
+    #[inline]
+    pub fn fcmp_imm(&mut self, code: FloatCC, lhs: Value, rhs: f64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.fconst(ty, rhs);
+        self.fcmp(code, lhs, rhs)
     }
 
     with_comment! {
@@ -1158,6 +1253,23 @@ impl InstBuilder<'_, '_> {
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
+    }
+
+    with_comment! {
+        fmod_with_comment,
+        #[inline]
+        pub fn fmod(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMod, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    #[inline]
+    pub fn fmod_imm(&mut self, lhs: Value, rhs: f64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.fconst(ty, rhs);
+        self.fmod(lhs, rhs)
     }
 
     with_comment! {
@@ -1513,6 +1625,12 @@ impl SsaFunc {
             )),
             InstructionData::Icmp { code, args } => s.push_str(&format!(
                 "icmp_{:?} {}, {}",
+                code,
+                self.fmt_value(args[0]),
+                self.fmt_value(args[1])
+            )),
+            InstructionData::Fcmp { code, args } => s.push_str(&format!(
+                "fcmp_{:?} {}, {}",
                 code,
                 self.fmt_value(args[0]),
                 self.fmt_value(args[1])

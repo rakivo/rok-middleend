@@ -123,6 +123,7 @@ impl Opcode {
             23 => Some(Opcode::FSub),
             24 => Some(Opcode::FMul),
             25 => Some(Opcode::FDiv),
+            112 => Some(Opcode::FMod),
             26 => Some(Opcode::Jump16),
             27 => Some(Opcode::BranchIf16),
             28 => Some(Opcode::Return),
@@ -174,6 +175,12 @@ impl Opcode {
             103 => Some(Opcode::IUGe),
             104 => Some(Opcode::IULt),
             105 => Some(Opcode::IULe),
+            106 => Some(Opcode::FEq),
+            107 => Some(Opcode::FNe),
+            108 => Some(Opcode::FGt),
+            109 => Some(Opcode::FGe),
+            110 => Some(Opcode::FLt),
+            111 => Some(Opcode::FLe),
             128 => Some(Opcode::Nop),
             135 => Some(Opcode::CallHook),
             136 => Some(Opcode::CallExt),
@@ -334,6 +341,12 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let a = reader.read_u32();
             let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "fdiv", dst, a, b)
+        }
+        Opcode::FMod => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fmod", dst, a, b)
         }
 
         // Control Flow
@@ -824,6 +837,44 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let a = reader.read_u32();
             let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "icmp.ule", dst, a, b)
+        }
+
+        // Floating point comparisons
+        Opcode::FEq => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fcmp.eq", dst, a, b)
+        }
+        Opcode::FNe => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fcmp.ne", dst, a, b)
+        }
+        Opcode::FGt => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fcmp.gt", dst, a, b)
+        }
+        Opcode::FGe => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fcmp.ge", dst, a, b)
+        }
+        Opcode::FLt => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fcmp.lt", dst, a, b)
+        }
+        Opcode::FLe => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "fcmp.le", dst, a, b)
         }
 
         // Float-Int Conversions
