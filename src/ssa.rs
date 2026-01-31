@@ -331,6 +331,7 @@ pub enum InstructionData {
     Branch { destinations: [Block; 2], args: EntityList<Value>, arg: Value },
     Call { func_id: FuncId, args: EntityList<Value> },
     CallExt { func_id: ExtFuncId, args: EntityList<Value> },
+    CallIndirect { callee: Value, args: EntityList<Value> },
     Return { args: EntityList<Value> },
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
@@ -371,6 +372,7 @@ impl InstructionData {
             Self::Branch { .. } => 32,
             Self::Call { .. } => 32,
             Self::CallExt { .. } => 32,
+            Self::CallIndirect { .. } => 32,
             Self::Return { .. } => 32,
 
             Self::CallHook { .. } | Self::Unreachable | Self::Nop => 0,
@@ -1477,6 +1479,30 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
+        call_indirect_with_comment,
+        #[inline]
+        pub fn call_indirect(
+            &mut self,
+            result_tys: &[Type],
+            callee: Value,
+            args: &[Value],
+        ) -> Inst {
+            let args = EntityList::from_slice(
+                args,
+                &mut self.func.values_pool
+            );
+            let inst = self.insert_inst(InstructionData::CallIndirect {
+                callee,
+                args
+            });
+            for (i, ty) in result_tys.iter().enumerate() {
+                self.make_inst_result(inst, *ty, i as _);
+            }
+            inst
+        }
+    }
+
+    with_comment! {
         call_memcpy_with_comment,
         #[inline]
         pub fn call_memcpy(
@@ -1685,6 +1711,15 @@ impl SsaFunc {
             InstructionData::CallExt { func_id, args } => s.push_str(&format!(
                 "call_ext {} ({})",
                 func_id,
+                args.as_slice(&self.values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::CallIndirect { callee, args } => s.push_str(&format!(
+                "call_indirect {} ({})",
+                self.fmt_value(*callee),
                 args.as_slice(&self.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))

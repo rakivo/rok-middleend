@@ -499,6 +499,21 @@ define_opcodes! {
         self.append_args(chunk, args);
     },
 
+    CallIndirect(callee: u32) = 137,
+    @ IData::CallIndirect { callee, args } => |results, chunk, inst_id| {
+        chunk.append(Opcode::CallIndirect);
+        if let Some(results) = results {
+            chunk.append(results.len() as u8);
+            for result in results.iter() {
+                chunk.append(result.as_u32());
+            }
+        } else {
+            chunk.append(0u8);
+        }
+        chunk.append(callee.as_u32());
+        self.append_args(chunk, args);
+    },
+
     Ireduce(dst: u32, src: u32, bits: u32) = 30,
     @ IData::Unary { unop: UnaryOp::Ireduce, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0]].ty;

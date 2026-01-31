@@ -184,6 +184,7 @@ impl Opcode {
             128 => Some(Opcode::Nop),
             135 => Some(Opcode::CallHook),
             136 => Some(Opcode::CallExt),
+            137 => Some(Opcode::CallIndirect),
             200 => Some(Opcode::FDemote),
             201 => Some(Opcode::FloatToSInt),
             202 => Some(Opcode::FloatToUInt),
@@ -897,6 +898,54 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let dst = reader.read_u32();
             let src = reader.read_u32();
             write!(f, "{:<16} r{}, r{}", "fcvt.from.ui", dst, src)
+        }
+
+        Opcode::CallIndirect => {
+            let num_results = reader.read_u8();
+            let mut results = Vec::new();
+            for _ in 0..num_results {
+                results.push(reader.read_u32());
+            }
+            let callee = reader.read_u32();
+
+            let num_args = reader.read_u8();
+            let mut args = Vec::new();
+            for _ in 0..num_args {
+                args.push(reader.read_u32());
+            }
+
+            let args_str = if args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "({})",
+                    args.iter()
+                        .map(|a| format!("r{a}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+
+            if results.is_empty() {
+                write!(f, "{:<16} r{}{}", "call.indirect", callee, args_str)
+            } else if results.len() == 1 {
+                write!(
+                    f,
+                    "{:<16} r{} = r{}{}",
+                    "call.indirect", results[0], callee, args_str
+                )
+            } else {
+                let results_str = results
+                    .iter()
+                    .map(|r| format!("r{r}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    f,
+                    "{:<16} ({}) = r{}{}",
+                    "call.indirect", results_str, callee, args_str
+                )
+            }
         }
 
         // Special Instructions
