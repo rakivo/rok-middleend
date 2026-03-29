@@ -491,7 +491,7 @@ impl Module {
         self.funcs.push(SsaFunc {
             name: name.as_ref().into(),
             signature,
-            is_external: false,
+            is_external: true,
             ..Default::default()
         })
     }
@@ -637,11 +637,11 @@ pub struct GlobalValueData {
 
 pub struct FunctionBuilder<'a> {
     pub func: &'a mut SsaFunc,
-    cursor: Cursor,
+    pub cursor: Cursor,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Cursor {
+pub struct Cursor {
     current_block: Block,
     current_srcloc: SourceLoc,
 }
@@ -720,7 +720,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn srcloc(&self) -> SourceLoc {
         self.cursor.current_srcloc
     }
