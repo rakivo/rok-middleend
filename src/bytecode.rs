@@ -311,122 +311,170 @@ define_opcodes! {
         chunk.append(b.as_u32());
     },
 
-    FEq(dst: u32, a: u32, b: u32)            = 106,
-    @ IData::Fcmp { code: FloatCC::Equal, args } => |results, chunk| {
+
+    FAdd32(dst: u32, a: u32, b: u32)     = 22,
+    @ IData::Binary { binop: BinaryOp::FAdd, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FEq);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FAdd32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FAdd64(dst: u32, a: u32, b: u32)     = 232,
+    @ IData::Binary { binop: BinaryOp::FAdd, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FAdd64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FNe(dst: u32, a: u32, b: u32)            = 107,
-    @ IData::Fcmp { code: FloatCC::NotEqual, args } => |results, chunk| {
+    FSub32(dst: u32, a: u32, b: u32)     = 23,
+    @ IData::Binary { binop: BinaryOp::FSub, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FNe);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FSub32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FSub64(dst: u32, a: u32, b: u32)     = 231,
+    @ IData::Binary { binop: BinaryOp::FSub, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FSub64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FGt(dst: u32, a: u32, b: u32)            = 108,
-    @ IData::Fcmp { code: FloatCC::GreaterThan, args } => |results, chunk| {
+    FMul32(dst: u32, a: u32, b: u32)     = 24,
+    @ IData::Binary { binop: BinaryOp::FMul, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FGt);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FMul32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FMul64(dst: u32, a: u32, b: u32)     = 230,
+    @ IData::Binary { binop: BinaryOp::FMul, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FMul64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FGe(dst: u32, a: u32, b: u32)            = 109,
-    @ IData::Fcmp { code: FloatCC::GreaterThanOrEqual, args } => |results, chunk| {
+    FDiv32(dst: u32, a: u32, b: u32)     = 25,
+    @ IData::Binary { binop: BinaryOp::FDiv, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FGe);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FDiv32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FDiv64(dst: u32, a: u32, b: u32)     = 229,
+    @ IData::Binary { binop: BinaryOp::FDiv, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FDiv64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FLt(dst: u32, a: u32, b: u32)            = 110,
-    @ IData::Fcmp { code: FloatCC::LessThan, args } => |results, chunk| {
+    FMod32(dst: u32, a: u32, b: u32)     = 112,
+    @ IData::Binary { binop: BinaryOp::FMod, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FLt);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FMod32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FMod64(dst: u32, a: u32, b: u32)     = 228,
+    @ IData::Binary { binop: BinaryOp::FMod, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FMod64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FLe(dst: u32, a: u32, b: u32)            = 111,
-    @ IData::Fcmp { code: FloatCC::LessThanOrEqual, args } => |results, chunk| {
+    FEq32(dst: u32, a: u32, b: u32)      = 106,
+    @ IData::Fcmp { code: FloatCC::Equal, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FLe);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FEq32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FEq64(dst: u32, a: u32, b: u32)      = 227,
+    @ IData::Fcmp { code: FloatCC::Equal, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FEq64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FAdd(dst: u32, a: u32, b: u32)          = 22,
-    @ IData::Binary { binop: BinaryOp::FAdd, args } => |results, chunk| {
+    FNe32(dst: u32, a: u32, b: u32)      = 107,
+    @ IData::Fcmp { code: FloatCC::NotEqual, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FAdd);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FNe32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
-    FSub(dst: u32, a: u32, b: u32)          = 23,
-    @ IData::Binary { binop: BinaryOp::FSub, args } => |results, chunk| {
+    FNe64(dst: u32, a: u32, b: u32)      = 226,
+    @ IData::Fcmp { code: FloatCC::NotEqual, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FSub);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
-    },
-    FMul(dst: u32, a: u32, b: u32)          = 24,
-    @ IData::Binary { binop: BinaryOp::FMul, args } => |results, chunk| {
-        let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FMul);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
-    },
-    FDiv(dst: u32, a: u32, b: u32)          = 25,
-    @ IData::Binary { binop: BinaryOp::FDiv, args } => |results, chunk| {
-        let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FDiv);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FNe64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FMod(dst: u32, a: u32, b: u32)          = 112,
-    @ IData::Binary { binop: BinaryOp::FMod, args } => |results, chunk| {
+    FGt32(dst: u32, a: u32, b: u32)      = 108,
+    @ IData::Fcmp { code: FloatCC::GreaterThan, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
-        let a = args[0];
-        let b = args[1];
-        chunk.append(Opcode::FMod);
-        chunk.append(dst.as_u32());
-        chunk.append(a.as_u32());
-        chunk.append(b.as_u32());
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FGt32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FGt64(dst: u32, a: u32, b: u32)      = 233,
+    @ IData::Fcmp { code: FloatCC::GreaterThan, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FGt64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+
+    FGe32(dst: u32, a: u32, b: u32)      = 234,
+    @ IData::Fcmp { code: FloatCC::GreaterThanOrEqual, args } if bits == 32 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FGe32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FGe64(dst: u32, a: u32, b: u32)      = 235,
+    @ IData::Fcmp { code: FloatCC::GreaterThanOrEqual, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FGe64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+
+    FLt32(dst: u32, a: u32, b: u32)      = 236,
+    @ IData::Fcmp { code: FloatCC::LessThan, args } if bits == 32 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FLt32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FLt64(dst: u32, a: u32, b: u32)      = 237,
+    @ IData::Fcmp { code: FloatCC::LessThan, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FLt64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+
+    FLe32(dst: u32, a: u32, b: u32)      = 238,
+    @ IData::Fcmp { code: FloatCC::LessThanOrEqual, args } if bits == 32 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FLe32);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
+    },
+    FLe64(dst: u32, a: u32, b: u32)      = 239,
+    @ IData::Fcmp { code: FloatCC::LessThanOrEqual, args } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0]; let b = args[1];
+        chunk.append(Opcode::FLe64);
+        chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
     Jump16(offset: i16) = 26,
@@ -814,59 +862,6 @@ define_opcodes! {
 }
 
 impl Opcode {
-    #[inline]
-    #[must_use]
-    pub const fn from_int_cc(cc: IntCC) -> Option<Self> {
-        Some(match cc {
-            IntCC::Equal => Opcode::IEq,
-            IntCC::NotEqual => Opcode::INe,
-            IntCC::SignedGreaterThan => Opcode::ISGt,
-            IntCC::SignedGreaterThanOrEqual => Opcode::ISGe,
-            IntCC::SignedLessThan => Opcode::ISLt,
-            IntCC::SignedLessThanOrEqual => Opcode::ISLe,
-            IntCC::UnsignedGreaterThan => Opcode::IUGt,
-            IntCC::UnsignedGreaterThanOrEqual => Opcode::IUGe,
-            IntCC::UnsignedLessThan => Opcode::IULt,
-            IntCC::UnsignedLessThanOrEqual => Opcode::IULe,
-        })
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn from_float_cc(cc: FloatCC) -> Option<Self> {
-        Some(match cc {
-            FloatCC::Equal => Opcode::FEq,
-            FloatCC::NotEqual => Opcode::FNe,
-            FloatCC::GreaterThan => Opcode::FGt,
-            FloatCC::GreaterThanOrEqual => Opcode::FGe,
-            FloatCC::LessThan => Opcode::FLt,
-            FloatCC::LessThanOrEqual => Opcode::FLe,
-        })
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn from_binary(op: BinaryOp) -> Option<Self> {
-        Some(match op {
-            BinaryOp::IAdd => Opcode::IAdd,
-            BinaryOp::ISub => Opcode::ISub,
-            BinaryOp::IMul => Opcode::IMul,
-            BinaryOp::IDiv => Opcode::IDiv,
-            BinaryOp::And => Opcode::And,
-            BinaryOp::Or => Opcode::Or,
-            BinaryOp::Xor => Opcode::Xor,
-            BinaryOp::Ushr => Opcode::Ushr,
-            BinaryOp::Ishl => Opcode::Ishl,
-            BinaryOp::Band => Opcode::Band,
-            BinaryOp::Bor => Opcode::Bor,
-            BinaryOp::IMod => Opcode::IMod,
-            BinaryOp::FAdd => Opcode::FAdd,
-            BinaryOp::FSub => Opcode::FSub,
-            BinaryOp::FMul => Opcode::FMul,
-            BinaryOp::FDiv => Opcode::FDiv,
-            BinaryOp::FMod => Opcode::FMod,
-        })
-    }
 
     #[inline]
     #[must_use]

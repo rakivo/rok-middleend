@@ -17,7 +17,6 @@ rok_entity::entity_ref!(StackSlot, "StackSlot");
 rok_entity::entity_ref!(HookId, "HookId");
 rok_entity::entity_ref!(FuncId, "FuncId");
 rok_entity::entity_ref!(DataId, "DataId");
-rok_entity::entity_ref!(GlobalValue, "GlobalValue");
 rok_entity::entity_ref!(ExtFuncId, "ExternalFuncId");
 
 /// Represents a data type in the IR.
@@ -339,7 +338,6 @@ pub enum InstructionData {
     LoadNoOffset { ty: Type,  addr: Value },
     StoreNoOffset { args: [Value; 2] },
     DataAddr { data_id: DataId },
-    // GlobalValue { global_value: GlobalValue },
     Unreachable,
     Nop,
 }
@@ -471,7 +469,6 @@ pub enum ValueDef {
 pub struct Module {
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFunc>,
-    pub global_values: PrimaryMap<GlobalValue, GlobalValueData>,
 }
 
 impl Module {
@@ -494,11 +491,6 @@ impl Module {
             is_external: true,
             ..Default::default()
         })
-    }
-
-    #[inline(always)]
-    pub fn declare_global_value(&mut self, data: GlobalValueData) -> GlobalValue {
-        self.global_values.push(data)
     }
 
     #[track_caller]
@@ -625,13 +617,8 @@ impl Module {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct GlobalValueData {
-    pub name: Box<str>,
-    pub ty: Type,
-}
 
-//-////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
 // Function Builder
 //
 
@@ -1335,12 +1322,6 @@ impl InstBuilder<'_, '_> {
         }
     }
 
-    // #[inline]
-    // pub fn global_value(&mut self, ty: Type, global_value: GlobalValue) -> Value {
-    //     let inst = self.insert_inst(InstructionData::GlobalValue { global_value });
-    //     self.make_inst_result(inst, ty, 0)
-    // }
-
     with_comment! {
         jump_with_comment,
         #[inline]
@@ -1750,7 +1731,6 @@ impl SsaFunc {
                 self.fmt_value(args[1])
             )),
             InstructionData::DataAddr { data_id } => s.push_str(&format!("data_addr {data_id}")),
-            // InstructionData::GlobalValue { global_value } => write!(f, "global_value {}", global_value),
             InstructionData::Unreachable => s.push_str("unreachable"),
             InstructionData::Nop => s.push_str("nop"),
         }

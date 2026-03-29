@@ -71,6 +71,8 @@ macro_rules! define_opcodes {
 
                     IData::IConst { .. }        |
                     IData::FConst { .. }        |
+                    IData::Binary { .. }        |
+                    IData::Fcmp   { .. }        |
                     IData::LoadNoOffset { .. }  |
                     IData::StoreNoOffset { .. } |
                     IData::StackLoad { .. }     |
