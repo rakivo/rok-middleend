@@ -145,7 +145,7 @@ impl<'a> LoweringContext<'a> {
         debug_assert!(args_len <= 255, "Too many arguments (max 255)");
 
         let offset_pos = chunk.code.len() as u32;
-        chunk.append(0xDED_i16); // placeholder
+        chunk.append(0xDED_i32); // placeholder
 
         chunk.append(args_len as u8);
         for (&param, &arg) in args
@@ -178,10 +178,10 @@ impl<'a> LoweringContext<'a> {
         debug_assert!(args_len <= 255, "Too many arguments (max 255)");
 
         let then_offset_pos = chunk.code.len() as u32;
-        chunk.append(0xDED_i16); // then placeholder
+        chunk.append(0xDED_i32); // then placeholder
 
         let els_offset_pos = chunk.code.len() as u32;
-        chunk.append(0xDED_i16); // else placeholder
+        chunk.append(0xDED_i32); // else placeholder
 
         chunk.append(args_len as u8);
 
@@ -322,16 +322,15 @@ impl<'a> LoweringContext<'a> {
 
     #[inline]
     fn patch_jumps(&mut self, chunk: &mut BytecodeFunction) {
-        for JumpPlaceholder { offset, instruction_end, dst, .. } in &self.jump_placeholders {
+        for JumpPlaceholder { offset, instruction_end, dst } in &self.jump_placeholders {
             let target_offset = self.block_offsets[*dst];
 
             // The offset is relative to the end of the entire instruction
             // (after all the parallel moves)
             let jump_offset = target_offset as i32 - *instruction_end as i32;
 
-            let bytes = (jump_offset as i16).to_le_bytes();
-            chunk.code[*offset as usize + 0] = bytes[0];
-            chunk.code[*offset as usize + 1] = bytes[1];
+            let bytes = jump_offset.to_le_bytes();
+            chunk.code[*offset as usize..*offset as usize + 4].copy_from_slice(&bytes);
         }
     }
 }

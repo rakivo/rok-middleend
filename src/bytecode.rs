@@ -477,20 +477,20 @@ define_opcodes! {
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    Jump16(offset: i16) = 26,
+    Jump32(offset: i32) = 26,
     @ IData::Jump { destination, args, .. } => |_results, chunk| {
         let dest_block = &self.func.cfg.blocks[*destination];
 
-        chunk.append(Opcode::Jump16);
+        chunk.append(Opcode::Jump32);
         self.jump_with_args(chunk, *destination, args);
     },
 
-    BranchIf16(cond: u32, offset: i16) = 27,
+    BranchIf32(cond: u32, offset: i32) = 27,
     @ IData::Branch { arg, destinations, args, .. } => |_results, chunk| {
         let [t, e] = *destinations;
 
         let cond_reg = *arg;
-        chunk.append(Opcode::BranchIf16);
+        chunk.append(Opcode::BranchIf32);
         chunk.append(cond_reg.as_u32());
         self.brif_with_args(chunk, t, e, args);
     },

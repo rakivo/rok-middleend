@@ -139,8 +139,8 @@ impl Opcode {
             235 => Some(Opcode::FGe64),
             237 => Some(Opcode::FLt64),
             239 => Some(Opcode::FLe64),
-            26 => Some(Opcode::Jump16),
-            27 => Some(Opcode::BranchIf16),
+            26 => Some(Opcode::Jump32),
+            27 => Some(Opcode::BranchIf32),
             28 => Some(Opcode::Return),
             29 => Some(Opcode::Call),
             30 => Some(Opcode::Ireduce),
@@ -420,8 +420,8 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
         }
 
         // Control Flow
-        Opcode::Jump16 => {
-            let offset = reader.read_i16();
+        Opcode::Jump32 => {
+            let offset = reader.read_i32();
 
             // jump_with_args writes: count (u8) followed by pairs of (arg, param) as u32
             let num_args = reader.read_u8();
@@ -444,10 +444,10 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             }
         }
 
-        Opcode::BranchIf16 => {
+        Opcode::BranchIf32 => {
             let cond = reader.read_u32();
-            let true_offset = reader.read_i16();
-            let else_offset = reader.read_i16();
+            let true_offset = reader.read_i32();
+            let else_offset = reader.read_i32();
 
             // jump_with_args for true branch
             let num_args_true = reader.read_u8();
