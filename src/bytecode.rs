@@ -613,38 +613,73 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
     },
-    FloatToSInt(dst: u32, src: u32) = 201,
-    @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } => |results, chunk| {
+
+    FloatToSInt32(dst: u32, src: u32) = 201,
+    @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
-        chunk.append(Opcode::FloatToSInt);
+        chunk.append(Opcode::FloatToSInt32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
     },
-    FloatToUInt(dst: u32, src: u32) = 202,
-    @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } => |results, chunk| {
+    FloatToUInt32(dst: u32, src: u32) = 202,
+    @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
-        chunk.append(Opcode::FloatToUInt);
+        chunk.append(Opcode::FloatToUInt32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
     },
-    SIntToFloat(dst: u32, src: u32) = 203,
-    @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } => |results, chunk| {
+    SIntToFloat32(dst: u32, src: u32) = 203,
+    @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
-        chunk.append(Opcode::SIntToFloat);
+        chunk.append(Opcode::SIntToFloat32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
     },
-    UIntToFloat(dst: u32, src: u32) = 204,
-    @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } => |results, chunk| {
+    UIntToFloat32(dst: u32, src: u32) = 204,
+    @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
-        chunk.append(Opcode::UIntToFloat);
+        chunk.append(Opcode::UIntToFloat32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
     },
+
+    FloatToSInt64(dst: u32, src: u32) = 250,
+    @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FloatToSInt64);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
+    },
+    FloatToUInt64(dst: u32, src: u32) = 251,
+    @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FloatToUInt64);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
+    },
+    SIntToFloat64(dst: u32, src: u32) = 252,
+    @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::SIntToFloat64);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
+    },
+    UIntToFloat64(dst: u32, src: u32) = 253,
+    @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::UIntToFloat64);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
+    },
+
     FNeg(dst: u32, src: u32) = 69,
     @ IData::Unary { unop: UnaryOp::FNeg, arg } => |results, chunk| {
         let dst = results.unwrap()[0];

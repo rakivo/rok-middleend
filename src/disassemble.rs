@@ -195,10 +195,10 @@ impl Opcode {
             136 => Some(Opcode::CallExt),
             137 => Some(Opcode::CallIndirect),
             200 => Some(Opcode::FDemote),
-            201 => Some(Opcode::FloatToSInt),
-            202 => Some(Opcode::FloatToUInt),
-            203 => Some(Opcode::SIntToFloat),
-            204 => Some(Opcode::UIntToFloat),
+            201 => Some(Opcode::FloatToSInt32),
+            202 => Some(Opcode::FloatToUInt32),
+            203 => Some(Opcode::SIntToFloat32),
+            204 => Some(Opcode::UIntToFloat32),
             255 => Some(Opcode::Halt),
             _ => None,
         }
@@ -915,25 +915,47 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
         }
 
         // Float-Int Conversions
-        Opcode::FloatToSInt => {
+        Opcode::FloatToSInt32 => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}", "fcvt.to.si", dst, src)
+            write!(f, "{:<16} r{}, r{}", "f32.to.sint", dst, src)
         }
-        Opcode::FloatToUInt => {
+        Opcode::FloatToUInt32 => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}", "fcvt.to.ui", dst, src)
+            write!(f, "{:<16} r{}, r{}", "f32.to.uint", dst, src)
         }
-        Opcode::SIntToFloat => {
+        Opcode::SIntToFloat32 => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}", "fcvt.from.si", dst, src)
+            write!(f, "{:<16} r{}, r{}", "sint.to.f32", dst, src)
         }
-        Opcode::UIntToFloat => {
+        Opcode::UIntToFloat32 => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}", "fcvt.from.ui", dst, src)
+            write!(f, "{:<16} r{}, r{}", "uint.to.f32", dst, src)
+        }
+
+        // Float-Int Conversions
+        Opcode::FloatToSInt64 => {
+            let dst = reader.read_u32();
+            let src = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}", "f64.to.sint", dst, src)
+        }
+        Opcode::FloatToUInt64 => {
+            let dst = reader.read_u32();
+            let src = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}", "f64.to.uint", dst, src)
+        }
+        Opcode::SIntToFloat64 => {
+            let dst = reader.read_u32();
+            let src = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}", "sint.to.f64", dst, src)
+        }
+        Opcode::UIntToFloat64 => {
+            let dst = reader.read_u32();
+            let src = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}", "uint.to.f64", dst, src)
         }
 
         Opcode::CallIndirect => {
