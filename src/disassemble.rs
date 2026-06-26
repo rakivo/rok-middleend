@@ -108,20 +108,24 @@ impl Opcode {
             10 => Some(Opcode::IAdd),
             11 => Some(Opcode::ISub),
             12 => Some(Opcode::IMul),
-            13 => Some(Opcode::IDiv),
+            13 => Some(Opcode::SDiv),
+            252 => Some(Opcode::UDiv),
             14 => Some(Opcode::And),
             15 => Some(Opcode::Or),
             16 => Some(Opcode::Xor),
             17 => Some(Opcode::Ushr),
+            253 => Some(Opcode::Sshr),
             18 => Some(Opcode::Ishl),
             19 => Some(Opcode::Band),
             20 => Some(Opcode::Bor),
+            21 => Some(Opcode::SRem),
+            251 => Some(Opcode::URem),
             // from_u8 additions:
             22 => Some(Opcode::FAdd32),
             23 => Some(Opcode::FSub32),
             24 => Some(Opcode::FMul32),
             25 => Some(Opcode::FDiv32),
-            112 => Some(Opcode::FMod32),
+            112 => Some(Opcode::FRem32),
             106 => Some(Opcode::FEq32),
             107 => Some(Opcode::FNe32),
             108 => Some(Opcode::FGt32),
@@ -132,7 +136,7 @@ impl Opcode {
             231 => Some(Opcode::FSub64),
             230 => Some(Opcode::FMul64),
             229 => Some(Opcode::FDiv64),
-            228 => Some(Opcode::FMod64),
+            228 => Some(Opcode::FRem64),
             227 => Some(Opcode::FEq64),
             226 => Some(Opcode::FNe64),
             233 => Some(Opcode::FGt64),
@@ -254,11 +258,17 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "iadd", dst, a, b)
         }
-        Opcode::IMod => {
+        Opcode::SRem => {
             let dst = reader.read_u32();
             let a = reader.read_u32();
             let b = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}, r{}", "imod", dst, a, b)
+            write!(f, "{:<16} r{}, r{}, r{}", "srem", dst, a, b)
+        }
+        Opcode::URem => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "urem", dst, a, b)
         }
         Opcode::ISub => {
             let dst = reader.read_u32();
@@ -272,11 +282,17 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "imul", dst, a, b)
         }
-        Opcode::IDiv => {
+        Opcode::SDiv => {
             let dst = reader.read_u32();
             let a = reader.read_u32();
             let b = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}, r{}", "idiv", dst, a, b)
+            write!(f, "{:<16} r{}, r{}, r{}", "sdiv", dst, a, b)
+        }
+        Opcode::UDiv => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "udiv", dst, a, b)
         }
 
         // Logical Operations
@@ -305,6 +321,12 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let a = reader.read_u32();
             let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "ushr", dst, a, b)
+        }
+        Opcode::Sshr => {
+            let dst = reader.read_u32();
+            let a = reader.read_u32();
+            let b = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}, r{}", "sshr", dst, a, b)
         }
         Opcode::Ishl => {
             let dst = reader.read_u32();
@@ -360,13 +382,13 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let dst = reader.read_u32(); let a = reader.read_u32(); let b = reader.read_u32();
             write!(f, "{:<16} r{}, r{}, r{}", "fdiv.f64", dst, a, b)
         }
-        Opcode::FMod32 => {
+        Opcode::FRem32 => {
             let dst = reader.read_u32(); let a = reader.read_u32(); let b = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}, r{}", "fmod.f32", dst, a, b)
+            write!(f, "{:<16} r{}, r{}, r{}", "frem.f32", dst, a, b)
         }
-        Opcode::FMod64 => {
+        Opcode::FRem64 => {
             let dst = reader.read_u32(); let a = reader.read_u32(); let b = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}, r{}", "fmod.f64", dst, a, b)
+            write!(f, "{:<16} r{}, r{}, r{}", "frem.f64", dst, a, b)
         }
 
         // Disassembler - Float Comparisons

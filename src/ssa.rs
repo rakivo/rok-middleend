@@ -419,12 +419,15 @@ pub enum BinaryOp {
     IAdd,
     ISub,
     IMul,
-    IDiv,
+    SDiv,
+    UDiv,
+    SRem,
+    URem,
     And,
-    IMod,
     Or,
     Xor,
     Ushr,
+    Sshr,
     Ishl,
     Band,
     Bor,
@@ -432,7 +435,7 @@ pub enum BinaryOp {
     FSub,
     FMul,
     FDiv,
-    FMod,
+    FRem,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -835,15 +838,44 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
-        imod_with_comment,
+        srem_with_comment,
         #[inline]
-        pub fn imod(&mut self, lhs: Value, rhs: Value) -> Value {
+        pub fn srem(&mut self, lhs: Value, rhs: Value) -> Value {
             let ty = self.builder.func.dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary {
-                binop: BinaryOp::IMod, args: [lhs, rhs]
+                binop: BinaryOp::SRem, args: [lhs, rhs]
             });
             self.make_inst_result(inst, ty, 0)
         }
+    }
+
+    with_comment! {
+        urem_with_comment,
+        #[inline]
+        pub fn urem(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs].ty;
+            let inst = self.insert_inst(InstructionData::Binary {
+                binop: BinaryOp::URem, args: [lhs, rhs]
+            });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        frem_with_comment,
+        #[inline]
+        pub fn frem(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FRem, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    #[inline]
+    pub fn fmod_imm(&mut self, lhs: Value, rhs: f64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.fconst(ty, rhs);
+        self.frem(lhs, rhs)
     }
 
     with_comment! {
@@ -867,11 +899,21 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
-        idiv_with_comment,
+        sdiv_with_comment,
         #[inline]
-        pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
+        pub fn sdiv(&mut self, lhs: Value, rhs: Value) -> Value {
             let ty = self.builder.func.dfg.values[lhs].ty;
-            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IDiv, args: [lhs, rhs] });
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::SDiv, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
+        udiv_with_comment,
+        #[inline]
+        pub fn udiv(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::UDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
     }
@@ -957,10 +999,17 @@ impl InstBuilder<'_, '_> {
     }
 
     #[inline]
-    pub fn idiv_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+    pub fn sdiv_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
-        self.idiv(lhs, rhs)
+        self.sdiv(lhs, rhs)
+    }
+
+    #[inline]
+    pub fn udiv_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.udiv(lhs, rhs)
     }
 
     #[inline]
@@ -1009,6 +1058,16 @@ impl InstBuilder<'_, '_> {
     }
 
     with_comment! {
+        sshr_with_comment,
+        #[inline]
+        pub fn sshr(&mut self, lhs: Value, rhs: Value) -> Value {
+            let ty = self.builder.func.dfg.values[lhs].ty;
+            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Sshr, args: [lhs, rhs] });
+            self.make_inst_result(inst, ty, 0)
+        }
+    }
+
+    with_comment! {
         ishl_with_comment,
         #[inline]
         pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
@@ -1043,6 +1102,13 @@ impl InstBuilder<'_, '_> {
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.ushr(lhs, rhs)
+    }
+
+    #[inline]
+    pub fn sshr_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        let ty = self.builder.func.value_type(lhs);
+        let rhs = self.iconst(ty, rhs);
+        self.sshr(lhs, rhs)
     }
 
     #[inline]
@@ -1242,23 +1308,6 @@ impl InstBuilder<'_, '_> {
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
-    }
-
-    with_comment! {
-        fmod_with_comment,
-        #[inline]
-        pub fn fmod(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
-            let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMod, args: [lhs, rhs] });
-            self.make_inst_result(inst, ty, 0)
-        }
-    }
-
-    #[inline]
-    pub fn fmod_imm(&mut self, lhs: Value, rhs: f64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
-        let rhs = self.fconst(ty, rhs);
-        self.fmod(lhs, rhs)
     }
 
     with_comment! {

@@ -104,12 +104,22 @@ define_opcodes! {
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
     },
-    IDiv(dst: u32, a: u32, b: u32)           = 13,
-    @ IData::Binary { binop: BinaryOp::IDiv, args } => |results, chunk| {
+    SDiv(dst: u32, a: u32, b: u32)           = 13,
+    @ IData::Binary { binop: BinaryOp::SDiv, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
         let b = args[1];
-        chunk.append(Opcode::IDiv);
+        chunk.append(Opcode::SDiv);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+    UDiv(dst: u32, a: u32, b: u32)           = 252,
+    @ IData::Binary { binop: BinaryOp::UDiv, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::UDiv);
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
@@ -156,6 +166,16 @@ define_opcodes! {
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
     },
+    Sshr(dst: u32, a: u32, b: u32)            = 253,
+    @ IData::Binary { binop: BinaryOp::Sshr, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::Sshr);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
 
     Ishl(dst: u32, a: u32, b: u32)            = 18,
     @ IData::Binary { binop: BinaryOp::Ishl, args } => |results, chunk| {
@@ -190,12 +210,23 @@ define_opcodes! {
         chunk.append(b.as_u32());
     },
 
-    IMod(dst: u32, a: u32, b: u32)             = 21,
-    @ IData::Binary { binop: BinaryOp::IMod, args } => |results, chunk| {
+    SRem(dst: u32, a: u32, b: u32)             = 21,
+    @ IData::Binary { binop: BinaryOp::SRem, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
         let b = args[1];
-        chunk.append(Opcode::IMod);
+        chunk.append(Opcode::SRem);
+        chunk.append(dst.as_u32());
+        chunk.append(a.as_u32());
+        chunk.append(b.as_u32());
+    },
+
+    URem(dst: u32, a: u32, b: u32)             = 251,
+    @ IData::Binary { binop: BinaryOp::URem, args } => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let a = args[0];
+        let b = args[1];
+        chunk.append(Opcode::URem);
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
@@ -372,18 +403,18 @@ define_opcodes! {
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
-    FMod32(dst: u32, a: u32, b: u32)     = 112,
-    @ IData::Binary { binop: BinaryOp::FMod, args } if bits == 32 => |results, chunk| {
+    FRem32(dst: u32, a: u32, b: u32)     = 112,
+    @ IData::Binary { binop: BinaryOp::FRem, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
-        chunk.append(Opcode::FMod32);
+        chunk.append(Opcode::FRem32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
-    FMod64(dst: u32, a: u32, b: u32)     = 228,
-    @ IData::Binary { binop: BinaryOp::FMod, args } if bits == 64 => |results, chunk| {
+    FRem64(dst: u32, a: u32, b: u32)     = 228,
+    @ IData::Binary { binop: BinaryOp::FRem, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
-        chunk.append(Opcode::FMod64);
+        chunk.append(Opcode::FRem64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
     },
 
