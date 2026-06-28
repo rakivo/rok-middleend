@@ -164,7 +164,8 @@ impl Opcode {
             62 => Some(Opcode::SpAdd),
             63 => Some(Opcode::SpSub),
             67 => Some(Opcode::FPromote),
-            69 => Some(Opcode::FNeg),
+            254 => Some(Opcode::FNeg32),
+            255 => Some(Opcode::FNeg64),
             70 => Some(Opcode::FpLoad8),
             71 => Some(Opcode::FpLoad16),
             72 => Some(Opcode::FpLoad32),
@@ -203,7 +204,7 @@ impl Opcode {
             202 => Some(Opcode::FloatToUInt32),
             203 => Some(Opcode::SIntToFloat32),
             204 => Some(Opcode::UIntToFloat32),
-            255 => Some(Opcode::Halt),
+            129 => Some(Opcode::Halt),
             _ => None,
         }
     }
@@ -761,10 +762,15 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let src = reader.read_u32();
             write!(f, "{:<16} r{}, r{}", "fdemote", dst, src)
         }
-        Opcode::FNeg => {
+        Opcode::FNeg32 => {
             let dst = reader.read_u32();
             let src = reader.read_u32();
-            write!(f, "{:<16} r{}, r{}", "fneg", dst, src)
+            write!(f, "{:<16} r{}, r{}", "fneg.f32", dst, src)
+        }
+        Opcode::FNeg64 => {
+            let dst = reader.read_u32();
+            let src = reader.read_u32();
+            write!(f, "{:<16} r{}, r{}", "fneg.f64", dst, src)
         }
 
         // Frame Pointer Operations - Load

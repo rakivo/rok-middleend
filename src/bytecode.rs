@@ -342,6 +342,22 @@ define_opcodes! {
         chunk.append(b.as_u32());
     },
 
+    FNeg32(dst: u32, src: u32) = 254,
+    @ IData::Unary { unop: UnaryOp::FNeg, arg } if bits == 32 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FNeg32);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
+    },
+    FNeg64(dst: u32, src: u32) = 255,
+    @ IData::Unary { unop: UnaryOp::FNeg, arg } if bits == 64 => |results, chunk| {
+        let dst = results.unwrap()[0];
+        let src = *arg;
+        chunk.append(Opcode::FNeg64);
+        chunk.append(dst.as_u32());
+        chunk.append(src.as_u32());
+    },
 
     FAdd32(dst: u32, a: u32, b: u32)     = 22,
     @ IData::Binary { binop: BinaryOp::FAdd, args } if bits == 32 => |results, chunk| {
@@ -711,14 +727,6 @@ define_opcodes! {
         chunk.append(src.as_u32());
     },
 
-    FNeg(dst: u32, src: u32) = 69,
-    @ IData::Unary { unop: UnaryOp::FNeg, arg } => |results, chunk| {
-        let dst = results.unwrap()[0];
-        let src = *arg;
-        chunk.append(Opcode::FNeg);
-        chunk.append(dst.as_u32());
-        chunk.append(src.as_u32());
-    },
     Bitcast(dst: u32, src: u32, ty: u32) = 33,
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0]].ty;
@@ -921,7 +929,7 @@ define_opcodes! {
     Nop() = 128,
     @ IData::Nop => |results, chunk| {},
 
-    Halt()          = 255,
+    Halt()          = 129,
     @ IData::Unreachable => |results, chunk| {
         chunk.append(Opcode::Halt);
     }
