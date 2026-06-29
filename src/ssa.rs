@@ -356,7 +356,6 @@ impl InstructionData {
             Self::Binary { args, .. } => vbits(args[0]),
             Self::Icmp { args, .. } => vbits(args[0]),
             Self::Fcmp { args, .. } => vbits(args[0]),
-            Self::Unary { arg, .. } => vbits(*arg),
             Self::IConst { .. } => rbits(0),
             Self::FConst { .. } => rbits(0),
             Self::StackLoad { .. } => rbits(0),
@@ -365,6 +364,20 @@ impl InstructionData {
             Self::StackStore { arg, .. } => vbits(*arg),
             Self::LoadNoOffset { ty, .. } => ty.bits(),
             Self::StoreNoOffset { args, .. } => vbits(args[1]),
+
+            Self::Unary { unop, arg } => match unop {
+                UnaryOp::SIntToFloat
+                    | UnaryOp::UIntToFloat
+                    | UnaryOp::FloatToSInt
+                    | UnaryOp::FloatToUInt
+                    | UnaryOp::FPromote
+                    | UnaryOp::FDemote
+                    | UnaryOp::Ireduce
+                    | UnaryOp::Uextend
+                    | UnaryOp::Sextend => rbits(0),
+
+                _ => vbits(*arg),
+            },
 
             Self::Jump { .. } => 32,
             Self::Branch { .. } => 32,
