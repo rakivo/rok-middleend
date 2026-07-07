@@ -69,15 +69,15 @@ macro_rules! define_opcodes {
                         )?
                     )*
 
-                    IData::IConst { .. }        |
-                    IData::FConst { .. }        |
-                    IData::Binary { .. }        |
-                    IData::Unary { .. }         |
-                    IData::Fcmp   { .. }        |
-                    IData::LoadNoOffset { .. }  |
-                    IData::StoreNoOffset { .. } |
-                    IData::StackLoad { .. }     |
-                    IData::StackStore { .. } => unreachable!("invalid bitwidth"),
+                    other @ IData::IConst { .. }        |
+                    other @ IData::FConst { .. }        |
+                    other @ IData::Binary { .. }        |
+                    other @ IData::Unary { .. }         |
+                    other @ IData::Fcmp   { .. }        |
+                    other @ IData::LoadNoOffset { .. }  |
+                    other @ IData::StoreNoOffset { .. } |
+                    other @ IData::StackLoad { .. }     |
+                    other @ IData::StackStore { .. } => unreachable!("invalid bitwidth: {other:?}, bitness: {}", inst.bits(inst_id, &$context.func)),
                 }
             }
         }

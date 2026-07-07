@@ -25,7 +25,7 @@ pub enum Type {
     U8, U16, U32, U64,
     I8, I16, I32, I64,
     F32, F64,
-    Ptr,
+    Ptr, FuncPtr
 }
 
 impl Type {
@@ -36,7 +36,7 @@ impl Type {
             Type::I8 | Type::U8 => 1,
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 => 4,
-            Type::U64 | Type::I64 | Type::F64 | Type::Ptr => 8,
+            Type::U64 | Type::I64 | Type::F64 | Type::Ptr | Type::FuncPtr => 8,
         }
     }
 
@@ -110,7 +110,7 @@ impl Type {
         match self {
             Self::F32 => Self::I32,
 
-            Self::Ptr | Self::F64 => Self::I64,
+            Self::Ptr | Self::F64 | Type::FuncPtr => Self::I64,
 
             other => other,
         }
@@ -125,7 +125,7 @@ impl Type {
             U8 | U16 | U32 | U64 => false,
             I8 | I16 | I32 | I64 => true,
             F32 | F64 => true,
-            Ptr => false,
+            Ptr | FuncPtr => false,
         }
     }
 
@@ -139,9 +139,10 @@ impl Type {
 /// Represents a function signature.
 #[derive(Eq, Debug, Clone, Default, PartialEq)]
 pub struct Signature {
-    pub params: Vec<Type>,
+    pub params:  Vec<Type>,
     pub returns: Vec<Type>,
-    // for codegen and debugging purposes only
+
+    /// For codegen and debugging purposes only,
     /// The amount of fixed arguments in a var-args def
     pub is_var_arg: Option<u8>,
 }
@@ -157,6 +158,8 @@ impl Signature {
 /// Represents an external function, defined outside the module.
 #[derive(Debug, Clone)]
 pub struct ExtFunc {
+    pub extra: u64,
+
     pub name: Box<str>,
     pub signature: Signature,
 }
@@ -215,31 +218,79 @@ pub struct BasicBlockData {
     pub is_sealed: bool,
 }
 
+#[derive(Debug, Copy, Clone, Default, Eq, PartialEq)]
+pub struct StringRef {
+    pub start: u32,  // Index into strings
+    pub len:   u16
+}
+
 /// The top-level structure for a single function's IR.
 #[derive(Debug, Default)]
 pub struct SsaFunc {
+    pub extra: u64,        // @Cleanup?
+
     pub is_external: bool,
 
-    pub name: Box<str>,
+    pub name: StringRef,
+
     pub signature: Signature,
+
     pub dfg: DataFlowGraph,
     pub cfg: ControlFlowGraph,
+
     pub layout: Layout,
+
     pub stack_slots: PrimaryMap<StackSlot, StackSlotData>,
     pub values_pool: ListPool<Value>,
+
     pub srclocs: SecondaryMap<Inst, SourceLoc>,
-    pub comments: SecondaryMap<Inst, Box<str>>,
+
+    pub strings: String,   // @Memory: Move to Module?
+
+    pub comments: SecondaryMap<Inst, StringRef>,
 }
 
 impl SsaFunc {
     #[must_use]
     #[inline(always)]
-    pub fn new(name: impl AsRef<str>, signature: Signature) -> Self {
-        Self {
-            name: name.as_ref().into(),
+    pub fn new(name: impl AsRef<str>, signature: Signature, extra: u64) -> Self {
+        let mut func = Self {
+            extra,
             signature,
             ..Default::default()
-        }
+        };
+
+        let name = name.as_ref();
+        func.name = func.push_string(name);
+
+        func
+    }
+
+    #[inline(always)]
+    pub fn name(&self) -> &str {
+        self.get_string(self.name)
+    }
+
+    #[inline(always)]
+    pub fn instruction_count(&self) -> usize {
+        self.dfg.insts.len()
+    }
+
+    #[inline(always)]
+    pub fn get_string(&self, comment: StringRef) -> &str {
+        let s = comment.start as usize;
+        &self.strings[s..s+comment.len as usize]
+    }
+
+    #[inline(always)]
+    pub fn push_string(&mut self, string: impl AsRef<str>) -> StringRef {
+        let string = string.as_ref();
+
+        let start = self.strings.len() as u32;
+        let len   = string.len() as u16;
+        self.strings.push_str(string);
+
+        StringRef { start, len }
     }
 
     #[inline(always)]
@@ -263,6 +314,12 @@ impl SsaFunc {
     pub fn is_block_terminated(&self, block: Block) -> bool {
         let last_inst = self.cfg.blocks[block].insts.as_slice(&self.cfg.block_insts_pool).last().copied();
         last_inst.is_some_and(|inst| self.is_instruction_terminator(inst))
+    }
+
+    #[inline(always)]
+    #[must_use]
+    pub fn block_insts(&self, block: Block) -> &[Inst] {
+        self.cfg.blocks[block].insts.as_slice(&self.cfg.block_insts_pool)
     }
 
     #[inline]
@@ -500,13 +557,10 @@ impl Module {
     }
 
     #[inline]
-    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature) -> FuncId {
-        self.funcs.push(SsaFunc {
-            name: name.as_ref().into(),
-            signature,
-            is_external: true,
-            ..Default::default()
-        })
+    pub fn declare_function(&mut self, name: impl AsRef<str>, signature: Signature, extra: u64) -> FuncId {
+        let mut func = SsaFunc::new(name, signature, extra);
+        func.is_external = true;
+        self.funcs.push(func)
     }
 
     #[track_caller]
@@ -584,6 +638,7 @@ impl Module {
             ir_builder: &mut InstBuilder<'_, '_>
         ) {
             let libc_memcpy = self.import_function(ExtFunc {
+                extra: u64::MAX,
                 name: "memcpy".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::Ptr, Type::I64],
@@ -607,6 +662,7 @@ impl Module {
             ir_builder: &mut InstBuilder<'_, '_>
         ) {
             let libc_memset = self.import_function(ExtFunc {
+                extra: u64::MAX,
                 name: "memset".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::I32, Type::I64],
@@ -624,6 +680,7 @@ impl Module {
         #[inline]
         pub fn call_abort(&mut self, ir_builder: &mut InstBuilder<'_, '_>) {
             let libc_abort = self.import_function(ExtFunc {
+                extra: u64::MAX,
                 name: "abort".into(),
                 signature: Signature::default()
             });
@@ -736,8 +793,9 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     #[inline(always)]
-    pub fn insert_comment(&mut self, inst: Inst, comment: impl Into<Box<str>>) {
-        self.func.comments.insert(inst, comment.into());
+    pub fn insert_comment(&mut self, inst: Inst, comment: impl AsRef<str>) {
+        let string = self.func.push_string(comment);
+        self.func.comments.insert(inst, string);
     }
 
     #[inline(always)]
@@ -1556,6 +1614,7 @@ impl InstBuilder<'_, '_> {
             size: Value,
         ) -> Value {
             let libc_memcpy = parent.import_function(ExtFunc {
+                extra: u64::MAX,
                 name: "memcpy".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::Ptr, Type::I64],
@@ -1579,6 +1638,7 @@ impl InstBuilder<'_, '_> {
             n: Value,
         ) -> Value {
             let libc_memset = parent.import_function(ExtFunc {
+                extra: u64::MAX,
                 name: "memset".into(),
                 signature: Signature {
                     params: vec![Type::Ptr, Type::I32, Type::I64],
@@ -1596,6 +1656,7 @@ impl InstBuilder<'_, '_> {
         #[inline]
         pub fn call_abort(&mut self, parent: &mut Module) {
             let libc_abort = parent.import_function(ExtFunc {
+                extra: u64::MAX,
                 name: "abort".into(),
                 signature: Signature::default()
             });
@@ -1800,6 +1861,7 @@ impl SsaFunc {
         write!(f, "  {s:<70}")?;
 
         if let Some(comment) = self.comments.get(inst_id) {
+            let comment = self.get_string(*comment);
             write!(f, "; {comment}")?;
         }
 
@@ -1809,7 +1871,7 @@ impl SsaFunc {
     #[must_use]
     pub fn fmt_value(&self, val: Value) -> String {
         let data = &self.dfg.values[val];
-        format!("v{}:{:?}", val.index(), data.ty)
+        format!("v{}:{}", val.index(), format!("{:?}", data.ty).to_lowercase())
     }
 }
 
@@ -1818,7 +1880,7 @@ impl fmt::Display for SsaFunc {
         writeln!(
             f,
             "function {}({}) -> {}",
-            self.name,
+            self.name(),
             self.signature
                 .params
                 .iter()
@@ -1833,7 +1895,7 @@ impl fmt::Display for SsaFunc {
                 .join(", ")
         )?;
         for (slot_id, slot) in &self.stack_slots {
-            writeln!(f, "  stack_slot{}: {:?}, size={}", slot_id.as_u32(), slot.ty, slot.size)?;
+            writeln!(f, "  StackSlot{}: {:?}, size={}", slot_id.as_u32(), slot.ty, slot.size)?;
         }
         if let Some(entry) = self.layout.block_entry {
             let mut visited = IntSet::with_capacity_and_hasher(

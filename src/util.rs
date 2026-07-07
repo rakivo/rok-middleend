@@ -142,7 +142,7 @@ macro_rules! with_comment {
             &mut $self
             $(, $param_name: $param_type)*,
             #[cfg_attr(not(debug_assertions), allow(unused))]
-            comment: impl Into<Box<str>>
+            comment: impl AsRef<str>
         )
         $(-> $ret)?
         {
@@ -181,7 +181,7 @@ macro_rules! with_comment {
             &mut $self
             $(, $param_name: $param_type)*,
             #[cfg_attr(not(debug_assertions), allow(unused))]
-            comment: impl Into<Box<str>>
+            comment: impl AsRef<str>
         )
         $(-> $ret)?
         {
@@ -220,7 +220,7 @@ macro_rules! with_comment {
             &mut $self
             $(, $param_name: $param_type)*,
             #[cfg_attr(not(debug_assertions), allow(unused))]
-            comment: impl Into<Box<str>>
+            comment: impl AsRef<str>
         )
         $(-> $ret)?
         {

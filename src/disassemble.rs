@@ -1054,7 +1054,7 @@ pub fn disassemble(
     let mut curr_block: Option<crate::ssa::Block> = None;
 
     if let Some(ssa) = _ssa {
-        print!("function {}\n{:05X} ;", ssa.name, 0);
+        print!("function {}\n{:05X} ;", ssa.name(), 0);
     }
 
     while reader.remaining() > 0 {
