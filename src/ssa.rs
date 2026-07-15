@@ -1050,6 +1050,10 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn iadd_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 0 {
+            return lhs;
+        }
+
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.iadd(lhs, rhs)
@@ -1057,6 +1061,10 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn isub_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 0 {
+            return lhs;
+        }
+
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.isub(lhs, rhs)
@@ -1064,13 +1072,31 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn imul_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 1 {
+            return lhs;
+        }
+
         let ty = self.builder.func.value_type(lhs);
+        if rhs == 0 {
+            return self.iconst(ty, 0);
+        }
+
+        // Strength reduce multiply by a power of two into a shift.
+        if rhs > 0 && (rhs & (rhs - 1)) == 0 {
+            let shift = rhs.trailing_zeros() as i64;
+            let shift_amt = self.iconst(ty, shift);
+            return self.ishl(lhs, shift_amt);
+        }
+
         let rhs = self.iconst(ty, rhs);
         self.imul(lhs, rhs)
     }
 
     #[inline]
     pub fn sdiv_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 1 {
+            return lhs;
+        }
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.sdiv(lhs, rhs)
@@ -1078,6 +1104,9 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn udiv_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 1 {
+            return lhs;
+        }
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.udiv(lhs, rhs)
@@ -1086,12 +1115,24 @@ impl InstBuilder<'_, '_> {
     #[inline]
     pub fn and_imm(&mut self, lhs: Value, rhs: i64) -> Value {
         let ty = self.builder.func.value_type(lhs);
+
+        if rhs == 0 {
+            return self.iconst(ty, 0);
+        }
+        if rhs == -1 {
+            return lhs;
+        }
+
         let rhs = self.iconst(ty, rhs);
         self.and(lhs, rhs)
     }
 
     #[inline]
     pub fn or_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 0 {
+            return lhs;
+        }
+
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.or(lhs, rhs)
@@ -1099,6 +1140,10 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn xor_imm(&mut self, lhs: Value, rhs: i64) -> Value {
+        if rhs == 0 {
+            return lhs;
+        }
+
         let ty = self.builder.func.value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.xor(lhs, rhs)
@@ -1207,6 +1252,10 @@ impl InstBuilder<'_, '_> {
         ireduce_with_comment,
         #[inline]
         pub fn ireduce(&mut self, ty: Type, arg: Value) -> Value {
+            if self.func.value_type(arg) == ty {
+                return arg;
+            }
+
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Ireduce, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1216,6 +1265,10 @@ impl InstBuilder<'_, '_> {
         uextend_with_comment,
         #[inline]
         pub fn uextend(&mut self, ty: Type, arg: Value) -> Value {
+            if self.func.value_type(arg) == ty {
+                return arg;
+            }
+
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Uextend, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1225,6 +1278,10 @@ impl InstBuilder<'_, '_> {
         sextend_with_comment,
         #[inline]
         pub fn sextend(&mut self, ty: Type, arg: Value) -> Value {
+            if self.func.value_type(arg) == ty {
+                return arg;
+            }
+
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Sextend, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1234,6 +1291,10 @@ impl InstBuilder<'_, '_> {
         fpromote_with_comment,
         #[inline]
         pub fn fpromote(&mut self, ty: Type, arg: Value) -> Value {
+            if self.func.value_type(arg) == ty {
+                return arg;
+            }
+
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FPromote, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1243,6 +1304,10 @@ impl InstBuilder<'_, '_> {
         fdemote_with_comment,
         #[inline]
         pub fn fdemote(&mut self, ty: Type, arg: Value) -> Value {
+            if self.func.value_type(arg) == ty {
+                return arg;
+            }
+
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FDemote, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1304,6 +1369,11 @@ impl InstBuilder<'_, '_> {
                 ty.bits(),
                 "bitcasting value to a type with a different size"
             };
+
+            if self.func.value_type(arg) == ty {
+                return arg;
+            }
+
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::Bitcast, arg });
             self.make_inst_result(inst, ty, 0)
         }
