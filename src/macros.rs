@@ -4,16 +4,15 @@ macro_rules! define_opcodes {
     (
         $context:ident,
         $(
-            $opcode:ident($($arg_name:ident: $arg_type:ty),*) = $val:expr
+            $opcode:ident($($arg_name:ident: $arg_type:ty),*)
             $(
-                ,
                 @
                 $idata_pattern:pat
                 $(if bits == $size_guard:expr)?
                 => |$results:ident, $chunk:ident $(,$inst_id:ident)?|
                 $emitter_body:block
             )?
-        ),*
+        ) *
     ) => { paste::paste!{
         #[repr(u8)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]

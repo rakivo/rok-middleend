@@ -20,61 +20,61 @@ define_opcodes! {
     self,
 
     // Constants
-    IConst8(dst: u32, val: i8)       = 0,
+    IConst8(dst: u32, val: i8)
     @ IData::IConst { value, .. } if bits == 8 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
         chunk.append(Opcode::IConst8);
         chunk.append(result_val.as_u32());
         chunk.append(val as i8);
-    },
+    }
 
-    IConst16(dst: u32, val: i16)      = 1,
+    IConst16(dst: u32, val: i16)
     @ IData::IConst { value, .. } if bits == 16 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
         chunk.append(Opcode::IConst16);
         chunk.append(result_val.as_u32());
         chunk.append(val as i16);
-    },
+    }
 
-    IConst32(dst: u32, val: i32)      = 2,
+    IConst32(dst: u32, val: i32)
     @ IData::IConst { value, .. } if bits == 32 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
         chunk.append(Opcode::IConst32);
         chunk.append(result_val.as_u32());
         chunk.append(val as i32);
-    },
+    }
 
-    IConst64(dst: u32, val: i64)      = 3,
+    IConst64(dst: u32, val: i64)
     @ IData::IConst { value, .. } if bits == 64 => |results, chunk| {
         let val = *value;
         let result_val = results.unwrap()[0];
         chunk.append(Opcode::IConst64);
         chunk.append(result_val.as_u32());
         chunk.append(val as u64);
-    },
+    }
 
-    FConst32(dst: u32, val: f32)      = 4,
+    FConst32(dst: u32, val: f32)
     @ IData::FConst { value, .. } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];;
         let val = *value as f32;
         chunk.append(Opcode::FConst32);
         chunk.append(dst.as_u32());
         chunk.append(val);
-    },
+    }
 
-    FConst64(dst: u32, val: f64)      = 5,
+    FConst64(dst: u32, val: f64)
     @ IData::FConst { value, .. } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];;
         chunk.append(Opcode::FConst64);
         chunk.append(dst.as_u32());
         chunk.append(*value);
-    },
+    }
 
     // Arithmetic
-    IAdd(dst: u32, a: u32, b: u32)           = 10,
+    IAdd(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::IAdd, args } => |results, chunk| {
         let dst = results.unwrap()[0];;
         let a = args[0];
@@ -83,8 +83,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    ISub(dst: u32, a: u32, b: u32)           = 11,
+    }
+    ISub(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::ISub, args } => |results, chunk| {
         let dst = results.unwrap()[0];;
         let a = args[0];
@@ -93,8 +93,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    IMul(dst: u32, a: u32, b: u32)           = 12,
+    }
+    IMul(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::IMul, args } => |results, chunk| {
         let dst = results.unwrap()[0];;
         let a = args[0];
@@ -103,8 +103,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    SDiv(dst: u32, a: u32, b: u32)           = 13,
+    }
+    SDiv(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::SDiv, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -113,8 +113,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    UDiv(dst: u32, a: u32, b: u32)           = 252,
+    }
+    UDiv(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::UDiv, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -123,9 +123,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    And(dst: u32, a: u32, b: u32)            = 14,
+    And(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::And, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -134,8 +134,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    Or(dst: u32, a: u32, b: u32)             = 15,
+    }
+    Or(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Or, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -144,8 +144,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    Xor(dst: u32, a: u32, b: u32)            = 16,
+    }
+    Xor(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Xor, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -154,9 +154,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    Ushr(dst: u32, a: u32, b: u32)            = 17,
+    Ushr(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Ushr, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -165,8 +165,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
-    Sshr(dst: u32, a: u32, b: u32)            = 253,
+    }
+    Sshr(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Sshr, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -175,9 +175,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    Ishl(dst: u32, a: u32, b: u32)            = 18,
+    Ishl(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Ishl, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -186,9 +186,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    Band(dst: u32, a: u32, b: u32)            = 19,
+    Band(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Band, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -197,9 +197,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    Bor(dst: u32, a: u32, b: u32)             = 20,
+    Bor(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::Bor, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -208,9 +208,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    SRem(dst: u32, a: u32, b: u32)             = 21,
+    SRem(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::SRem, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -219,9 +219,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    URem(dst: u32, a: u32, b: u32)             = 251,
+    URem(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::URem, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -230,9 +230,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    IEq(dst: u32, a: u32, b: u32)            = 96,
+    IEq(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::Equal, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -241,9 +241,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    INe(dst: u32, a: u32, b: u32)            = 97,
+    INe(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::NotEqual, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -252,9 +252,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    ISGt(dst: u32, a: u32, b: u32)           = 98,
+    ISGt(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::SignedGreaterThan, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -263,9 +263,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    ISGe(dst: u32, a: u32, b: u32)           = 99,
+    ISGe(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::SignedGreaterThanOrEqual, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -274,9 +274,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    ISLt(dst: u32, a: u32, b: u32)           = 100,
+    ISLt(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::SignedLessThan, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -285,9 +285,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    ISLe(dst: u32, a: u32, b: u32)           = 101,
+    ISLe(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::SignedLessThanOrEqual, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -296,9 +296,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    IUGt(dst: u32, a: u32, b: u32)           = 102,
+    IUGt(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::UnsignedGreaterThan, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -307,9 +307,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    IUGe(dst: u32, a: u32, b: u32)           = 103,
+    IUGe(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::UnsignedGreaterThanOrEqual, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -318,9 +318,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    IULt(dst: u32, a: u32, b: u32)           = 104,
+    IULt(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::UnsignedLessThan, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -329,9 +329,9 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    IULe(dst: u32, a: u32, b: u32)           = 105,
+    IULe(dst: u32, a: u32, b: u32)
     @ IData::Icmp { code: IntCC::UnsignedLessThanOrEqual, args } => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0];
@@ -340,199 +340,199 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(a.as_u32());
         chunk.append(b.as_u32());
-    },
+    }
 
-    FNeg32(dst: u32, src: u32) = 254,
+    FNeg32(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FNeg, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FNeg32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    FNeg64(dst: u32, src: u32) = 255,
+    }
+    FNeg64(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FNeg, arg } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FNeg64);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
+    }
 
-    FAdd32(dst: u32, a: u32, b: u32)     = 22,
+    FAdd32(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FAdd, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FAdd32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FAdd64(dst: u32, a: u32, b: u32)     = 232,
+    }
+    FAdd64(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FAdd, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FAdd64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FSub32(dst: u32, a: u32, b: u32)     = 23,
+    FSub32(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FSub, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FSub32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FSub64(dst: u32, a: u32, b: u32)     = 231,
+    }
+    FSub64(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FSub, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FSub64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FMul32(dst: u32, a: u32, b: u32)     = 24,
+    FMul32(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FMul, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FMul32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FMul64(dst: u32, a: u32, b: u32)     = 230,
+    }
+    FMul64(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FMul, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FMul64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FDiv32(dst: u32, a: u32, b: u32)     = 25,
+    FDiv32(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FDiv, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FDiv32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FDiv64(dst: u32, a: u32, b: u32)     = 229,
+    }
+    FDiv64(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FDiv, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FDiv64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FRem32(dst: u32, a: u32, b: u32)     = 112,
+    FRem32(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FRem, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FRem32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FRem64(dst: u32, a: u32, b: u32)     = 228,
+    }
+    FRem64(dst: u32, a: u32, b: u32)
     @ IData::Binary { binop: BinaryOp::FRem, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FRem64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FEq32(dst: u32, a: u32, b: u32)      = 106,
+    FEq32(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::Equal, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FEq32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FEq64(dst: u32, a: u32, b: u32)      = 227,
+    }
+    FEq64(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::Equal, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FEq64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FNe32(dst: u32, a: u32, b: u32)      = 107,
+    FNe32(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::NotEqual, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FNe32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FNe64(dst: u32, a: u32, b: u32)      = 226,
+    }
+    FNe64(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::NotEqual, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FNe64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FGt32(dst: u32, a: u32, b: u32)      = 108,
+    FGt32(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::GreaterThan, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FGt32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FGt64(dst: u32, a: u32, b: u32)      = 233,
+    }
+    FGt64(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::GreaterThan, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FGt64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FGe32(dst: u32, a: u32, b: u32)      = 234,
+    FGe32(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::GreaterThanOrEqual, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FGe32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FGe64(dst: u32, a: u32, b: u32)      = 235,
+    }
+    FGe64(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::GreaterThanOrEqual, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FGe64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FLt32(dst: u32, a: u32, b: u32)      = 236,
+    FLt32(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::LessThan, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FLt32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FLt64(dst: u32, a: u32, b: u32)      = 237,
+    }
+    FLt64(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::LessThan, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FLt64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    FLe32(dst: u32, a: u32, b: u32)      = 238,
+    FLe32(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::LessThanOrEqual, args } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FLe32);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
-    FLe64(dst: u32, a: u32, b: u32)      = 239,
+    }
+    FLe64(dst: u32, a: u32, b: u32)
     @ IData::Fcmp { code: FloatCC::LessThanOrEqual, args } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let a = args[0]; let b = args[1];
         chunk.append(Opcode::FLe64);
         chunk.append(dst.as_u32()); chunk.append(a.as_u32()); chunk.append(b.as_u32());
-    },
+    }
 
-    Jump32(offset: i32) = 26,
+    Jump32(offset: i32)
     @ IData::Jump { destination, args, .. } => |_results, chunk| {
         let dest_block = &self.func.cfg.blocks[*destination];
 
         chunk.append(Opcode::Jump32);
         self.jump_with_args(chunk, *destination, args);
-    },
+    }
 
-    BranchIf32(cond: u32, offset: i32) = 27,
+    BranchIf32(cond: u32, offset: i32)
     @ IData::Branch { arg, destinations, args, .. } => |_results, chunk| {
         let [t, e] = *destinations;
 
@@ -540,9 +540,9 @@ define_opcodes! {
         chunk.append(Opcode::BranchIf32);
         chunk.append(cond_reg.as_u32());
         self.brif_with_args(chunk, t, e, args);
-    },
+    }
 
-    Return() = 28,
+    Return()
     @ IData::Return { args, .. } => |_results, chunk| {
         // Teardown stack frame
         self.emit_frame_teardown(chunk);
@@ -550,9 +550,9 @@ define_opcodes! {
         // Emit return instruction with arguments
         chunk.append(Opcode::Return);
         self.append_args(chunk, args);
-    },
+    }
 
-    Call(func_id: u32) = 29,
+    Call(func_id: u32)
     @ IData::Call { func_id, args } => |results, chunk, inst_id| {
         chunk.append(Opcode::Call);
         if let Some(results) = results {
@@ -565,9 +565,9 @@ define_opcodes! {
         }
         chunk.append(func_id.as_u32());
         self.append_args(chunk, args);
-    },
+    }
 
-    CallHook(hook_id: u32) = 135,
+    CallHook(hook_id: u32)
     @ IData::CallHook { hook_id, args } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallHook);
         if let Some(result) = results.and_then(|v| v.first()) {
@@ -577,9 +577,9 @@ define_opcodes! {
         }
         chunk.append(hook_id.index() as u32);
         self.append_args(chunk, args);
-    },
+    }
 
-    CallExt(func_id: u32) = 136,
+    CallExt(func_id: u32)
     @ IData::CallExt { func_id, args } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallExt);
         if let Some(results) = results {
@@ -592,9 +592,9 @@ define_opcodes! {
         }
         chunk.append(func_id.as_u32());
         self.append_args(chunk, args);
-    },
+    }
 
-    CallIndirect(callee: u32) = 137,
+    CallIndirect(callee: u32)
     @ IData::CallIndirect { callee, args } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallIndirect);
         if let Some(results) = results {
@@ -607,9 +607,9 @@ define_opcodes! {
         }
         chunk.append(callee.as_u32());
         self.append_args(chunk, args);
-    },
+    }
 
-    Ireduce(dst: u32, src: u32, bits: u32) = 30,
+    Ireduce(dst: u32, src: u32, bits: u32)
     @ IData::Unary { unop: UnaryOp::Ireduce, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0]].ty;
         let bits = result_ty.bits() as u8;
@@ -619,8 +619,8 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
         chunk.append(bits);
-    },
-    Uextend(dst: u32, src: u32, from_bits: u32, to_bits: u32) = 31,
+    }
+    Uextend(dst: u32, src: u32, from_bits: u32, to_bits: u32)
     @ IData::Unary { unop: UnaryOp::Uextend, arg } => |results, chunk| {
         let src_ty = self.func.dfg.values[*arg].ty;
         let dst_ty = self.func.dfg.values[results.unwrap()[0]].ty;
@@ -633,16 +633,16 @@ define_opcodes! {
         chunk.append(src.as_u32());
         chunk.append(from_bits);
         chunk.append(to_bits);
-    },
-    Sextend(dst: u32, src: u32) = 32,
+    }
+    Sextend(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::Sextend, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Sextend);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    FPromote(dst: u32, src: u32) = 67,
+    }
+    FPromote(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FPromote, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
@@ -651,83 +651,83 @@ define_opcodes! {
         chunk.append(Opcode::FPromote);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    FDemote(dst: u32, src: u32) = 200,
+    }
+    FDemote(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FDemote, arg } => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FDemote);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
+    }
 
-    FloatToSInt32(dst: u32, src: u32) = 201,
+    FloatToSInt32(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FloatToSInt32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    FloatToUInt32(dst: u32, src: u32) = 202,
+    }
+    FloatToUInt32(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FloatToUInt32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    SIntToFloat32(dst: u32, src: u32) = 203,
+    }
+    SIntToFloat32(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::SIntToFloat32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    UIntToFloat32(dst: u32, src: u32) = 204,
+    }
+    UIntToFloat32(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::UIntToFloat32);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
+    }
 
-    FloatToSInt64(dst: u32, src: u32) = 250,
+    FloatToSInt64(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FloatToSInt, arg } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FloatToSInt64);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    FloatToUInt64(dst: u32, src: u32) = 251,
+    }
+    FloatToUInt64(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FloatToUInt, arg } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::FloatToUInt64);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    SIntToFloat64(dst: u32, src: u32) = 252,
+    }
+    SIntToFloat64(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::SIntToFloat, arg } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::SIntToFloat64);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
-    UIntToFloat64(dst: u32, src: u32) = 253,
+    }
+    UIntToFloat64(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::UIntToFloat, arg } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::UIntToFloat64);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
-    },
+    }
 
-    Bitcast(dst: u32, src: u32, ty: u32) = 33,
+    Bitcast(dst: u32, src: u32, ty: u32)
     @ IData::Unary { unop: UnaryOp::Bitcast, arg } => |results, chunk| {
         let result_ty = self.func.dfg.values[results.unwrap()[0]].ty;
         let dst = results.unwrap()[0];
@@ -736,43 +736,43 @@ define_opcodes! {
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
         chunk.append(result_ty.bits() as u8);
-    },
+    }
 
     // Memory
-    Load8(dst: u32, addr: u32)         = 40,
+    Load8(dst: u32, addr: u32)
     @ IData::LoadNoOffset { ty, addr } if bits == 8 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load8);
         chunk.append(dst.as_u32());
         chunk.append(addr.as_u32());
-    },
-    Load16(dst: u32, addr: u32)        = 41,
+    }
+    Load16(dst: u32, addr: u32)
     @ IData::LoadNoOffset { ty, addr } if bits == 16 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load16);
         chunk.append(dst.as_u32());
         chunk.append(addr.as_u32());
-    },
-    Load32(dst: u32, addr: u32)        = 42,
+    }
+    Load32(dst: u32, addr: u32)
     @ IData::LoadNoOffset { ty, addr } if bits == 32 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load32);
         chunk.append(dst.as_u32());
         chunk.append(addr.as_u32());
-    },
-    Load64(dst: u32, addr: u32)        = 43,
+    }
+    Load64(dst: u32, addr: u32)
     @ IData::LoadNoOffset { ty, addr } if bits == 64 => |results, chunk| {
         let addr = *addr;
         let dst = results.unwrap()[0];
         chunk.append(Opcode::Load64);
         chunk.append(dst.as_u32());
         chunk.append(addr.as_u32());
-    },
+    }
 
-    Store8(addr: u32, val: u32) = 44,
+    Store8(addr: u32, val: u32)
     @ IData::StoreNoOffset { args } if bits == 8 => |_results, chunk| {
         let addr = args[0];
         let val = args[1];
@@ -780,9 +780,9 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(addr.as_u32());
         chunk.append(val.as_u32());
-    },
+    }
 
-    Store16(addr: u32, val: u32) = 45,
+    Store16(addr: u32, val: u32)
     @ IData::StoreNoOffset { args } if bits == 16 => |_results, chunk| {
         let addr = args[0];
         let val = args[1];
@@ -790,9 +790,9 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(addr.as_u32());
         chunk.append(val.as_u32());
-    },
+    }
 
-    Store32(addr: u32, val: u32) = 47,
+    Store32(addr: u32, val: u32)
     @ IData::StoreNoOffset { args } if bits == 32 => |_results, chunk| {
         let addr = args[0];
         let val = args[1];
@@ -800,9 +800,9 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(addr.as_u32());
         chunk.append(val.as_u32());
-    },
+    }
 
-    Store64(addr: u32, val: u32) = 47,
+    Store64(addr: u32, val: u32)
     @ IData::StoreNoOffset { args } if bits == 64 => |_results, chunk| {
         let addr = args[0];
         let val = args[1];
@@ -810,21 +810,21 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(addr.as_u32());
         chunk.append(val.as_u32());
-    },
+    }
 
     // Stack operations
-    Mov(dst: u32, src: u32)           = 50,
+    Mov(dst: u32, src: u32)
 
     // Stack frame management
-    FrameSetup(size: u32)    = 60,
-    FrameTeardown() = 61,
+    FrameSetup(size: u32)
+    FrameTeardown()
 
     // Direct stack pointer operations
-    SpAdd(offset: u32)         = 62,
-    SpSub(offset: u32)         = 63,
+    SpAdd(offset: u32)
+    SpSub(offset: u32)
 
     // Frame pointer relative operations
-    FpLoad8(dst: u32, offset: i32)       = 70,
+    FpLoad8(dst: u32, offset: i32)
     @ IData::StackLoad { slot, .. } if bits == 8 => |results, chunk| {
         let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -832,8 +832,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
-    },
-    FpLoad16(dst: u32, offset: i32)      = 71,
+    }
+    FpLoad16(dst: u32, offset: i32)
     @ IData::StackLoad { slot, .. } if bits == 16 => |results, chunk| {
         let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -841,8 +841,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
-    },
-    FpLoad32(dst: u32, offset: i32)      = 72,
+    }
+    FpLoad32(dst: u32, offset: i32)
     @ IData::StackLoad { slot, .. } if bits == 32 => |results, chunk| {
         let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -850,8 +850,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
-    },
-    FpLoad64(dst: u32, offset: i32)      = 73,
+    }
+    FpLoad64(dst: u32, offset: i32)
     @ IData::StackLoad { slot, .. } if bits == 64 => |results, chunk| {
         let dst = results.unwrap()[0];
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -859,8 +859,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(dst.as_u32());
         chunk.append(allocation.offset);
-    },
-    FpStore8(offset: i32, src: u32)      = 74,
+    }
+    FpStore8(offset: i32, src: u32)
     @ IData::StackStore { slot, arg, .. } if bits == 8 => |_results, chunk| {
         let src = *arg;
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -868,8 +868,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src.as_u32());
-    },
-    FpStore16(offset: i32, src: u32)     = 75,
+    }
+    FpStore16(offset: i32, src: u32)
     @ IData::StackStore { slot, arg, .. } if bits == 16 => |_results, chunk| {
         let src = *arg;
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -877,8 +877,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src.as_u32());
-    },
-    FpStore32(offset: i32, src: u32)     = 76,
+    }
+    FpStore32(offset: i32, src: u32)
     @ IData::StackStore { slot, arg, .. } if bits == 32 => |_results, chunk| {
         let src = *arg;
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -886,8 +886,8 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src.as_u32());
-    },
-    FpStore64(offset: i32, src: u32)     = 77,
+    }
+    FpStore64(offset: i32, src: u32)
     @ IData::StackStore { slot, arg, .. } if bits == 64 => |_results, chunk| {
         let src = *arg;
         let allocation = &self.frame_info.slot_allocations[*slot];
@@ -895,41 +895,41 @@ define_opcodes! {
         chunk.append(opcode);
         chunk.append(allocation.offset);
         chunk.append(src.as_u32());
-    },
+    }
 
     // Stack pointer relative operations
-    SpLoad8(dst: u32, offset: i32)       = 80,
-    SpLoad16(dst: u32, offset: i32)      = 81,
-    SpLoad32(dst: u32, offset: i32)      = 82,
-    SpLoad64(dst: u32, offset: i32)      = 83,
-    SpStore8(offset: i32, src: u32)      = 84,
-    SpStore16(offset: i32, src: u32)     = 85,
-    SpStore32(offset: i32, src: u32)     = 86,
-    SpStore64(offset: i32, src: u32)     = 87,
+    SpLoad8(dst: u32, offset: i32)
+    SpLoad16(dst: u32, offset: i32)
+    SpLoad32(dst: u32, offset: i32)
+    SpLoad64(dst: u32, offset: i32)
+    SpStore8(offset: i32, src: u32)
+    SpStore16(offset: i32, src: u32)
+    SpStore32(offset: i32, src: u32)
+    SpStore64(offset: i32, src: u32)
 
     // Address calculation
-    FpAddr(dst: u32, offset: i32)        = 90,
+    FpAddr(dst: u32, offset: i32)
     @ IData::StackAddr { slot, .. } => |results, chunk| {
         let dst = results.unwrap()[0];
         chunk.append(Opcode::FpAddr);
         chunk.append(dst.as_u32());
         let allocation = &self.frame_info.slot_allocations[*slot];
         chunk.append(allocation.offset);
-    },
-    SpAddr(dst: u32, offset: i32)        = 91,
+    }
+    SpAddr(dst: u32, offset: i32)
 
-    LoadDataAddr(dst: u32, data_id: DataId) = 95,
+    LoadDataAddr(dst: u32, data_id: DataId)
     @ IData::DataAddr { data_id } => |results, chunk| {
         let dst = results.unwrap()[0];
         chunk.append(Opcode::LoadDataAddr);
         chunk.append(dst.as_u32());
         chunk.append(data_id.as_u32());
-    },
+    }
 
-    Nop() = 128,
-    @ IData::Nop => |results, chunk| {},
+    Nop()
+    @ IData::Nop => |results, chunk| {}
 
-    Halt()          = 129,
+    Halt()
     @ IData::Unreachable => |results, chunk| {
         chunk.append(Opcode::Halt);
     }
