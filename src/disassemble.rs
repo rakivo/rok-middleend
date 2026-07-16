@@ -964,7 +964,7 @@ pub fn disassemble(
             use rok_entity::EntityRef;
 
             // Look up the block this instruction belongs to
-            if let Some(&block) = ssa.layout.inst_blocks.get(*inst)
+            if let Some(block) = ssa.layout.inst_block(*inst)
                 && Some(block) != curr_block
             {
                 curr_block = Some(block);

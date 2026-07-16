@@ -18,3 +18,4 @@ cfg-if.workspace = true
 nohash-hasher.workspace = true
 smallvec.workspace = true
 paste.workspace = true
+cranelift-bitset = "0.133.1"

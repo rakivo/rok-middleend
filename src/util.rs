@@ -117,21 +117,28 @@ impl_into_bytes_for_int! {
 
 #[macro_export]
 macro_rules! with_comment {
+    //
+    // Internal Code Generators
+    //
+
+    // No $ir_builder, &mut self
     (
-        $comment_name:ident,
-        $(#[$meta:meta])*
-        $vis:vis fn $name:ident
-        $(<$($generics:tt),*>)?
-        (
-            &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)*
-        ) $(-> $ret:ty)? $body:block
+        @generate
+        {
+            @mode(1) @builder() @comment_name($comment_name:ident) @meta($(#[$meta:meta])*)
+            @vis($vis:vis) @name($name:ident) @generics($(<$($generics:tt),*>)?)
+            @self_(&mut $self:ident) @params($($param_name:ident: $param_type:ty),*)
+            @ret($(-> $ret:ty)?) @where($($where_clause:tt)*)
+        }
+        { $($body:tt)* }
     ) => {
         $(#[$meta])*
         $vis fn $name
         $(<$($generics),*>)?
         (&mut $self $(, $param_name: $param_type)*)
         $(-> $ret)?
-        $body
+        $($where_clause)*
+        { $($body)* }
 
         $(#[$meta])*
         #[inline(always)]
@@ -145,6 +152,7 @@ macro_rules! with_comment {
             comment: impl AsRef<str>
         )
         $(-> $ret)?
+        $($where_clause)*
         {
             let res = $self.$name($($param_name),*);
             #[cfg(debug_assertions)] {
@@ -155,22 +163,24 @@ macro_rules! with_comment {
         }
     };
 
+    // Mode 2: $ir_builder, &mut self
     (
-        $ir_builder:ident,
-        $comment_name:ident,
-        $(#[$meta:meta])*
-        $vis:vis fn $name:ident
-        $(<$($generics:tt),*>)?
-        (
-            &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)*
-        ) $(-> $ret:ty)? $body:block
+        @generate
+        {
+            @mode(2) @builder($ir_builder:ident) @comment_name($comment_name:ident) @meta($(#[$meta:meta])*)
+            @vis($vis:vis) @name($name:ident) @generics($(<$($generics:tt),*>)?)
+            @self_(&mut $self:ident) @params($($param_name:ident: $param_type:ty),*)
+            @ret($(-> $ret:ty)?) @where($($where_clause:tt)*)
+        }
+        { $($body:tt)* }
     ) => {
         $(#[$meta])*
         $vis fn $name
         $(<$($generics),*>)?
         (&mut $self $(, $param_name: $param_type)*)
         $(-> $ret)?
-        $body
+        $($where_clause)*
+        { $($body)* }
 
         $(#[$meta])*
         #[inline(always)]
@@ -184,6 +194,7 @@ macro_rules! with_comment {
             comment: impl AsRef<str>
         )
         $(-> $ret)?
+        $($where_clause)*
         {
             let res = $self.$name($($param_name),*);
             #[cfg(debug_assertions)] {
@@ -194,22 +205,24 @@ macro_rules! with_comment {
         }
     };
 
+    // Mode 3: $ir_builder, &$self
     (
-        $ir_builder:ident,
-        $comment_name:ident,
-        $(#[$meta:meta])*
-        $vis:vis fn $name:ident
-        $(<$($generics:tt),*>)?
-        (
-            &$self:ident $(, $param_name:ident: $param_type:ty $(,)?)*
-        ) $(-> $ret:ty)? $body:block
+        @generate
+        {
+            @mode(3) @builder($ir_builder:ident) @comment_name($comment_name:ident) @meta($(#[$meta:meta])*)
+            @vis($vis:vis) @name($name:ident) @generics($(<$($generics:tt),*>)?)
+            @self_(&$self:ident) @params($($param_name:ident: $param_type:ty),*)
+            @ret($(-> $ret:ty)?) @where($($where_clause:tt)*)
+        }
+        { $($body:tt)* }
     ) => {
         $(#[$meta])*
         $vis fn $name
         $(<$($generics),*>)?
         (&$self $(, $param_name: $param_type)*)
         $(-> $ret)?
-        $body
+        $($where_clause)*
+        { $($body)* }
 
         $(#[$meta])*
         #[inline(always)]
@@ -223,6 +236,7 @@ macro_rules! with_comment {
             comment: impl AsRef<str>
         )
         $(-> $ret)?
+        $($where_clause)*
         {
             let res = $self.$name($($param_name),*);
             #[cfg(debug_assertions)] {
@@ -230,6 +244,176 @@ macro_rules! with_comment {
                 $ir_builder.insert_comment(inserted_inst, comment);
             }
             res
+        }
+    };
+
+    //
+    // TT Muncher for 'where' clauses
+    //
+
+    // Base Case: Only the block '{ ... }' is left. Forward to @generate.
+    (
+        @munch_where
+        { $($ctx:tt)* }
+        { $($body:tt)* }
+    ) => {
+        $crate::with_comment! { @generate { $($ctx)* } { $($body)* } }
+    };
+
+    // Recursive Step: Shift one token into the `where` clause.
+    (
+        @munch_where
+        {
+            @mode($mode:tt) @builder($($builder:tt)*) @comment_name($comment_name:ident) @meta($(#[$meta:meta])*)
+            @vis($vis:vis) @name($name:ident) @generics($(<$($generics:tt),*>)?)
+            @self_($($self_tokens:tt)*) @params($($param_name:ident: $param_type:ty),*)
+            @ret($(-> $ret:ty)?) @where($($where_clause:tt)*)
+        }
+        $next:tt $($rest:tt)*
+    ) => {
+        $crate::with_comment! {
+            @munch_where
+            {
+                @mode($mode) @builder($($builder)*) @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_($($self_tokens)*) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where($($where_clause)* $next)
+            }
+            $($rest)*
+        }
+    };
+
+    //
+    // Public API: Entry Points
+    //
+
+    // No $ir_builder, &mut self
+
+    // 1A. No where clause (ty followed directly by `{`, which is legal)
+    (
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($generics:tt),*>)?
+        ( &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)* ) $(-> $ret:ty)?
+        { $($body:tt)* }
+    ) => {
+        $crate::with_comment! {
+            @generate
+            {
+                @mode(1) @builder() @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_(&mut $self) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where()
+            }
+            { $($body)* }
+        }
+    };
+
+    // 1B. With where clause (ty followed directly by `where`, which is legal)
+    (
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($generics:tt),*>)?
+        ( &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)* ) $(-> $ret:ty)?
+        where $($rest:tt)*
+    ) => {
+        $crate::with_comment! {
+            @munch_where
+            {
+                @mode(1) @builder() @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_(&mut $self) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where(where)
+            }
+            $($rest)*
+        }
+    };
+
+    // Signature 2: $ir_builder, &mut self
+
+    // 2A. No where clause
+    (
+        $ir_builder:ident,
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($generics:tt),*>)?
+        ( &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)* ) $(-> $ret:ty)?
+        { $($body:tt)* }
+    ) => {
+        $crate::with_comment! {
+            @generate
+            {
+                @mode(2) @builder($ir_builder) @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_(&mut $self) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where()
+            }
+            { $($body)* }
+        }
+    };
+
+    // 2B. With where clause
+    (
+        $ir_builder:ident,
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($generics:tt),*>)?
+        ( &mut $self:ident $(, $param_name:ident: $param_type:ty $(,)?)* ) $(-> $ret:ty)?
+        where $($rest:tt)*
+    ) => {
+        $crate::with_comment! {
+            @munch_where
+            {
+                @mode(2) @builder($ir_builder) @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_(&mut $self) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where(where)
+            }
+            $($rest)*
+        }
+    };
+
+    // Signature 3: $ir_builder, &$self
+
+    // 3A. No where clause
+    (
+        $ir_builder:ident,
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($generics:tt),*>)?
+        ( &$self:ident $(, $param_name:ident: $param_type:ty $(,)?)* ) $(-> $ret:ty)?
+        { $($body:tt)* }
+    ) => {
+        $crate::with_comment! {
+            @generate
+            {
+                @mode(3) @builder($ir_builder) @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_(&$self) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where()
+            }
+            { $($body)* }
+        }
+    };
+
+    // 3B. With where clause
+    (
+        $ir_builder:ident,
+        $comment_name:ident,
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($generics:tt),*>)?
+        ( &$self:ident $(, $param_name:ident: $param_type:ty $(,)?)* ) $(-> $ret:ty)?
+        where $($rest:tt)*
+    ) => {
+        $crate::with_comment! {
+            @munch_where
+            {
+                @mode(3) @builder($ir_builder) @comment_name($comment_name) @meta($(#[$meta])*)
+                @vis($vis) @name($name) @generics($(<$($generics),*>)?)
+                @self_(&$self) @params($($param_name: $param_type),*)
+                @ret($(-> $ret)?) @where(where)
+            }
+            $($rest)*
         }
     };
 }

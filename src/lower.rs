@@ -120,7 +120,7 @@ impl<'a> LoweringContext<'a> {
 
     #[inline]
     pub fn append_args(&self, chunk: &mut BytecodeFunction, args: &EntityList<Value>) {
-        let args_slice = args.as_slice(&self.func.values_pool);
+        let args_slice = args.as_slice(&self.func.dfg.values_pool);
         let args_len = args_slice.len();
         assert!(args_len <= 255, "Too many arguments (max 255)");
 
@@ -140,8 +140,8 @@ impl<'a> LoweringContext<'a> {
         args: &EntityList<Value>,
     ) {
         let params = &self.func.cfg.blocks[target].params;
-        let args_len = args.len(&self.func.values_pool);
-        debug_assert_eq!(params.len(&self.func.values_pool), args_len);
+        let args_len = args.len(&self.func.dfg.values_pool);
+        debug_assert_eq!(params.len(&self.func.dfg.values_pool), args_len);
         debug_assert!(args_len <= 255, "Too many arguments (max 255)");
 
         let offset_pos = chunk.code.len() as u32;
@@ -149,9 +149,9 @@ impl<'a> LoweringContext<'a> {
 
         chunk.append(args_len as u8);
         for (&param, &arg) in args
-            .as_slice(&self.func.values_pool)
+            .as_slice(&self.func.dfg.values_pool)
             .iter()
-            .zip(params.as_slice(&self.func.values_pool))
+            .zip(params.as_slice(&self.func.dfg.values_pool))
         {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
@@ -175,8 +175,8 @@ impl<'a> LoweringContext<'a> {
         els: Block,
         els_args: &EntityList<Value>,
     ) {
-        let then_args_len = then_args.len(&self.func.values_pool);
-        let else_args_len = els_args.len(&self.func.values_pool);
+        let then_args_len = then_args.len(&self.func.dfg.values_pool);
+        let else_args_len = els_args.len(&self.func.dfg.values_pool);
 
         debug_assert!(then_args_len <= 255, "Too many 'then' arguments (max 255)");
         debug_assert!(else_args_len <= 255, "Too many 'else' arguments (max 255)");
@@ -193,9 +193,9 @@ impl<'a> LoweringContext<'a> {
         chunk.append(then_args_len as u8);
         let then_params = &self.func.cfg.blocks[then].params;
         for (&param, &arg) in then_args
-            .as_slice(&self.func.values_pool)
+            .as_slice(&self.func.dfg.values_pool)
             .iter()
-            .zip(then_params.as_slice(&self.func.values_pool))
+            .zip(then_params.as_slice(&self.func.dfg.values_pool))
         {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
@@ -207,9 +207,9 @@ impl<'a> LoweringContext<'a> {
         chunk.append(else_args_len as u8);
         let els_params = &self.func.cfg.blocks[els].params;
         for (&param, &arg) in els_args
-            .as_slice(&self.func.values_pool)
+            .as_slice(&self.func.dfg.values_pool)
             .iter()
-            .zip(els_params.as_slice(&self.func.values_pool))
+            .zip(els_params.as_slice(&self.func.dfg.values_pool))
         {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
@@ -247,7 +247,7 @@ impl<'a> LoweringContext<'a> {
     }
 
     fn compute_block_order(&mut self) {
-        let Some(entry) = self.func.layout.block_entry.expand() else {
+        let Some(entry) = self.func.layout.entry_block() else {
             return;
         };
 

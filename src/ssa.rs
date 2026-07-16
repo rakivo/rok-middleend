@@ -1,10 +1,10 @@
 use crate::with_comment;
 
 use nohash_hasher::IntSet;
-use rok_entity::packed_option::PackedOption;
+use rok_entity::packed_option::{PackedOption, ReservedValue};
 use rok_entity::{EntityList, EntityRef, EntitySet, ListPool, PrimaryMap, SecondaryMap, SparseMap, sparse_pair};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
@@ -185,12 +185,13 @@ impl fmt::Display for RelSourceLoc {
 }
 
 /// Represents a data type in the IR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
     U8, U16, U32, U64,
     I8, I16, I32, I64,
     F32, F64,
-    Ptr, FuncPtr
+    Ptr, FuncPtr,
+    INVALID
 }
 
 impl Type {
@@ -202,6 +203,8 @@ impl Type {
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 => 4,
             Type::U64 | Type::I64 | Type::F64 | Type::Ptr | Type::FuncPtr => 8,
+
+            Type::INVALID => unreachable!()
         }
     }
 
@@ -277,6 +280,8 @@ impl Type {
 
             Self::Ptr | Self::F64 | Type::FuncPtr => Self::I64,
 
+            Type::INVALID => unreachable!(),
+
             other => other,
         }
     }
@@ -291,6 +296,8 @@ impl Type {
             I8 | I16 | I32 | I64 => true,
             F32 | F64 => true,
             Ptr | FuncPtr => false,
+
+            Type::INVALID => unreachable!(),
         }
     }
 
@@ -309,6 +316,7 @@ impl Type {
             U8 | U16 | U32 | U64 => true,
             I8 | I16 | I32 | I64 => true,
             Ptr | FuncPtr => true,
+            Type::INVALID => unreachable!(),
             _ => false
         }
     }
@@ -323,6 +331,7 @@ impl Type {
             I8 | I16 | I32 | I64 => false,
             Ptr | FuncPtr => false,
             F32 | F64 => true,
+            Type::INVALID => unreachable!(),
         }
     }
 }
@@ -364,6 +373,18 @@ pub struct DataFlowGraph {
     pub values: PrimaryMap<Value, ValueData>,
     pub inst_results: SparseMap<Inst, SparseInstResults>,
 
+    /// User-defined stack maps.
+    ///
+    /// Not to be confused with the stack maps that `regalloc2` produces. These
+    /// are defined by the user in `cranelift-frontend`. These will eventually
+    /// replace the stack maps support in `regalloc2`, but in the name of
+    /// incrementalism and avoiding gigantic PRs that completely overhaul
+    /// Cranelift and Wasmtime at the same time, we are allowing them to live in
+    /// parallel for the time being.
+    user_stack_maps: BTreeMap<Inst, UserStackMapEntryVec>,
+
+    pub values_pool: ListPool<Value>,
+
     /// Saves Value labels.
     pub values_labels: Option<BTreeMap<Value, ValueLabelAssignments>>,
 }
@@ -377,6 +398,376 @@ impl DataFlowGraph {
     #[inline]
     pub fn make_inst(&mut self, data: InstructionData) -> Inst {
         self.insts.push(data)
+    }
+
+    /// Get an iterator over all values.
+    pub fn values<'a>(&'a self) -> Values<'a> {
+        Values {
+            inner: self.values.iter(),
+        }
+    }
+
+    /// Clear the list of result values from `inst`.
+    ///
+    /// This leaves `inst` without any result values. New result values can be created by calling
+    /// `make_inst_results` or by using a `replace(inst)` builder.
+    #[inline]
+    pub fn clear_results(&mut self, inst: Inst) {
+        if let Some(results) = self.inst_results.get_mut(inst) {
+            results.value.clear();
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn inst_results(&self, inst: Inst) -> &[Value] {
+        self.inst_results.get(inst).map_or(&[], |s| s.value.as_slice())
+    }
+
+    /// Returns an iterator yielding all values read and written by this instruction.
+    #[inline]
+    #[must_use]
+    pub fn inst_values(&self, inst: Inst) -> InstValues<'_> {
+        let inst_data = &self.insts[inst];
+        let results = self.inst_results(inst);
+        let args = inst_data.inst_args(&self.values_pool);
+
+        InstValues {
+            results: results.iter(),
+            args,
+        }
+    }
+
+    /// Construct a read-only visitor context for the values of this instruction.
+    #[inline]
+    #[must_use]
+    pub fn inst_args(
+        &self,
+        inst: Inst,
+    ) -> impl Iterator<Item = Value> {
+        self.insts[inst].inst_args(&self.values_pool)
+    }
+
+    /// Check if a value reference is valid.
+    pub fn value_is_valid(&self, v: Value) -> bool {
+        self.values.is_valid(v)
+    }
+
+    /// Check whether a value is valid and not an alias.
+    pub fn value_is_real(&self, value: Value) -> bool {
+        // Deleted or unused values are also stored as aliases so this excludes
+        // those as well.
+        self.value_is_valid(value) && !matches!(self.values[value].def, ValueDef::Alias { .. })
+    }
+
+    /// Get the type of a value.
+    pub fn value_type(&self, v: Value) -> Type {
+        self.values[v].ty
+    }
+
+    /// Get the definition of a value.
+    ///
+    /// This is either the instruction that defined it or the Block that has the value as an
+    /// parameter.
+    pub fn value_def(&self, v: Value) -> ValueDef {
+        match self.values[v].def {
+            ValueDef::Alias { original, .. } => {
+                // Make sure we only recurse one level. `resolve_aliases` has safeguards to
+                // detect alias loops without overrunning the stack.
+                self.value_def(self.resolve_aliases(original))
+            }
+            other => other
+        }
+    }
+
+    /// Overwrite the instruction's value references with values from the iterator.
+    /// NOTE: the iterator provided is expected to yield at least as many values as the instruction
+    /// currently has.
+    pub fn overwrite_inst_values<I>(&mut self, inst: Inst, mut values: I)
+    where
+        I: Iterator<Item = Value>,
+    {
+        self.insts[inst].map_values(
+            &mut self.values_pool,
+            |_| values.next().unwrap(),
+        );
+    }
+
+    // /// Determine if `v` is an attached instruction result / block parameter.
+    // ///
+    // /// An attached value can't be attached to something else without first being detached.
+    // ///
+    // /// Value aliases are not considered to be attached to anything. Use `resolve_aliases()` to
+    // /// determine if the original aliased value is attached.
+    // pub fn value_is_attached(&self, v: Value) -> bool {
+    //     match self.values[v].def {
+    //         ValueDef::Inst { inst, result_idx } => Some(&v) == self.inst_results(inst).get(result_idx as usize),
+    //         ValueDef::Param { block, param_idx } => Some(&v) == self.block_params(block).get(param_idx as usize),
+    //         ValueDef::Alias { .. } => false,
+    //     }
+    // }
+
+    /// Resolve value aliases.
+    ///
+    /// Find the original SSA value that `value` aliases.
+    pub fn resolve_aliases(&self, value: Value) -> Value {
+        resolve_aliases(&self.values, value)
+    }
+
+    /// Replace all uses of value aliases with their resolved values, and delete
+    /// the aliases.
+    pub fn resolve_all_aliases(&mut self) {
+        let invalid_value = ValueData {
+            ty: Type::INVALID,
+            def: ValueDef::Alias {
+                original: Value::reserved_value(),
+            }
+        };
+
+        // Rewrite each chain of aliases. Update every alias along the chain
+        // into an alias directly to the final value. Due to updating every
+        // alias that it looks at, this loop runs in time linear in the number
+        // of values.
+        for mut src in self.values.keys() {
+            let value_data = self.values[src];
+            if value_data == invalid_value {
+                continue;
+            }
+
+            if let ValueDef::Alias { mut original, .. } = value_data.def {
+                // We don't use the type after this, we just need some place to
+                // store the resolved aliases temporarily.
+                let resolved = ValueData {
+                    ty: Type::INVALID,
+                    def: ValueDef::Alias {
+                        original: resolve_aliases(&self.values, original),
+                    }
+                };
+                // Walk the chain again, splatting the new alias everywhere.
+                // resolve_aliases panics if there's an alias cycle, so we don't
+                // need to guard against cycles here.
+                loop {
+                    self.values[src] = resolved;
+                    src = original;
+                    if let ValueDef::Alias { original: next, .. } = self.values[src].def {
+                        original = next;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Now aliases don't point to other aliases, so we can replace any use
+        // of an alias with the final value in constant time.
+
+        // Rewrite InstructionData in `self.insts`.
+        for inst in self.insts.values_mut() {
+            inst.map_values(
+                &mut self.values_pool,
+
+                |arg| {
+                    if let ValueDef::Alias { original, .. } = self.values[arg].def {
+                        original
+                    } else {
+                        arg
+                    }
+                },
+            );
+        }
+
+        // - `results` and block-params in `blocks` are not aliases, by
+        //   definition.
+        // - `dynamic_types` has no values.
+        // - `value_lists` can only be accessed via references from elsewhere.
+        // - `values` only has value references in aliases (which we've
+        //   removed), and unions (but the egraph pass ensures there are no
+        //   aliases before creating unions).
+
+        // - `signatures` and `ext_funcs` have no values.
+
+        if let Some(values_labels) = &mut self.values_labels {
+            // Debug info is best-effort. If any is attached to value aliases,
+            // just discard it.
+            values_labels.retain(|&k, _| !matches!(self.values[k].def, ValueDef::Alias { .. }));
+
+            // If debug-info says a value should have the same labels as another
+            // value, then make sure that target is not a value alias.
+            for value_label in values_labels.values_mut() {
+                if let ValueLabelAssignments::Alias { value, .. } = value_label {
+                    if let ValueDef::Alias { original, .. } = self.values[*value].def {
+                        *value = original;
+                    }
+                }
+            }
+        }
+
+        // - `constants` and `immediates` have no values.
+        // - `jump_tables` is updated together with instruction-data above.
+
+        // Delete all aliases now that there are no uses left.
+        for value in self.values.values_mut() {
+            if let ValueDef::Alias { .. } = value.def {
+                *value = invalid_value;
+            }
+        }
+    }
+
+    /// Turn a value into an alias of another.
+    ///
+    /// Change the `dest` value to behave as an alias of `src`. This means that all uses of `dest`
+    /// will behave as if they used that value `src`.
+    ///
+    /// The `dest` value can't be attached to an instruction or block.
+    pub fn change_to_alias(&mut self, dest: Value, src: Value) {
+        // debug_assert!(!self.value_is_attached(dest));
+
+        // Try to create short alias chains by finding the original source value.
+        // This also avoids the creation of loops.
+        let original = self.resolve_aliases(src);
+        debug_assert_ne!(
+            dest, original,
+            "Aliasing {dest} to {src} would create a loop"
+        );
+        let ty = self.value_type(original);
+        debug_assert_eq!(
+            self.value_type(dest),
+            ty,
+            "Aliasing {} to {} would change its type {:?} to {:?}",
+            dest,
+            src,
+            self.value_type(dest),
+            ty
+        );
+        debug_assert_ne!(ty, Type::INVALID);
+
+        self.values[dest].def = ValueDef::Alias { original }.into();
+        self.values[dest].ty = ty;
+    }
+
+    /// Replace the results of one instruction with aliases to the results of another.
+    ///
+    /// Change all the results of `dest_inst` to behave as aliases of
+    /// corresponding results of `src_inst`, as if calling change_to_alias for
+    /// each.
+    ///
+    /// After calling this instruction, `dest_inst` will have had its results
+    /// cleared, so it likely needs to be removed from the graph.
+    ///
+    pub fn replace_with_aliases(&mut self, dest_inst: Inst, original_inst: Inst) {
+        debug_assert_ne!(
+            dest_inst, original_inst,
+            "Replacing {dest_inst} with itself would create a loop"
+        );
+
+        let dest_results: SmallVec<[Value; 4]> = self.inst_results(dest_inst).into();
+        let original_results: SmallVec<[Value; 4]> = self.inst_results(original_inst).into();
+
+        debug_assert_eq!(
+            dest_results.len(),
+            original_results.len(),
+            "Replacing {dest_inst} with {original_inst} would produce a different number of results."
+        );
+
+        for (&dest, original) in dest_results.iter().zip(original_results) {
+            let ty = self.value_type(original);
+            debug_assert_eq!(
+                self.value_type(dest),
+                ty,
+                "Aliasing {} to {} would change its type {:?} to {:?}",
+                dest,
+                original,
+                self.value_type(dest),
+                ty
+            );
+            debug_assert_ne!(ty, Type::INVALID);
+
+            self.values[dest] = ValueData {
+                ty,
+                def: ValueDef::Alias { original }
+            };
+        }
+
+        self.clear_results(dest_inst);
+    }
+
+    /// Get the stack map entries associated with the given instruction.
+    pub fn user_stack_map_entries(&self, inst: Inst) -> Option<&[UserStackMapEntry]> {
+        self.user_stack_maps.get(&inst).map(|es| &**es)
+    }
+
+    /// Append a new stack map entry for the given call instruction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the given instruction is not a (non-tail) call instruction.
+    pub fn append_user_stack_map_entry(&mut self, inst: Inst, entry: UserStackMapEntry) {
+        assert!(self.insts[inst].is_safepoint());
+        self.user_stack_maps.entry(inst).or_default().push(entry);
+    }
+}
+
+/// Iterator over all Values in a DFG.
+pub struct Values<'a> {
+    inner: rok_entity::Iter<'a, Value, ValueData>,
+}
+
+/// Check for non-values.
+fn valid_valuedata(data: ValueData) -> bool {
+    if let ValueData {
+        ty: Type::INVALID,
+        def: ValueDef::Alias { original },
+    } = data
+    {
+        if original == Value::reserved_value() {
+            return false;
+        }
+    }
+    true
+}
+
+impl<'a> Iterator for Values<'a> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .by_ref()
+            .find(|kv| valid_valuedata(*kv.1))
+            .map(|kv| kv.0)
+    }
+}
+
+
+/// Resolve value aliases.
+///
+/// Find the original SSA value that `value` aliases, or None if an
+/// alias cycle is detected.
+fn maybe_resolve_aliases(
+    values: &PrimaryMap<Value, ValueData>,
+    value: Value,
+) -> Option<Value> {
+    let mut v = value;
+
+    // Note that values may be empty here.
+    for _ in 0..=values.len() {
+        if let ValueDef::Alias { original } = values[v].def {
+            v = original;
+        } else {
+            return Some(v);
+        }
+    }
+
+    None
+}
+
+/// Resolve value aliases.
+///
+/// Find the original SSA value that `value` aliases.
+fn resolve_aliases(values: &PrimaryMap<Value, ValueData>, value: Value) -> Value {
+    if let Some(v) = maybe_resolve_aliases(values, value) {
+        v
+    } else {
+        panic!("Value alias loop detected for {value}");
     }
 }
 
@@ -435,7 +826,6 @@ pub struct SsaFunc {
     pub layout: Layout,
 
     pub stack_slots: PrimaryMap<StackSlot, StackSlotData>,
-    pub values_pool: ListPool<Value>,
 
     /// The first `SourceLoc` appearing in the function, serving as a base for every relative
     /// source loc in the function.
@@ -515,6 +905,32 @@ impl SsaFunc {
         }
     }
 
+    /// Checks that the specified block can be encoded as a basic block.
+    ///
+    /// On error, returns the first invalid instruction and an error message.
+    pub fn is_block_basic(&self, block: Block) -> Result<(), (Inst, &'static str)> {
+        let dfg = &self.dfg;
+        let inst_iter = self.layout.block_insts(block);
+
+        // Ignore all instructions prior to the first branch.
+        let mut inst_iter = inst_iter.skip_while(|&inst| !dfg.insts[inst].is_branch());
+
+        if let Some(_branch) = inst_iter.next() {
+            if let Some(next) = inst_iter.next() {
+                return Err((next, "post-terminator instruction"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns an iterator over the blocks succeeding the given block.
+    pub fn block_successors(&self, block: Block) -> impl DoubleEndedIterator<Item = Block> + '_ {
+        self.layout.last_inst(block).into_iter().flat_map(|inst| {
+            self.dfg.insts[inst].branch_destination().iter().copied()
+        })
+    }
+
     #[must_use]
     pub fn value_type(&self, v: Value) -> Type {
         self.dfg.values[v].ty
@@ -548,7 +964,7 @@ impl SsaFunc {
     #[inline]
     #[must_use]
     pub fn inst_results(&self, inst: Inst) -> &[Value] {
-        self.dfg.inst_results.get(inst).map_or(&[], |s| s.value.as_slice())
+        self.dfg.inst_results(inst)
     }
 
     #[inline]
@@ -573,16 +989,16 @@ impl SsaFunc {
 
     #[inline]
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
-        let param_idx = self.cfg.blocks[block].params.len(&self.values_pool) as u8;
+        let param_idx = self.cfg.blocks[block].params.len(&self.dfg.values_pool) as u8;
         let val = self.dfg.make_value(ValueData { ty, def: ValueDef::Param { block, param_idx } });
-        self.cfg.blocks[block].params.push(val, &mut self.values_pool);
+        self.cfg.blocks[block].params.push(val, &mut self.dfg.values_pool);
         val
     }
 
     #[inline]
     #[must_use]
     pub fn block_params(&self, block: Block) -> &[Value] {
-        self.cfg.blocks[block].params.as_slice(&self.values_pool)
+        self.cfg.blocks[block].params.as_slice(&self.dfg.values_pool)
     }
 
     #[must_use]
@@ -601,15 +1017,15 @@ impl SsaFunc {
         };
 
         let params = &mut self.cfg.blocks[block].params;
-        let idx = params.as_slice(&self.values_pool)
+        let idx = params.as_slice(&self.dfg.values_pool)
             .iter()
             .position(|&p| p == val)
             .expect("param missing from its own block's param list");
 
-        params.remove(idx, &mut self.values_pool);
+        params.remove(idx, &mut self.dfg.values_pool);
 
         // Indices after idx shifted down by one, renumber so `num` stays accurate
-        let remaining: Vec<Value> = params.as_slice(&self.values_pool).to_vec();
+        let remaining: Vec<Value> = params.as_slice(&self.dfg.values_pool).to_vec();
         for (i, &p) in remaining.iter().enumerate().skip(idx) {
             if let ValueDef::Param { param_idx, .. } = &mut self.dfg.values[p].def {
                 *param_idx = i as u8;
@@ -623,41 +1039,630 @@ impl SsaFunc {
     }
 }
 
-/// Maps logical entities (Inst, Block) to their container.
-#[derive(Debug, Clone, Default)]
-pub struct Layout {
-    pub inst_blocks: SecondaryMap<Inst, Block>,
-    pub block_entry: PackedOption<Block>,
-    pub block_order: Vec<Block>,
-    pub block_placed: EntitySet<Block>,
+type SequenceNumber = u32;
+
+/// Initial stride assigned to new sequence numbers.
+const MAJOR_STRIDE: SequenceNumber = 10;
+
+/// Secondary stride used when renumbering locally.
+const MINOR_STRIDE: SequenceNumber = 2;
+
+/// Limit on the sequence number range we'll renumber locally. If this limit is exceeded, we'll
+/// switch to a full block renumbering.
+const LOCAL_LIMIT: SequenceNumber = 100 * MINOR_STRIDE;
+
+/// Compute the midpoint between `a` and `b`.
+/// Return `None` if the midpoint would be equal to either.
+fn midpoint(a: SequenceNumber, b: SequenceNumber) -> Option<SequenceNumber> {
+    debug_assert!(a < b);
+    // Avoid integer overflow.
+    let m = a + (b - a) / 2;
+    if m > a { Some(m) } else { None }
 }
 
+/// The `Layout` struct determines the layout of blocks and instructions in a function. It does not
+/// contain definitions of instructions or blocks, but depends on `Inst` and `Block` entity references
+/// being defined elsewhere.
+///
+/// This data structure determines:
+///
+/// - The order of blocks in the function.
+/// - Which block contains a given instruction.
+/// - The order of instructions with a block.
+///
+/// While data dependencies are not recorded, instruction ordering does affect control
+/// dependencies, so part of the semantics of the program are determined by the layout.
+///
+#[derive(Debug, Clone, Default)]
+pub struct Layout {
+    /// Linked list nodes for the layout order of blocks Forms a doubly linked list, terminated in
+    /// both ends by `None`.
+    blocks: SecondaryMap<Block, BlockNode>,
+
+    /// Linked list nodes for the layout order of instructions. Forms a double linked list per block,
+    /// terminated in both ends by `None`.
+    insts: SecondaryMap<Inst, InstNode>,
+
+    /// First block in the layout order, or `None` when no blocks have been laid out.
+    first_block: Option<Block>,
+
+    /// Last block in the layout order, or `None` when no blocks have been laid out.
+    last_block: Option<Block>,
+}
+
+/// A single node in the linked-list of blocks.
+// **Note:** Whenever you add new fields here, don't forget to update the custom serializer for `Layout` too.
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
+struct BlockNode {
+    prev: PackedOption<Block>,
+    next: PackedOption<Block>,
+    first_inst: PackedOption<Inst>,
+    last_inst: PackedOption<Inst>,
+    cold: bool,
+}
+
+/// Iterate over blocks in layout order. See [crate::ir::layout::Layout::blocks].
+pub struct Blocks<'f> {
+    layout: &'f Layout,
+    next: Option<Block>,
+}
+
+impl<'f> Iterator for Blocks<'f> {
+    type Item = Block;
+
+    fn next(&mut self) -> Option<Block> {
+        match self.next {
+            Some(block) => {
+                self.next = self.layout.next_block(block);
+                Some(block)
+            }
+            None => None,
+        }
+    }
+}
+
+/// Use a layout reference in a for loop.
+impl<'f> IntoIterator for &'f Layout {
+    type Item = Block;
+    type IntoIter = Blocks<'f>;
+
+    fn into_iter(self) -> Blocks<'f> {
+        self.blocks()
+    }
+}
+
+/// A `ProgramPoint` represents a position in a function where the live range of an SSA value can
+/// begin or end. It can be either:
+///
+/// 1. An instruction or
+/// 2. A block header.
+///
+/// This corresponds more or less to the lines in the textual form of Cranelift IR.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum ProgramPoint {
+    /// An instruction in the function.
+    Inst(Inst),
+    /// A block header.
+    Block(Block),
+}
+
+impl ProgramPoint {
+    /// Get the instruction we know is inside.
+    pub fn unwrap_inst(self) -> Inst {
+        match self {
+            Self::Inst(x) => x,
+            Self::Block(x) => panic!("expected inst: {x}"),
+        }
+    }
+}
+
+impl From<Inst> for ProgramPoint {
+    fn from(inst: Inst) -> Self {
+        Self::Inst(inst)
+    }
+}
+
+impl From<Block> for ProgramPoint {
+    fn from(block: Block) -> Self {
+        Self::Block(block)
+    }
+}
+
+impl fmt::Display for ProgramPoint {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::Inst(x) => write!(f, "{x}"),
+            Self::Block(x) => write!(f, "{x}"),
+        }
+    }
+}
+
+impl fmt::Debug for ProgramPoint {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ProgramPoint({self})")
+    }
+}
+
+/// Methods for arranging instructions.
+///
+/// An instruction starts out as *not inserted* in the layout. An instruction can be inserted into
+/// a block at a given position.
 impl Layout {
-    #[inline]
-    #[must_use]
-    pub fn entry_block(&self) -> Option<Block> {
-        self.block_entry.expand()
-    }
-
-    #[inline]
-    #[must_use]
+    /// Get the block containing `inst`, or `None` if `inst` is not inserted in the layout.
     pub fn inst_block(&self, inst: Inst) -> Option<Block> {
-        self.inst_blocks.get(inst).copied()
+        self.insts[inst].block.into()
     }
 
-    #[inline]
-    #[must_use]
+    /// Get the block containing the program point `pp`. Panic if `pp` is not in the layout.
+    pub fn pp_block(&self, pp: ProgramPoint) -> Block {
+        match pp {
+            ProgramPoint::Block(block) => block,
+            ProgramPoint::Inst(inst) => self.inst_block(inst).expect("Program point not in layout"),
+        }
+    }
+
+    /// Append `inst` to the end of `block`.
+    pub fn append_inst(&mut self, inst: Inst, block: Block) {
+        debug_assert_eq!(self.inst_block(inst), None);
+        debug_assert!(
+            self.is_block_inserted(block),
+            "Cannot append instructions to block not in layout"
+        );
+        {
+            let block_node = &mut self.blocks[block];
+            {
+                let inst_node = &mut self.insts[inst];
+                inst_node.block = block.into();
+                inst_node.prev = block_node.last_inst;
+                debug_assert!(inst_node.next.is_none());
+            }
+            if block_node.first_inst.is_none() {
+                block_node.first_inst = inst.into();
+            } else {
+                self.insts[block_node.last_inst.unwrap()].next = inst.into();
+            }
+            block_node.last_inst = inst.into();
+        }
+        self.assign_inst_seq(inst);
+    }
+
+    /// Fetch a block's first instruction.
+    pub fn first_inst(&self, block: Block) -> Option<Inst> {
+        self.blocks[block].first_inst.into()
+    }
+
+    /// Fetch a block's last instruction.
+    pub fn last_inst(&self, block: Block) -> Option<Inst> {
+        self.blocks[block].last_inst.into()
+    }
+
+    /// Fetch the instruction following `inst`.
+    pub fn next_inst(&self, inst: Inst) -> Option<Inst> {
+        self.insts[inst].next.expand()
+    }
+
+    /// Fetch the instruction preceding `inst`.
+    pub fn prev_inst(&self, inst: Inst) -> Option<Inst> {
+        self.insts[inst].prev.expand()
+    }
+
+    /// Insert `inst` before the instruction `before` in the same block.
+    pub fn insert_inst(&mut self, inst: Inst, before: Inst) {
+        debug_assert_eq!(self.inst_block(inst), None);
+        let block = self
+            .inst_block(before)
+            .expect("Instruction before insertion point not in the layout");
+        let after = self.insts[before].prev;
+        {
+            let inst_node = &mut self.insts[inst];
+            inst_node.block = block.into();
+            inst_node.next = before.into();
+            inst_node.prev = after;
+        }
+        self.insts[before].prev = inst.into();
+        match after.expand() {
+            None => self.blocks[block].first_inst = inst.into(),
+            Some(a) => self.insts[a].next = inst.into(),
+        }
+        self.assign_inst_seq(inst);
+    }
+
+    /// Remove `inst` from the layout.
+    pub fn remove_inst(&mut self, inst: Inst) {
+        let block = self.inst_block(inst).expect("Instruction already removed.");
+        // Clear the `inst` node and extract links.
+        let prev;
+        let next;
+        {
+            let n = &mut self.insts[inst];
+            prev = n.prev;
+            next = n.next;
+            n.block = None.into();
+            n.prev = None.into();
+            n.next = None.into();
+        }
+        // Fix up links to `inst`.
+        match prev.expand() {
+            None => self.blocks[block].first_inst = next,
+            Some(p) => self.insts[p].next = next,
+        }
+        match next.expand() {
+            None => self.blocks[block].last_inst = prev,
+            Some(n) => self.insts[n].prev = prev,
+        }
+    }
+
+    /// Iterate over the instructions in `block` in layout order.
+    pub fn block_insts(&self, block: Block) -> Insts<'_> {
+        Insts {
+            layout: self,
+            head: self.blocks[block].first_inst.into(),
+            tail: self.blocks[block].last_inst.into(),
+        }
+    }
+
+    /// Split the block containing `before` in two.
+    ///
+    /// Insert `new_block` after the old block and move `before` and the following instructions to
+    /// `new_block`:
+    ///
+    /// ```text
+    /// old_block:
+    ///     i1
+    ///     i2
+    ///     i3 << before
+    ///     i4
+    /// ```
+    /// becomes:
+    ///
+    /// ```text
+    /// old_block:
+    ///     i1
+    ///     i2
+    /// new_block:
+    ///     i3 << before
+    ///     i4
+    /// ```
+    pub fn split_block(&mut self, new_block: Block, before: Inst) {
+        let old_block = self
+            .inst_block(before)
+            .expect("The `before` instruction must be in the layout");
+        debug_assert!(!self.is_block_inserted(new_block));
+
+        // Insert new_block after old_block.
+        let next_block = self.blocks[old_block].next;
+        let last_inst = self.blocks[old_block].last_inst;
+        {
+            let node = &mut self.blocks[new_block];
+            node.prev = old_block.into();
+            node.next = next_block;
+            node.first_inst = before.into();
+            node.last_inst = last_inst;
+        }
+        self.blocks[old_block].next = new_block.into();
+
+        // Fix backwards link.
+        if Some(old_block) == self.last_block {
+            self.last_block = Some(new_block);
+        } else {
+            self.blocks[next_block.unwrap()].prev = new_block.into();
+        }
+
+        // Disconnect the instruction links.
+        let prev_inst = self.insts[before].prev;
+        self.insts[before].prev = None.into();
+        self.blocks[old_block].last_inst = prev_inst;
+        match prev_inst.expand() {
+            None => self.blocks[old_block].first_inst = None.into(),
+            Some(pi) => self.insts[pi].next = None.into(),
+        }
+
+        // Fix the instruction -> block pointers.
+        let mut opt_i = Some(before);
+        while let Some(i) = opt_i {
+            debug_assert_eq!(self.insts[i].block.expand(), Some(old_block));
+            self.insts[i].block = new_block.into();
+            opt_i = self.insts[i].next.into();
+        }
+    }
+
+    /// Assign a valid sequence number to `inst` such that the numbers are still monotonic. This may
+    /// require renumbering.
+    fn assign_inst_seq(&mut self, inst: Inst) {
+        // Get the sequence number immediately before `inst`.
+        let prev_seq = match self.insts[inst].prev.expand() {
+            Some(prev_inst) => self.insts[prev_inst].seq,
+            None => 0,
+        };
+
+        // Get the sequence number immediately following `inst`.
+        let next_seq = if let Some(next_inst) = self.insts[inst].next.expand() {
+            self.insts[next_inst].seq
+        } else {
+            // There is nothing after `inst`. We can just use a major stride.
+            self.insts[inst].seq = prev_seq + MAJOR_STRIDE;
+            return;
+        };
+
+        // Check if there is room between these sequence numbers.
+        if let Some(seq) = midpoint(prev_seq, next_seq) {
+            self.insts[inst].seq = seq;
+        } else {
+            // No available integers between `prev_seq` and `next_seq`. We have to renumber.
+            self.renumber_insts(inst, prev_seq + MINOR_STRIDE, prev_seq + LOCAL_LIMIT);
+        }
+    }
+
+    /// Renumber instructions starting from `inst` until the end of the block or until numbers catch
+    /// up.
+    ///
+    /// If sequence numbers exceed `limit`, switch to a full block renumbering.
+    fn renumber_insts(&mut self, inst: Inst, seq: SequenceNumber, limit: SequenceNumber) {
+        let mut inst = inst;
+        let mut seq = seq;
+
+        loop {
+            self.insts[inst].seq = seq;
+
+            // Next instruction.
+            inst = match self.insts[inst].next.expand() {
+                None => return,
+                Some(next) => next,
+            };
+
+            if seq < self.insts[inst].seq {
+                // Sequence caught up.
+                return;
+            }
+
+            if seq > limit {
+                // We're pushing too many instructions in front of us.
+                // Switch to a full block renumbering to make some space.
+                self.full_block_renumber(
+                    self.inst_block(inst)
+                        .expect("inst must be inserted before assigning an seq"),
+                );
+                return;
+            }
+
+            seq += MINOR_STRIDE;
+        }
+    }
+
+    /// Renumber all instructions in a block.
+    ///
+    /// This doesn't affect the position of anything, but it gives more room in the internal
+    /// sequence numbers for inserting instructions later.
+    fn full_block_renumber(&mut self, block: Block) {
+        // let _tt = timing::layout_renumber();
+
+        // Avoid 0 as this is reserved for the program point indicating the block itself
+        let mut seq = MAJOR_STRIDE;
+        let mut next_inst = self.blocks[block].first_inst.expand();
+        while let Some(inst) = next_inst {
+            self.insts[inst].seq = seq;
+            seq += MAJOR_STRIDE;
+            next_inst = self.insts[inst].next.expand();
+        }
+
+        // trace!("Renumbered {} program points", seq / MAJOR_STRIDE);
+    }
+}
+
+/// Methods for laying out blocks.
+///
+/// An unknown block starts out as *not inserted* in the block layout. The layout is a linear order of
+/// inserted blocks. Once a block has been inserted in the layout, instructions can be added. A block
+/// can only be removed from the layout when it is empty.
+///
+/// Since every block must end with a terminator instruction which cannot fall through, the layout of
+/// blocks do not affect the semantics of the program.
+///
+impl Layout {
+    /// Is `block` currently part of the layout?
     pub fn is_block_inserted(&self, block: Block) -> bool {
-        self.block_placed.contains(block)
+        Some(block) == self.first_block || self.blocks[block].prev.is_some()
     }
 
+    /// Insert `block` as the last block in the layout.
+    #[track_caller]
     pub fn append_block(&mut self, block: Block) {
-        if self.block_placed.insert(block) {
-            self.block_order.push(block);
+        debug_assert!(
+            !self.is_block_inserted(block),
+            "Cannot append block that is already in the layout"
+        );
+        {
+            let node = &mut self.blocks[block];
+            debug_assert!(node.first_inst.is_none() && node.last_inst.is_none());
+            node.prev = self.last_block.into();
+            node.next = None.into();
         }
-        if self.block_entry.is_none() {
-            self.block_entry = PackedOption::from(block);
+        if let Some(last) = self.last_block {
+            self.blocks[last].next = block.into();
+        } else {
+            self.first_block = Some(block);
         }
+        self.last_block = Some(block);
+    }
+
+    /// Insert `block` in the layout before the existing block `before`.
+    pub fn insert_block(&mut self, block: Block, before: Block) {
+        debug_assert!(
+            !self.is_block_inserted(block),
+            "Cannot insert block that is already in the layout"
+        );
+        debug_assert!(
+            self.is_block_inserted(before),
+            "block Insertion point not in the layout"
+        );
+        let after = self.blocks[before].prev;
+        {
+            let node = &mut self.blocks[block];
+            node.next = before.into();
+            node.prev = after;
+        }
+        self.blocks[before].prev = block.into();
+        match after.expand() {
+            None => self.first_block = Some(block),
+            Some(a) => self.blocks[a].next = block.into(),
+        }
+    }
+
+    /// Insert `block` in the layout *after* the existing block `after`.
+    pub fn insert_block_after(&mut self, block: Block, after: Block) {
+        debug_assert!(
+            !self.is_block_inserted(block),
+            "Cannot insert block that is already in the layout"
+        );
+        debug_assert!(
+            self.is_block_inserted(after),
+            "block Insertion point not in the layout"
+        );
+        let before = self.blocks[after].next;
+        {
+            let node = &mut self.blocks[block];
+            node.next = before;
+            node.prev = after.into();
+        }
+        self.blocks[after].next = block.into();
+        match before.expand() {
+            None => self.last_block = Some(block),
+            Some(b) => self.blocks[b].prev = block.into(),
+        }
+    }
+
+    /// Remove `block` from the layout.
+    pub fn remove_block(&mut self, block: Block) {
+        debug_assert!(self.is_block_inserted(block), "block not in the layout");
+        debug_assert!(self.first_inst(block).is_none(), "block must be empty.");
+
+        // Clear the `block` node and extract links.
+        let prev;
+        let next;
+        {
+            let n = &mut self.blocks[block];
+            prev = n.prev;
+            next = n.next;
+            n.prev = None.into();
+            n.next = None.into();
+        }
+        // Fix up links to `block`.
+        match prev.expand() {
+            None => self.first_block = next.expand(),
+            Some(p) => self.blocks[p].next = next,
+        }
+        match next.expand() {
+            None => self.last_block = prev.expand(),
+            Some(n) => self.blocks[n].prev = prev,
+        }
+    }
+
+    /// Return an iterator over all blocks in layout order.
+    pub fn blocks(&self) -> Blocks<'_> {
+        Blocks {
+            layout: self,
+            next: self.first_block,
+        }
+    }
+
+    /// Get the function's entry block.
+    /// This is simply the first block in the layout order.
+    pub fn entry_block(&self) -> Option<Block> {
+        self.first_block
+    }
+
+    /// Get the last block in the layout.
+    pub fn last_block(&self) -> Option<Block> {
+        self.last_block
+    }
+
+    /// Get the block preceding `block` in the layout order.
+    pub fn prev_block(&self, block: Block) -> Option<Block> {
+        self.blocks[block].prev.expand()
+    }
+
+    /// Get the block following `block` in the layout order.
+    pub fn next_block(&self, block: Block) -> Option<Block> {
+        self.blocks[block].next.expand()
+    }
+
+    /// Mark a block as "cold".
+    ///
+    /// This will try to move it out of the ordinary path of execution
+    /// when lowered to machine code.
+    pub fn set_cold(&mut self, block: Block) {
+        self.blocks[block].cold = true;
+    }
+
+    /// Is the given block cold?
+    pub fn is_cold(&self, block: Block) -> bool {
+        self.blocks[block].cold
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct InstNode {
+    /// The Block containing this instruction, or `None` if the instruction is not yet inserted.
+    block: PackedOption<Block>,
+    prev: PackedOption<Inst>,
+    next: PackedOption<Inst>,
+    seq: SequenceNumber,
+}
+
+impl PartialEq for InstNode {
+    fn eq(&self, other: &Self) -> bool {
+        // Ignore the sequence number as it is an optimization used by pp_cmp and may be different
+        // even for equivalent layouts.
+        self.block == other.block && self.prev == other.prev && self.next == other.next
+    }
+}
+
+impl core::hash::Hash for InstNode {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // Ignore the sequence number as it is an optimization used by pp_cmp and may be different
+        // even for equivalent layouts.
+        self.block.hash(state);
+        self.prev.hash(state);
+        self.next.hash(state);
+    }
+}
+
+/// Iterate over instructions in a block in layout order. See `Layout::block_insts()`.
+pub struct Insts<'f> {
+    layout: &'f Layout,
+    head: Option<Inst>,
+    tail: Option<Inst>,
+}
+
+impl<'f> Iterator for Insts<'f> {
+    type Item = Inst;
+
+    fn next(&mut self) -> Option<Inst> {
+        let rval = self.head;
+        if let Some(inst) = rval {
+            if self.head == self.tail {
+                self.head = None;
+                self.tail = None;
+            } else {
+                self.head = self.layout.insts[inst].next.into();
+            }
+        }
+        rval
+    }
+}
+
+impl<'f> DoubleEndedIterator for Insts<'f> {
+    fn next_back(&mut self) -> Option<Inst> {
+        let rval = self.tail;
+        if let Some(inst) = rval {
+            if self.head == self.tail {
+                self.head = None;
+                self.tail = None;
+            } else {
+                self.tail = self.layout.insts[inst].prev.into();
+            }
+        }
+        rval
     }
 }
 
@@ -748,6 +1753,143 @@ impl InstructionData {
 
     #[inline]
     #[must_use]
+    pub fn branch_destination(&self) -> &[Block] {
+        match self {
+            Self::Jump { destination, .. } => std::slice::from_ref(destination),
+            Self::Branch { destinations, .. } => destinations,
+            _ => &[]
+        }
+    }
+
+    /// Returns an iterator over all input `Value`s used by this instruction.
+    pub fn inst_args<'a>(&'a self, pool: &'a ListPool<Value>) -> InstArgs<'a> {
+        match self {
+            // Instructions with 0 arguments
+            InstructionData::Unreachable
+            | InstructionData::Nop
+            | InstructionData::IConst { .. }
+            | InstructionData::FConst { .. }
+            | InstructionData::StackLoad { .. }
+            | InstructionData::StackAddr { .. }
+            | InstructionData::DataAddr { .. } => InstArgs::Empty,
+
+            // Instructions with 1 argument
+            InstructionData::Unary { arg, .. }
+            | InstructionData::StackStore { arg, .. }
+            | InstructionData::LoadNoOffset { addr: arg, .. } => {
+                InstArgs::One { val: *arg, done: false }
+            }
+
+            // Instructions with 2 arguments
+            InstructionData::Binary { args, .. }
+            | InstructionData::Icmp { args, .. }
+            | InstructionData::Fcmp { args, .. }
+            | InstructionData::StoreNoOffset { args, .. } => {
+                InstArgs::Two { vals: *args, index: 0 }
+            }
+
+            // Instructions with a single list of arguments
+            InstructionData::CallHook { args, .. }
+            | InstructionData::Jump { args, .. }
+            | InstructionData::Call { args, .. }
+            | InstructionData::CallExt { args, .. }
+            | InstructionData::Return { args, .. } => {
+                InstArgs::Slice { slice: args.as_slice(pool), index: 0 }
+            }
+
+            // Instruction with 1 argument + a list of arguments
+            InstructionData::CallIndirect { callee, args } => {
+                InstArgs::ValueAndSlice {
+                    val: *callee,
+                    val_done: false,
+                    slice: args.as_slice(pool),
+                    slice_index: 0,
+                }
+            }
+
+            // Instruction with 1 argument + two separate lists of arguments
+            InstructionData::Branch { args, arg, .. } => {
+                InstArgs::Branch {
+                    cond: *arg,
+                    cond_done: false,
+                    then_slice: args[0].as_slice(pool),
+                    then_index: 0,
+                    else_slice: args[1].as_slice(pool),
+                    else_index: 0,
+                }
+            }
+        }
+    }
+
+    /// Rewrites all input `Value`s in this instruction using the provided mapping function.
+    pub fn map_values<F>(&mut self, pool: &mut ListPool<Value>, mut map_fn: F)
+    where
+        F: FnMut(Value) -> Value,
+    {
+        match self {
+            // Instructions with 0 arguments (Nothing to map)
+            InstructionData::Unreachable
+            | InstructionData::Nop
+            | InstructionData::IConst { .. }
+            | InstructionData::FConst { .. }
+            | InstructionData::StackLoad { .. }
+            | InstructionData::StackAddr { .. }
+            | InstructionData::DataAddr { .. } => {}
+
+            // Instructions with 1 inline argument
+            InstructionData::Unary { arg, .. }
+            | InstructionData::StackStore { arg, .. }
+            | InstructionData::LoadNoOffset { addr: arg, .. } => {
+                *arg = map_fn(*arg);
+            }
+
+            // Instructions with 2 inline arguments
+            InstructionData::Binary { args, .. }
+            | InstructionData::Icmp { args, .. }
+            | InstructionData::Fcmp { args, .. }
+            | InstructionData::StoreNoOffset { args, .. } => {
+                args[0] = map_fn(args[0]);
+                args[1] = map_fn(args[1]);
+            }
+
+            // Instructions with a single EntityList of arguments
+            InstructionData::CallHook { args, .. }
+            | InstructionData::Jump { args, .. }
+            | InstructionData::Call { args, .. }
+            | InstructionData::CallExt { args, .. }
+            | InstructionData::Return { args, .. } => {
+                // Mutate the values directly inside the pool
+                for val in args.as_mut_slice(pool) {
+                    *val = map_fn(*val);
+                }
+            }
+
+            // Instruction with 1 inline argument + an EntityList
+            InstructionData::CallIndirect { callee, args } => {
+                *callee = map_fn(*callee);
+                for val in args.as_mut_slice(pool) {
+                    *val = map_fn(*val);
+                }
+            }
+
+            // Instruction with 1 inline argument + two separate EntityLists
+            InstructionData::Branch { args, arg, .. } => {
+                *arg = map_fn(*arg);
+
+                // Rust's borrow checker allows this sequential mutation
+                // because the mutable borrow of `pool` ends after each loop.
+                for val in args[0].as_mut_slice(pool) {
+                    *val = map_fn(*val);
+                }
+                for val in args[1].as_mut_slice(pool) {
+                    *val = map_fn(*val);
+                }
+            }
+        }
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn is_terminator(&self) -> bool {
         matches! {
             self,
@@ -755,6 +1897,143 @@ impl InstructionData {
             Self::Branch { .. } |
             Self::Return { .. } |
             Self::Unreachable
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_branch(&self) -> bool {
+        matches! {
+            self,
+            Self::Jump { .. }   |
+            Self::Branch { .. }
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_safepoint(&self) -> bool {
+        !matches! {
+            self,
+            Self::Call { .. }   |
+            Self::CallIndirect { .. }   |
+            Self::CallHook { .. }   |
+            Self::CallExt { .. }   |
+            Self::Return { .. }
+        }
+    }
+}
+
+pub struct InstValues<'a> {
+    results: std::slice::Iter<'a, Value>,
+    args: InstArgs<'a>,
+}
+
+impl<'a> Iterator for InstValues<'a> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // 1. Yield all results (outputs) first
+        if let Some(&res) = self.results.next() {
+            return Some(res);
+        }
+
+        // 2. Once results are empty, yield arguments (inputs)
+        self.args.next()
+    }
+}
+
+/// A zero-allocation iterator over the argument values of an instruction.
+pub enum InstArgs<'a> {
+    Empty,
+    One {
+        val: Value,
+        done: bool,
+    },
+    Two {
+        vals: [Value; 2],
+        index: usize,
+    },
+    Slice {
+        slice: &'a [Value],
+        index: usize,
+    },
+    ValueAndSlice {
+        val: Value,
+        val_done: bool,
+        slice: &'a [Value],
+        slice_index: usize,
+    },
+    Branch {
+        cond: Value,
+        cond_done: bool,
+        then_slice: &'a [Value],
+        then_index: usize,
+        else_slice: &'a [Value],
+        else_index: usize,
+    },
+}
+
+impl<'a> Iterator for InstArgs<'a> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            InstArgs::Empty => None,
+            InstArgs::One { val, done } => {
+                if !*done {
+                    *done = true;
+                    Some(*val)
+                } else {
+                    None
+                }
+            }
+            InstArgs::Two { vals, index } => {
+                if *index < 2 {
+                    let val = vals[*index];
+                    *index += 1;
+                    Some(val)
+                } else {
+                    None
+                }
+            }
+            InstArgs::Slice { slice, index } => {
+                if *index < slice.len() {
+                    let val = slice[*index];
+                    *index += 1;
+                    Some(val)
+                } else {
+                    None
+                }
+            }
+            InstArgs::ValueAndSlice { val, val_done, slice, slice_index } => {
+                if !*val_done {
+                    *val_done = true;
+                    Some(*val)
+                } else if *slice_index < slice.len() {
+                    let v = slice[*slice_index];
+                    *slice_index += 1;
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            InstArgs::Branch { cond, cond_done, then_slice, then_index, else_slice, else_index } => {
+                if !*cond_done {
+                    *cond_done = true;
+                    Some(*cond)
+                } else if *then_index < then_slice.len() {
+                    let v = then_slice[*then_index];
+                    *then_index += 1;
+                    Some(v)
+                } else if *else_index < else_slice.len() {
+                    let v = else_slice[*else_index];
+                    *else_index += 1;
+                    Some(v)
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -825,13 +2104,13 @@ pub enum UnaryOp {
     UIntToFloat,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ValueData {
     pub ty: Type,
     pub def: ValueDef,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ValueDef {
     Inst { inst: Inst, result_idx: u8 },
     Param { block: Block, param_idx: u8 },
@@ -883,14 +2162,14 @@ impl Module {
         call_hook_with_comment,
         #[inline]
         #[track_caller]
-        pub fn call_hook(
+        pub fn call_hook<T>(
             &self,
             hook_id: HookId,
             result_tys: &[Type],
             args: &[Value],
-            ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Inst {
-            ir_builder.ins().call_hook(result_tys, hook_id, args)
+            ir_builder: &mut InstBuilder<'_, T>
+        ) -> Inst where T: InstInserter {
+            ir_builder.call_hook(result_tys, hook_id, args)
         }
     }
 
@@ -899,15 +2178,15 @@ impl Module {
         call_ext_with_comment,
         #[inline]
         #[track_caller]
-        pub fn call_ext(
+        pub fn call_ext<T>(
             &self,
             ext_func_id: ExtFuncId,
             args: &[Value],
-            ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Inst {
+            ir_builder: &mut InstBuilder<'_, T>
+        ) -> Inst where T: InstInserter {
             let func = &self.ext_funcs[ext_func_id];
             let result_ty = &func.signature.returns;
-            ir_builder.ins().call_ext(result_ty, ext_func_id, args)
+            ir_builder.call_ext(result_ty, ext_func_id, args)
         }
     }
 
@@ -916,15 +2195,15 @@ impl Module {
         call_with_comment,
         #[inline]
         #[track_caller]
-        pub fn call(
+        pub fn call<T>(
             &self,
             func_id: FuncId,
             args: &[Value],
-            ir_builder: &mut InstBuilder<'_, '_>
-        ) -> Inst {
+            ir_builder: &mut InstBuilder<'_, T>
+        ) -> Inst where T: InstInserter {
             let func = &self.funcs[func_id];
             let result_tys = &func.signature.returns;
-            ir_builder.ins().call(result_tys, func_id, args)
+            ir_builder.call(result_tys, func_id, args)
         }
     }
 
@@ -932,13 +2211,13 @@ impl Module {
         ir_builder,
         call_memcpy_with_comment,
         #[inline]
-        pub fn call_memcpy(
+        pub fn call_memcpy<T>(
             &mut self,
             dest: Value,
             src: Value,
             size: Value,
-            ir_builder: &mut InstBuilder<'_, '_>
-        ) {
+            ir_builder: &mut InstBuilder<'_, T>
+        ) where T: InstInserter {
             let libc_memcpy = self.import_function(ExtFunc {
                 extra: u64::MAX,
                 name: "memcpy".into(),
@@ -956,13 +2235,13 @@ impl Module {
         ir_builder,
         call_memset_with_comment,
         #[inline]
-        pub fn call_memset(
+        pub fn call_memset<T>(
             &mut self,
             dest: Value,
             c: Value,
             n: Value,
-            ir_builder: &mut InstBuilder<'_, '_>
-        ) {
+            ir_builder: &mut InstBuilder<'_, T>
+        ) where T: InstInserter {
             let libc_memset = self.import_function(ExtFunc {
                 extra: u64::MAX,
                 name: "memset".into(),
@@ -980,7 +2259,7 @@ impl Module {
         ir_builder,
         call_abort_with_comment,
         #[inline]
-        pub fn call_abort(&mut self, ir_builder: &mut InstBuilder<'_, '_>) {
+        pub fn call_abort<T>(&mut self, ir_builder: &mut InstBuilder<'_, T>) where T: InstInserter {
             let libc_abort = self.import_function(ExtFunc {
                 extra: u64::MAX,
                 name: "abort".into(),
@@ -1003,6 +2282,7 @@ pub struct FunctionBuilderContext {
     variables: PrimaryMap<Variable, Type>,
     stack_map_vars: EntitySet<Variable>,
     stack_map_values: EntitySet<Value>,
+    safepoints: SafepointSpiller,
     pub ssa: SSABuilder,
 }
 
@@ -1014,12 +2294,28 @@ impl FunctionBuilderContext {
             variables,
             stack_map_vars,
             stack_map_values,
+            safepoints
         } = self;
+        safepoints.clear();
         ssa.clear();
         status.clear();
         variables.clear();
         stack_map_values.clear();
         stack_map_vars.clear();
+    }
+}
+
+impl<'a, 'long> FunctionBuilder<'long> {
+    #[inline]
+    pub fn ins(&'a mut self) -> InstBuilder<'a, Self> {
+        InstBuilder { inserter: self }
+    }
+}
+
+impl<'a> FuncCursor<'a> {
+    #[inline]
+    pub fn ins<'b>(&'b mut self) -> InstBuilder<'b, Self> {
+        InstBuilder { inserter: self }
     }
 }
 
@@ -1047,12 +2343,11 @@ pub struct Cursor {
 impl<'a> FunctionBuilder<'a> {
     #[inline]
     pub fn new(func: &'a mut SsaFunc, func_ctx: &'a mut FunctionBuilderContext) -> Self {
-        let entry_block = if let Some(block) = func.layout.block_entry.expand() {
+        let entry_block = if let Some(block) = func.layout.entry_block() {
             block
         } else {
-            let block = Block::new(func.cfg.blocks.len());
-            func.cfg.blocks.push(BasicBlockData::default());
-            func.layout.block_entry = Some(block).into();
+            let block = func.cfg.blocks.push(BasicBlockData::default());
+            func.layout.append_block(block);
             block
         };
         Self {
@@ -1068,9 +2363,9 @@ impl<'a> FunctionBuilder<'a> {
 
     #[inline(always)]
     pub fn create_block(&mut self) -> Block {
-        let id = Block::new(self.func.cfg.blocks.len());
-        self.func.cfg.blocks.push(BasicBlockData::default());
-        id
+        let block = self.func.cfg.blocks.push(BasicBlockData::default());
+        self.func.layout.append_block(block);
+        block
     }
 
     #[inline(always)]
@@ -1094,7 +2389,7 @@ impl<'a> FunctionBuilder<'a> {
     pub fn add_block_params(&mut self, types: &[Type]) -> &[Value] {
         let block = self.current_block();
         let block_data = &mut self.func.cfg.blocks[block];
-        let param_idx_start = block_data.params.len(&self.func.values_pool);
+        let param_idx_start = block_data.params.len(&self.func.dfg.values_pool);
         for (i, &ty) in types.iter().enumerate() {
             let value = self.func.dfg.make_value(ValueData {
                 ty,
@@ -1103,9 +2398,9 @@ impl<'a> FunctionBuilder<'a> {
                     param_idx: (param_idx_start + i) as u8,
                 },
             });
-            block_data.params.push(value, &mut self.func.values_pool);
+            block_data.params.push(value, &mut self.func.dfg.values_pool);
         }
-        &block_data.params.as_slice(&self.func.values_pool)[param_idx_start..]
+        &block_data.params.as_slice(&self.func.dfg.values_pool)[param_idx_start..]
     }
 
     #[inline(always)]
@@ -1138,17 +2433,6 @@ impl<'a> FunctionBuilder<'a> {
     #[inline(always)]
     pub fn create_stack_slot(&mut self, ty: Type, size: u32, align: u16) -> StackSlot {
         self.func.create_stack_slot(ty, size, align)
-    }
-
-    #[inline(always)]
-    pub fn insert_comment(&mut self, inst: Inst, comment: impl AsRef<str>) {
-        let string = self.func.push_string(comment);
-        self.func.comments.insert(inst, string);
-    }
-
-    #[inline(always)]
-    pub fn ins<'short>(&'short mut self) -> InstBuilder<'short, 'a> {
-        InstBuilder { builder: self }
     }
 
     /// Declares that all the predecessors of this block are known.
@@ -1326,10 +2610,58 @@ impl<'a> FunctionBuilder<'a> {
     #[inline(always)]
     #[track_caller]
     pub fn finalize(&mut self) {
-        for i in 0..self.func.cfg.blocks.len() {
-            let block = Block::new(i);
-            self.seal_block(block);
+        // Check that all the `Block`s are filled and sealed.
+        #[cfg(debug_assertions)]
+        {
+            for block in self.func_ctx.status.keys() {
+                if !self.is_pristine(block) {
+                    assert!(
+                        self.func_ctx.ssa.is_sealed(block),
+                        "FunctionBuilder finalized, but block {block} is not sealed",
+                    );
+                    assert!(
+                        self.is_filled(block),
+                        "FunctionBuilder finalized, but block {block} is not filled",
+                    );
+                }
+            }
         }
+
+        // In debug mode, check that all blocks are valid basic blocks.
+        #[cfg(debug_assertions)]
+        {
+            // Iterate manually to provide more helpful error messages.
+            for block in self.func_ctx.status.keys() {
+                if let Err((inst, msg)) = self.func.is_block_basic(block) {
+                    let mut inst_str = String::new();
+                    self.func.fmt_inst(&mut inst_str, inst).unwrap();
+                    panic!("{block} failed basic block invariants on {inst_str}: {msg}");
+                }
+            }
+        }
+
+        // Propagate the needs-stack-map bit from variables to each of their
+        // associated values.
+        for var in self.func_ctx.stack_map_vars.iter() {
+            for val in self.func_ctx.ssa.values_for_var(var) {
+                // log::trace!("propagating needs-stack-map from {var:?} to {val:?}");
+                debug_assert_eq!(self.func.dfg.value_type(val), self.func_ctx.variables[var]);
+                self.func_ctx.stack_map_values.insert(val);
+            }
+        }
+
+        // If we have any values that need inclusion in stack maps, then we need
+        // to run our pass to spill those values to the stack at safepoints and
+        // generate stack maps.
+        if !self.func_ctx.stack_map_values.is_empty() {
+            self.func_ctx
+                .safepoints
+                .run(&mut self.func, &self.func_ctx.stack_map_values);
+        }
+
+        // Clear the state (but preserve the allocated buffers) in preparation
+        // for translation another function.
+        self.func_ctx.clear();
     }
 }
 
@@ -1385,63 +2717,229 @@ impl<'a> FunctionBuilder<'a> {
     }
 }
 
-pub struct InstBuilder<'short, 'long> {
-    builder: &'short mut FunctionBuilder<'long>,
+pub trait InstInserter {
+    /// Get a shared reference to the underlying function.
+    fn func(&self) -> &SsaFunc;
+
+    /// Get a mutable reference to the underlying function.
+    fn func_mut(&mut self) -> &mut SsaFunc;
+
+    /// Create the instruction in the DFG, insert it into the Layout and CFG
+    /// at the cursor's current location, and return its ID.
+    fn insert_inst_data(&mut self, data: InstructionData) -> Inst;
+
+    /// Get the block we are currently inserting into.
+    fn current_block(&self) -> Block;
 }
 
-impl<'long> Deref for InstBuilder<'_, 'long> {
-    type Target = FunctionBuilder<'long>;
+impl InstInserter for FunctionBuilder<'_> {
     #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.builder
-    }
-}
+    fn func(&self) -> &SsaFunc { self.func }
 
-impl DerefMut for InstBuilder<'_, '_> {
     #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.builder
-    }
-}
+    fn func_mut(&mut self) -> &mut SsaFunc { self.func }
 
-impl InstBuilder<'_, '_> {
     #[inline]
-    fn insert_inst(&mut self, data: InstructionData) -> Inst {
-        let inst = self.builder.func.dfg.make_inst(data);
+    fn insert_inst_data(&mut self, data: InstructionData) -> Inst {
+        let inst = self.func.dfg.make_inst(data);
         let block = self.cursor.current_block;
         let srcloc = self.cursor.current_srcloc;
 
-        let cfg = &mut self.builder.func.cfg;
+        let cfg = &mut self.func.cfg;
         cfg.blocks[block].insts.push(inst, &mut cfg.block_insts_pool);
 
-        self.builder.func.srclocs.insert(inst, srcloc);
-        self.builder.func.layout.inst_blocks.insert(inst, block);
+        self.func.srclocs.insert(inst, srcloc);
+        self.func.layout.append_inst(inst, block);
 
         inst
+    }
+
+    #[inline]
+    fn current_block(&self) -> Block {
+        self.cursor.current_block
+    }
+}
+
+pub enum CursorPosition {
+    /// Not pointing anywhere.
+    Nowhere,
+    /// Pointing at an existing instruction.
+    /// Insertions go *before* this instruction.
+    At(Inst),
+    /// Pointing before the top of a block. (Iteration doorway)
+    Before(Block),
+    /// Pointing after the end of a block. (Append mode)
+    After(Block),
+}
+
+pub struct FuncCursor<'a> {
+    pub func: &'a mut SsaFunc,
+    pub pos: CursorPosition,
+    pub srcloc: SourceLoc,
+}
+
+impl<'a> FuncCursor<'a> {
+    pub fn new(func: &'a mut SsaFunc) -> Self {
+        Self {
+            srcloc: func.base_srcloc(),
+            func,
+            pos: CursorPosition::Nowhere,
+        }
+    }
+
+    // Notice the return type is Self, which allows the chaining!
+    pub fn at_inst(mut self, inst: Inst) -> Self {
+        self.pos = CursorPosition::At(inst);
+        self
+    }
+
+    pub fn after_inst(mut self, inst: Inst) -> Self {
+        // To be "after" an instruction, we move to the next one,
+        // or to the end of the block if it's the last one.
+        if let Some(next) = self.func.layout.next_inst(inst) {
+            self.pos = CursorPosition::At(next);
+        } else {
+            let block = self.func.layout.inst_block(inst)
+                .expect("Instruction not in layout");
+            self.pos = CursorPosition::After(block);
+        }
+        self
+    }
+
+    pub fn next_inst(&mut self) -> Option<Inst> {
+        use CursorPosition::*;
+
+        match self.pos {
+            Nowhere | After(..) => None,
+            At(inst) => {
+                if let Some(next) = self.func.layout.next_inst(inst) {
+                    self.pos = At(next);
+                    Some(next)
+                } else {
+                    self.pos = After(
+                        self.func.layout
+                            .inst_block(inst)
+                            .expect("current instruction removed?"),
+                    );
+                    None
+                }
+            }
+            Before(block) => {
+                if let Some(next) = self.func.layout.first_inst(block) {
+                    self.pos = At(next);
+                    Some(next)
+                } else {
+                    self.pos = After(block);
+                    None
+                }
+            }
+        }
+    }
+
+    pub fn at_position(mut self, pos: CursorPosition) -> Self {
+        self.pos = pos;
+        self
+    }
+}
+
+impl InstInserter for FuncCursor<'_> {
+    #[inline]
+    fn func(&self) -> &SsaFunc { self.func }
+
+    #[inline]
+    fn func_mut(&mut self) -> &mut SsaFunc { self.func }
+
+    fn insert_inst_data(&mut self, data: InstructionData) -> Inst {
+        use CursorPosition::*;
+
+        let inst = self.func.dfg.make_inst(data);
+        self.func.srclocs.insert(inst, self.srcloc);
+
+        match self.pos {
+            Nowhere | Before(..) => panic!("Invalid insert_inst position"),
+            At(cur) => self.func.layout.insert_inst(inst, cur),
+            After(block) => self.func.layout.append_inst(inst, block),
+        };
+
+        inst
+    }
+
+    fn current_block(&self) -> Block {
+        match self.pos {
+            // 1. Nowhere: No block exists. You have to decide if you want to
+            // panic here or return an Option<Block>.
+            CursorPosition::Nowhere => panic!("Cursor is Nowhere; no block exists."),
+
+            // 2. Before(Block): We are at the entrance of this specific block.
+            CursorPosition::Before(b) => b,
+
+            // 3. After(Block): We are at the end of this specific block.
+            CursorPosition::After(b) => b,
+
+            // 4. At(Inst): We are currently sitting on an instruction.
+            // We must look up which block this instruction belongs to.
+            CursorPosition::At(i) => {
+                self.func.layout.inst_block(i)
+                    .expect("Instruction in At(i) must be attached to a block")
+            }
+        }
+    }
+}
+
+pub struct InstBuilder<'a, T: InstInserter> {
+    inserter: &'a mut T,
+}
+
+// Transparently Deref to whatever is driving the insertion!
+impl<T: InstInserter> Deref for InstBuilder<'_, T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.inserter
+    }
+}
+
+impl<T: InstInserter> DerefMut for InstBuilder<'_, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inserter
+    }
+}
+
+impl<T> InstBuilder<'_, T> where T: InstInserter {
+    #[inline]
+    fn insert_inst(&mut self, data: InstructionData) -> Inst {
+        self.inserter.insert_inst_data(data) // Delegated to the trait!
+    }
+
+    #[inline(always)]
+    pub fn insert_comment(&mut self, inst: Inst, comment: impl AsRef<str>) {
+        let func = self.func_mut();
+        let string = func.push_string(comment);
+        func.comments.insert(inst, string);
     }
 
     #[inline]
     #[must_use]
     pub fn get_last_inst(&self) -> Option<Inst> {
         let block = self.current_block();
-        self.builder.func.cfg.blocks[block]
+        self.func().cfg.blocks[block]
             .insts
-            .as_slice(&self.func.cfg.block_insts_pool)
+            .as_slice(&self.func().cfg.block_insts_pool)
             .last()
             .copied()
     }
 
     #[inline]
     fn make_inst_result(&mut self, inst: Inst, ty: Type, result_idx: u8) -> Value {
-        let value = self.builder.func.dfg.make_value(ValueData {
+        let func = self.func_mut();
+
+        let value = func.dfg.make_value(ValueData {
             ty,
             def: ValueDef::Inst { inst, result_idx },
         });
 
-        let results = &mut self.builder
-            .func
-            .dfg
-            .inst_results;
+        let results = &mut func.dfg.inst_results;
 
         if let Some(results) = results.get_mut(inst) {
             results.push(value);
@@ -1468,7 +2966,7 @@ impl InstBuilder<'_, '_> {
         iadd_with_comment,
         #[inline]
         pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary {
                 binop: BinaryOp::IAdd, args: [lhs, rhs]
             });
@@ -1480,7 +2978,7 @@ impl InstBuilder<'_, '_> {
         srem_with_comment,
         #[inline]
         pub fn srem(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary {
                 binop: BinaryOp::SRem, args: [lhs, rhs]
             });
@@ -1492,7 +2990,7 @@ impl InstBuilder<'_, '_> {
         urem_with_comment,
         #[inline]
         pub fn urem(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary {
                 binop: BinaryOp::URem, args: [lhs, rhs]
             });
@@ -1504,7 +3002,7 @@ impl InstBuilder<'_, '_> {
         frem_with_comment,
         #[inline]
         pub fn frem(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FRem, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1512,7 +3010,7 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn fmod_imm(&mut self, lhs: Value, rhs: f64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.fconst(ty, rhs);
         self.frem(lhs, rhs)
     }
@@ -1521,7 +3019,7 @@ impl InstBuilder<'_, '_> {
         isub_with_comment,
         #[inline]
         pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::ISub, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1531,7 +3029,7 @@ impl InstBuilder<'_, '_> {
         imul_with_comment,
         #[inline]
         pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::IMul, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1541,7 +3039,7 @@ impl InstBuilder<'_, '_> {
         sdiv_with_comment,
         #[inline]
         pub fn sdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::SDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1551,7 +3049,7 @@ impl InstBuilder<'_, '_> {
         udiv_with_comment,
         #[inline]
         pub fn udiv(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::UDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1570,7 +3068,7 @@ impl InstBuilder<'_, '_> {
         and_with_comment,
         #[inline]
         pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::And, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1580,7 +3078,7 @@ impl InstBuilder<'_, '_> {
         or_with_comment,
         #[inline]
         pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Or, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1590,7 +3088,7 @@ impl InstBuilder<'_, '_> {
         xor_with_comment,
         #[inline]
         pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Xor, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1622,7 +3120,7 @@ impl InstBuilder<'_, '_> {
             return lhs;
         }
 
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.iadd(lhs, rhs)
     }
@@ -1633,7 +3131,7 @@ impl InstBuilder<'_, '_> {
             return lhs;
         }
 
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.isub(lhs, rhs)
     }
@@ -1644,7 +3142,7 @@ impl InstBuilder<'_, '_> {
             return lhs;
         }
 
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         if rhs == 0 {
             return self.iconst(ty, 0);
         }
@@ -1665,7 +3163,7 @@ impl InstBuilder<'_, '_> {
         if rhs == 1 {
             return lhs;
         }
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.sdiv(lhs, rhs)
     }
@@ -1675,14 +3173,14 @@ impl InstBuilder<'_, '_> {
         if rhs == 1 {
             return lhs;
         }
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.udiv(lhs, rhs)
     }
 
     #[inline]
     pub fn and_imm(&mut self, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
 
         if rhs == 0 {
             return self.iconst(ty, 0);
@@ -1701,7 +3199,7 @@ impl InstBuilder<'_, '_> {
             return lhs;
         }
 
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.or(lhs, rhs)
     }
@@ -1712,21 +3210,21 @@ impl InstBuilder<'_, '_> {
             return lhs;
         }
 
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.xor(lhs, rhs)
     }
 
     #[inline]
     pub fn icmp_imm(&mut self, code: IntCC, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.icmp(code, lhs, rhs)
     }
 
     #[inline]
     pub fn fcmp_imm(&mut self, code: FloatCC, lhs: Value, rhs: f64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.fconst(ty, rhs);
         self.fcmp(code, lhs, rhs)
     }
@@ -1735,7 +3233,7 @@ impl InstBuilder<'_, '_> {
         ushr_with_comment,
         #[inline]
         pub fn ushr(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ushr, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1745,7 +3243,7 @@ impl InstBuilder<'_, '_> {
         sshr_with_comment,
         #[inline]
         pub fn sshr(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Sshr, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1755,7 +3253,7 @@ impl InstBuilder<'_, '_> {
         ishl_with_comment,
         #[inline]
         pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Ishl, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1765,7 +3263,7 @@ impl InstBuilder<'_, '_> {
         band_with_comment,
         #[inline]
         pub fn band(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Band, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1775,7 +3273,7 @@ impl InstBuilder<'_, '_> {
         bor_with_comment,
         #[inline]
         pub fn bor(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::Bor, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1783,35 +3281,35 @@ impl InstBuilder<'_, '_> {
 
     #[inline]
     pub fn ushr_imm(&mut self, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.ushr(lhs, rhs)
     }
 
     #[inline]
     pub fn sshr_imm(&mut self, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.sshr(lhs, rhs)
     }
 
     #[inline]
     pub fn ishl_imm(&mut self, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.ishl(lhs, rhs)
     }
 
     #[inline]
     pub fn band_imm(&mut self, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.band(lhs, rhs)
     }
 
     #[inline]
     pub fn bor_imm(&mut self, lhs: Value, rhs: i64) -> Value {
-        let ty = self.builder.func.value_type(lhs);
+        let ty = self.func().value_type(lhs);
         let rhs = self.iconst(ty, rhs);
         self.bor(lhs, rhs)
     }
@@ -1820,7 +3318,7 @@ impl InstBuilder<'_, '_> {
         ireduce_with_comment,
         #[inline]
         pub fn ireduce(&mut self, ty: Type, arg: Value) -> Value {
-            if self.func.value_type(arg) == ty {
+            if self.func().value_type(arg) == ty {
                 return arg;
             }
 
@@ -1833,7 +3331,7 @@ impl InstBuilder<'_, '_> {
         uextend_with_comment,
         #[inline]
         pub fn uextend(&mut self, ty: Type, arg: Value) -> Value {
-            if self.func.value_type(arg) == ty {
+            if self.func().value_type(arg) == ty {
                 return arg;
             }
 
@@ -1846,7 +3344,7 @@ impl InstBuilder<'_, '_> {
         sextend_with_comment,
         #[inline]
         pub fn sextend(&mut self, ty: Type, arg: Value) -> Value {
-            if self.func.value_type(arg) == ty {
+            if self.func().value_type(arg) == ty {
                 return arg;
             }
 
@@ -1859,7 +3357,7 @@ impl InstBuilder<'_, '_> {
         fpromote_with_comment,
         #[inline]
         pub fn fpromote(&mut self, ty: Type, arg: Value) -> Value {
-            if self.func.value_type(arg) == ty {
+            if self.func().value_type(arg) == ty {
                 return arg;
             }
 
@@ -1872,7 +3370,7 @@ impl InstBuilder<'_, '_> {
         fdemote_with_comment,
         #[inline]
         pub fn fdemote(&mut self, ty: Type, arg: Value) -> Value {
-            if self.func.value_type(arg) == ty {
+            if self.func().value_type(arg) == ty {
                 return arg;
             }
 
@@ -1921,7 +3419,7 @@ impl InstBuilder<'_, '_> {
         fneg_with_comment,
         #[inline]
         pub fn fneg(&mut self, arg: Value) -> Value {
-            let ty = self.builder.func.dfg.values[arg].ty;
+            let ty = self.func().dfg.values[arg].ty;
             let inst = self.insert_inst(InstructionData::Unary { unop: UnaryOp::FNeg, arg });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1933,12 +3431,12 @@ impl InstBuilder<'_, '_> {
         #[track_caller]
         pub fn bitcast(&mut self, ty: Type, arg: Value) -> Value {
             debug_assert_eq!{
-                self.func.value_type(arg).bits(),
+                self.func().value_type(arg).bits(),
                 ty.bits(),
                 "bitcasting value to a type with a different size"
             };
 
-            if self.func.value_type(arg) == ty {
+            if self.func().value_type(arg) == ty {
                 return arg;
             }
 
@@ -1967,7 +3465,7 @@ impl InstBuilder<'_, '_> {
         #[inline]
         #[track_caller]
         pub fn inttoptr(&mut self, ty: Type, arg: Value) -> Value {
-            let arg_ty = self.func.value_type(arg);
+            let arg_ty = self.func().value_type(arg);
 
             let val = if arg_ty.bits() < Type::I64.bits() {
                 self.uextend(Type::I64, arg)
@@ -1983,7 +3481,7 @@ impl InstBuilder<'_, '_> {
         fadd_with_comment,
         #[inline]
         pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FAdd, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -1993,7 +3491,7 @@ impl InstBuilder<'_, '_> {
         fsub_with_comment,
         #[inline]
         pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FSub, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -2003,7 +3501,7 @@ impl InstBuilder<'_, '_> {
         fmul_with_comment,
         #[inline]
         pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FMul, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -2013,7 +3511,7 @@ impl InstBuilder<'_, '_> {
         fdiv_with_comment,
         #[inline]
         pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-            let ty = self.builder.func.dfg.values[lhs].ty;
+            let ty = self.func().dfg.values[lhs].ty;
             let inst = self.insert_inst(InstructionData::Binary { binop: BinaryOp::FDiv, args: [lhs, rhs] });
             self.make_inst_result(inst, ty, 0)
         }
@@ -2088,8 +3586,8 @@ impl InstBuilder<'_, '_> {
                 destination: dest,
                 args: EntityList::new()
             });
-            let from = self.cursor.current_block;
-            self.builder.func.cfg.add_pred(from, dest);
+            let from = self.current_block();
+            self.func_mut().cfg.add_pred(from, dest);
         }
     }
 
@@ -2099,14 +3597,14 @@ impl InstBuilder<'_, '_> {
         pub fn jump_params(&mut self, dest: Block, params: &[Value]) {
             let args = EntityList::from_slice(
                 params,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             self.insert_inst(InstructionData::Jump {
                 destination: dest,
                 args,
             });
-            let from = self.cursor.current_block;
-            self.builder.func.cfg.add_pred(from, dest);
+            let from = self.current_block();
+            self.func_mut().cfg.add_pred(from, dest);
         }
     }
 
@@ -2116,11 +3614,11 @@ impl InstBuilder<'_, '_> {
         pub fn brif_params(&mut self, cond: Value, true_dest: Block, false_dest: Block, true_args: &[Value], false_args: &[Value]) {
             let true_args = EntityList::from_slice(
                 true_args,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             let false_args = EntityList::from_slice(
                 false_args,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             self.insert_inst(InstructionData::Branch {
                 destinations: [true_dest, false_dest],
@@ -2128,9 +3626,9 @@ impl InstBuilder<'_, '_> {
                 args: [true_args, false_args]
             });
 
-            let from = self.cursor.current_block;
-            self.builder.func.cfg.add_pred(from, true_dest);
-            self.builder.func.cfg.add_pred(from, false_dest);
+            let from = self.current_block();
+            self.func_mut().cfg.add_pred(from, true_dest);
+            self.func_mut().cfg.add_pred(from, false_dest);
         }
     }
 
@@ -2143,9 +3641,9 @@ impl InstBuilder<'_, '_> {
                 arg: cond,
                 args: [EntityList::new(), EntityList::new()]
             });
-            let from = self.cursor.current_block;
-            self.builder.func.cfg.add_pred(from, true_dest);
-            self.builder.func.cfg.add_pred(from, false_dest);
+            let from = self.current_block();
+            self.func_mut().cfg.add_pred(from, true_dest);
+            self.func_mut().cfg.add_pred(from, false_dest);
         }
     }
 
@@ -2160,7 +3658,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
 
             let inst = self.insert_inst(InstructionData::Call {
@@ -2185,7 +3683,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             let inst = self.insert_inst(InstructionData::CallHook {
                 hook_id,
@@ -2209,7 +3707,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             let inst = self.insert_inst(InstructionData::CallExt {
                 func_id,
@@ -2233,7 +3731,7 @@ impl InstBuilder<'_, '_> {
         ) -> Inst {
             let args = EntityList::from_slice(
                 args,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             let inst = self.insert_inst(InstructionData::CallIndirect {
                 callee,
@@ -2266,7 +3764,7 @@ impl InstBuilder<'_, '_> {
             });
 
             let inst = self.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size]);
-            self.func.inst_results(inst)[0]
+            self.func().inst_results(inst)[0]
         }
     }
 
@@ -2290,7 +3788,7 @@ impl InstBuilder<'_, '_> {
             });
 
             let inst = self.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n]);
-            self.func.inst_results(inst)[0]
+            self.func().inst_results(inst)[0]
         }
     }
 
@@ -2314,7 +3812,7 @@ impl InstBuilder<'_, '_> {
         pub fn ret(&mut self, vals: &[Value]) {
             let args = EntityList::from_slice(
                 vals,
-                &mut self.func.values_pool
+                &mut self.func_mut().dfg.values_pool
             );
             self.insert_inst(InstructionData::Return { args });
         }
@@ -2819,47 +4317,12 @@ impl SSABuilder {
                     .instructions_added_to_blocks
                     .push(dest_block);
 
-                fn insert_inst_at(block: Block, data: InstructionData, func: &mut SsaFunc) -> Inst {
-                    let inst = func.dfg.make_inst(data);
-                    let srcloc = func.base_srcloc();  // @KindaHack?
-
-                    let cfg = &mut func.cfg;
-                    cfg.blocks[block].insts.push(inst, &mut cfg.block_insts_pool);
-
-                    func.srclocs.insert(inst, srcloc);
-                    func.layout.inst_blocks.insert(inst, block);
-
-                    inst
-                }
-
-                fn make_inst_result(inst: Inst, ty: Type, result_idx: u8, func: &mut SsaFunc) -> Value {
-                    let value = func.dfg.make_value(ValueData {
-                        ty,
-                        def: ValueDef::Inst { inst, result_idx },
-                    });
-
-                    let results = &mut func.dfg.inst_results;
-
-                    if let Some(results) = results.get_mut(inst) {
-                        results.push(value);
-                    } else {
-                        results.insert(SparseInstResults {
-                            key: inst,
-                            value: smallvec![value]
-                        });
-                    }
-
-                    value
-                }
-
                 // @Cleanup
                 let ty = func.value_type(sentinel);
                 let zero = if ty.is_int() {
-                    let inst = insert_inst_at(dest_block, InstructionData::IConst { value: 0   }, func);
-                    make_inst_result(inst, ty, 0, func)
+                    FuncCursor::new(func).ins().iconst(ty, 0)
                 } else {
-                    let inst = insert_inst_at(dest_block, InstructionData::FConst { value: 0.0 }, func);
-                    make_inst_result(inst, ty, 0, func)
+                    FuncCursor::new(func).ins().fconst(ty, 0.0)
                 };
 
                 Some(zero)
@@ -2886,15 +4349,15 @@ impl SSABuilder {
                 match &mut dfg.insts[branch] {  // @Hack
                     InstructionData::Branch { destinations, args, .. } => {
                         if destinations[0] == dest_block {
-                            args[0].push(val, &mut func.values_pool);
+                            args[0].push(val, &mut dfg.values_pool);
                         } else if destinations[1] == dest_block {
-                            args[1].push(val, &mut func.values_pool);
+                            args[1].push(val, &mut dfg.values_pool);
                         }
                     }
 
                     InstructionData::Jump { destination, args } => {
                         if *destination == dest_block {
-                            args.push(val, &mut func.values_pool);
+                            args.push(val, &mut dfg.values_pool);
                         }
                     }
 
@@ -2948,6 +4411,1137 @@ impl SSABuilder {
     }
 }
 
+use core::ops::{Index, IndexMut};
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum SlotSize {
+    Size8 = 0,
+    Size16 = 1,
+    Size32 = 2,
+    Size64 = 3,
+    Size128 = 4,
+    // If adding support for more slot sizes, update `SLOT_SIZE_LEN` below.
+}
+const SLOT_SIZE_LEN: usize = 5;
+
+impl TryFrom<Type> for SlotSize {
+    type Error = &'static str;
+
+    fn try_from(ty: Type) -> Result<Self, Self::Error> {
+        Self::new(ty.bytes()).ok_or("type is not supported in stack maps")
+    }
+}
+
+impl SlotSize {
+    fn new(bytes: u32) -> Option<Self> {
+        match bytes {
+            1 => Some(Self::Size8),
+            2 => Some(Self::Size16),
+            4 => Some(Self::Size32),
+            8 => Some(Self::Size64),
+            16 => Some(Self::Size128),
+            _ => None,
+        }
+    }
+
+    fn unwrap_new(bytes: u32) -> Self {
+        Self::new(bytes).unwrap_or_else(|| panic!("cannot create a `SlotSize` for {bytes} bytes"))
+    }
+}
+
+/// A map from every `SlotSize` to a `T`.
+struct SlotSizeMap<T>([T; SLOT_SIZE_LEN]);
+
+impl<T> Default for SlotSizeMap<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Index<SlotSize> for SlotSizeMap<T> {
+    type Output = T;
+    fn index(&self, index: SlotSize) -> &Self::Output {
+        self.get(index)
+    }
+}
+
+impl<T> IndexMut<SlotSize> for SlotSizeMap<T> {
+    fn index_mut(&mut self, index: SlotSize) -> &mut Self::Output {
+        self.get_mut(index)
+    }
+}
+
+impl<T> SlotSizeMap<T> {
+    fn new() -> Self
+    where
+        T: Default,
+    {
+        Self([
+            T::default(),
+            T::default(),
+            T::default(),
+            T::default(),
+            T::default(),
+        ])
+    }
+
+    fn clear(&mut self)
+    where
+        T: Default,
+    {
+        *self = Self::new();
+    }
+
+    fn get(&self, size: SlotSize) -> &T {
+        let index = size as u8 as usize;
+        &self.0[index]
+    }
+
+    fn get_mut(&mut self, size: SlotSize) -> &mut T {
+        let index = size as u8 as usize;
+        &mut self.0[index]
+    }
+}
+
+/// A set of live values.
+///
+/// Make sure to copy to a vec and sort, or something, before iterating over the
+/// values to ensure deterministic output.
+type LiveSet = HashSet<Value>;
+
+/// A worklist of blocks' post-order indices that we need to process.
+#[derive(Default)]
+struct Worklist {
+    /// Stack of blocks to process.
+    stack: Vec<u32>,
+
+    /// The set of blocks that need to be updated.
+    ///
+    /// This is a subset of the elements present in `self.stack`, *not* the
+    /// exact same elements. `self.stack` is allowed to have duplicates, and
+    /// once we pop the first occurrence of a duplicate, we remove it from this
+    /// set, since it no longer needs updates at that point. This potentially
+    /// uses more stack space than necessary, but prefers processing immediate
+    /// predecessors, and therefore inner loop bodies before continuing to
+    /// process outer loop bodies. This ultimately results in fewer iterations
+    /// required to reach a fixed point.
+    need_updates: HashSet<u32>,
+}
+
+impl Extend<u32> for Worklist {
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = u32>,
+    {
+        for block_index in iter {
+            self.push(block_index);
+        }
+    }
+}
+
+impl Worklist {
+    fn clear(&mut self) {
+        let Worklist {
+            stack,
+            need_updates,
+        } = self;
+        stack.clear();
+        need_updates.clear();
+    }
+
+    fn reserve(&mut self, capacity: usize) {
+        let Worklist {
+            stack,
+            need_updates,
+        } = self;
+        stack.reserve(capacity);
+        need_updates.reserve(capacity);
+    }
+
+    fn push(&mut self, block_index: u32) {
+        // Mark this block as needing an update. If it wasn't in `self.stack`,
+        // now it is and it needs an update. If it was already in `self.stack`,
+        // then pushing this copy logically hoists it to the top of the
+        // stack. See the above note about processing inner-most loops first.
+        self.need_updates.insert(block_index);
+        self.stack.push(block_index);
+    }
+
+    fn pop(&mut self) -> Option<u32> {
+        while let Some(block_index) = self.stack.pop() {
+            // If this block was pushed multiple times, we only need to update
+            // it once, so remove it from the need-updates set. In other words
+            // it was logically hoisted up to the top of the stack, while this
+            // entry was left behind, and we already popped the hoisted
+            // copy. See the above note about processing inner-most loops first.
+            if self.need_updates.remove(&block_index) {
+                return Some(block_index);
+            }
+        }
+        None
+    }
+}
+
+/// A simple liveness analysis.
+///
+/// This analysis is used to determine which needs-stack-map values are live
+/// across safepoint instructions.
+///
+/// This is a backwards analysis, from uses (which mark values live) to defs
+/// (which remove values from the live set) and from successor blocks to
+/// predecessor blocks.
+///
+/// We compute two live sets for each block:
+///
+/// 1. The live-in set, which is the set of values that are live when control
+///    enters the block.
+///
+/// 2. The live-out set, which is the set of values that are live when control
+///    exits the block.
+///
+/// A block's live-out set is the union of its successors' live-in sets. A
+/// block's live-in set is the set of values that are still live after the
+/// block's instructions have been processed.
+///
+/// ```text
+/// live_in(block) = union(live_out(s) for s in successors(block))
+/// live_out(block) = live_in(block) - defs(block) + uses(block)
+/// ```
+///
+/// Whenever we update a block's live-in set, we must reprocess all of its
+/// predecessors, because those predecessors' live-out sets depend on this
+/// block's live-in set. Processing continues until the live sets stop changing
+/// and we've reached a fixed-point. Each time we process a block, its live sets
+/// can only grow monotonically, and therefore we know that the computation will
+/// reach its fixed-point and terminate. This fixed-point is implemented with a
+/// classic worklist algorithm.
+///
+/// The worklist is seeded such that we initially process blocks in post-order,
+/// which ensures that, when we have a loop-free control-flow graph, we only
+/// process each block once. We pop a block off the worklist for
+/// processing. Whenever a block's live-in set is updated during processing, we
+/// push its predecessors onto the worklist so that their live-in sets can be
+/// updated. Once the worklist is empty, there are no more blocks needing
+/// updates, and we've reached the fixed-point.
+///
+/// Note: For simplicity, we do not flow liveness from block parameters back to
+/// branch arguments, and instead always consider branch arguments live.
+///
+/// Furthermore, we do not differentiate between uses of a needs-stack-map value
+/// that ultimately flow into a side-effecting operation versus uses that
+/// themselves are not live. This could be tightened up in the future, but we're
+/// starting with the easiest, simplest thing. It also means that we do not need
+/// `O(all values)` space, only `O(needs-stack-map values)`. Finally, none of
+/// our mid-end optimization passes have run at this point in time yet, so there
+/// probably isn't much, if any, dead code.
+///
+/// After we've computed the live-in and -out sets for each block, we pass once
+/// more over each block, processing its instructions again. This time, we
+/// record the precise set of needs-stack-map values that are live across each
+/// safepoint instruction inside the block, which is the final output of this
+/// analysis.
+pub(crate) struct LivenessAnalysis {
+    /// Reusable depth-first search state for traversing a function's blocks.
+    dfs: Dfs,
+
+    /// The cached post-order traversal of the function's blocks.
+    post_order: Vec<Block>,
+
+    /// A secondary map from each block to its index in `post_order`.
+    block_to_index: SecondaryMap<Block, u32>,
+
+    /// A mapping from each block's post-order index to the post-order indices
+    /// of its direct (non-transitive) predecessors.
+    predecessors: Vec<SmallVec<[u32; 4]>>,
+
+    /// A worklist of blocks to process. Used to determine which blocks need
+    /// updates cascaded to them and when we reach a fixed-point.
+    worklist: Worklist,
+
+    /// A map from a block's post-order index to its live-in set.
+    live_ins: Vec<LiveSet>,
+
+    /// A map from a block's post-order index to its live-out set.
+    live_outs: Vec<LiveSet>,
+
+    /// The set of each needs-stack-map value that is currently live while
+    /// processing a block.
+    currently_live: LiveSet,
+
+    /// A mapping from each safepoint instruction to the set of needs-stack-map
+    /// values that are live across it.
+    safepoints: HashMap<Inst, SmallVec<[Value; 4]>>,
+
+    /// The set of values that are live across *any* safepoint in the function,
+    /// i.e. the union of all the values in the `safepoints` map.
+    live_across_any_safepoint: EntitySet<Value>,
+}
+
+impl Default for LivenessAnalysis {
+    fn default() -> Self {
+        Self {
+            dfs: Default::default(),
+            post_order: Default::default(),
+            block_to_index: SecondaryMap::with_default(u32::MAX),
+            predecessors: Default::default(),
+            worklist: Default::default(),
+            live_ins: Default::default(),
+            live_outs: Default::default(),
+            currently_live: Default::default(),
+            safepoints: Default::default(),
+            live_across_any_safepoint: Default::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecordSafepoints {
+    Yes,
+    No,
+}
+
+impl LivenessAnalysis {
+    /// Clear and reset all internal state such that this analysis is ready for
+    /// reuse with a new function.
+    pub fn clear(&mut self) {
+        let LivenessAnalysis {
+            dfs,
+            post_order,
+            block_to_index,
+            predecessors,
+            worklist,
+            live_ins,
+            live_outs,
+            currently_live,
+            safepoints,
+            live_across_any_safepoint,
+        } = self;
+        dfs.clear();
+        post_order.clear();
+        block_to_index.clear();
+        predecessors.clear();
+        worklist.clear();
+        live_ins.clear();
+        live_outs.clear();
+        currently_live.clear();
+        safepoints.clear();
+        live_across_any_safepoint.clear();
+    }
+
+    /// Given that we've initialized `self.post_order`, reserve capacity for the
+    /// various data structures we use during our analysis.
+    fn reserve_capacity(&mut self, func: &SsaFunc) {
+        let LivenessAnalysis {
+            dfs: _,
+            post_order,
+            block_to_index,
+            predecessors,
+            worklist,
+            live_ins,
+            live_outs,
+            currently_live: _,
+            safepoints: _,
+            live_across_any_safepoint: _,
+        } = self;
+
+        block_to_index.resize(func.cfg.blocks.len());
+
+        let capacity = post_order.len();
+        worklist.reserve(capacity);
+        predecessors.resize(capacity, Default::default());
+        live_ins.resize(capacity, Default::default());
+        live_outs.resize(capacity, Default::default());
+    }
+
+    fn initialize_block_to_index_map(&mut self) {
+        for (block_index, block) in self.post_order.iter().enumerate() {
+            self.block_to_index[*block] = u32::try_from(block_index).unwrap();
+        }
+    }
+
+    fn initialize_predecessors_map(&mut self, func: &SsaFunc) {
+        for (block_index, block) in self.post_order.iter().enumerate() {
+            let block_index = u32::try_from(block_index).unwrap();
+            for succ in func.block_successors(*block) {
+                let succ_index = self.block_to_index[succ];
+                debug_assert_ne!(succ_index, u32::MAX);
+                let succ_index = usize::try_from(succ_index).unwrap();
+                self.predecessors[succ_index].push(block_index);
+            }
+        }
+    }
+
+    /// Process a value's definition, removing it from the currently-live set.
+    fn process_def(&mut self, val: Value) {
+        if self.currently_live.remove(&val) {
+            // log::trace!("liveness:   defining {val:?}, removing it from the live set");
+        }
+    }
+
+    /// Record the live set of needs-stack-map values at the given safepoint.
+    fn record_safepoint(&mut self, func: &SsaFunc, inst: Inst) {
+        // log::trace!(
+        //     "liveness:   found safepoint: {inst:?}: {}",
+        //     func.dfg.display_inst(inst)
+        // );
+        // log::trace!("liveness:     live set = {:?}", self.currently_live);
+
+        let mut live = self.currently_live.iter().copied().collect::<SmallVec<_>>();
+        // Keep order deterministic since we add stack map entries in this
+        // order.
+        live.sort();
+
+        self.live_across_any_safepoint.extend(live.iter().copied());
+        self.safepoints.insert(inst, live);
+    }
+
+    /// Process a use of a needs-stack-map value, inserting it into the
+    /// currently-live set.
+    fn process_use(&mut self, func: &SsaFunc, inst: Inst, val: Value) {
+        if self.currently_live.insert(val) {
+            // log::trace!(
+            //     "liveness:   found use of {val:?}, marking it live: {inst:?}: {}",
+            //     func.dfg.display_inst(inst)
+            // );
+        }
+    }
+
+    /// Process all the instructions in a block in reverse order.
+    fn process_block(
+        &mut self,
+        func: &mut SsaFunc,
+        stack_map_values: &EntitySet<Value>,
+        block_index: usize,
+        record_safepoints: RecordSafepoints,
+    ) {
+        let block = self.post_order[block_index];
+        // log::trace!("liveness: traversing {block:?}");
+
+        // Reset the currently-live set to this block's live-out set.
+        self.currently_live.clear();
+        self.currently_live
+            .extend(self.live_outs[block_index].iter().copied());
+
+        // Now process this block's instructions, incrementally building its
+        // live-in set inside the currently-live set.
+        let mut option_inst = func.layout.last_inst(block);
+        while let Some(inst) = option_inst {
+            // Process any needs-stack-map values defined by this instruction.
+            for val in func.inst_results(inst) {
+                self.process_def(*val);
+            }
+
+            // If this instruction is a safepoint and we've been asked to record
+            // safepoints, then do so.
+            let is_safepoint = func.dfg.insts[inst].is_safepoint();
+            if record_safepoints == RecordSafepoints::Yes && is_safepoint {
+                self.record_safepoint(func, inst);
+            }
+
+            // Process any needs-stack-map values used by this instruction.
+            for val in func.dfg.inst_values(inst) {
+                let val = func.resolve_aliases(val);
+                if stack_map_values.contains(val) {
+                    self.process_use(func, inst, val);
+                }
+            }
+
+            option_inst = func.layout.prev_inst(inst);
+        }
+
+        // After we've processed this block's instructions, remove its
+        // parameters from the live set. This is part of step (1).
+        for val in func.block_params(block) {
+            self.process_def(*val);
+        }
+    }
+
+    /// Run the liveness analysis on the given function.
+    pub fn run(&mut self, func: &mut SsaFunc, stack_map_values: &EntitySet<Value>) {
+        self.clear();
+        self.post_order.extend(self.dfs.post_order_iter(func));
+        self.reserve_capacity(func);
+        self.initialize_block_to_index_map();
+        self.initialize_predecessors_map(func);
+
+        // Initially enqueue all blocks for processing. We push them in reverse
+        // post-order (which yields them in post-order when popped) because if
+        // there are no back-edges in the control-flow graph, post-order will
+        // result in only a single pass over the blocks.
+        self.worklist
+            .extend((0..u32::try_from(self.post_order.len()).unwrap()).rev());
+
+        // Pump the worklist until we reach a fixed-point.
+        while let Some(block_index) = self.worklist.pop() {
+            let block_index = usize::try_from(block_index).unwrap();
+
+            // Because our live sets grow monotonically, we just need to see if
+            // the size changed to determine whether the whole set changed.
+            let initial_live_in_len = self.live_ins[block_index].len();
+
+            // The live-out set for a block is the union of the live-in sets of
+            // its successors.
+            for successor in func.block_successors(self.post_order[block_index]) {
+                let successor_index = self.block_to_index[successor];
+                debug_assert_ne!(successor_index, u32::MAX);
+                let successor_index = usize::try_from(successor_index).unwrap();
+                self.live_outs[block_index].extend(self.live_ins[successor_index].iter().copied());
+            }
+
+            // Process the block to compute its live-in set, but do not record
+            // safepoints yet, as we haven't yet processed loop back edges (see
+            // below).
+            self.process_block(func, stack_map_values, block_index, RecordSafepoints::No);
+
+            // The live-in set for a block is the set of values that are still
+            // live after the block's instructions have been processed.
+            self.live_ins[block_index].extend(self.currently_live.iter().copied());
+
+            // If the live-in set changed, then we need to revisit all this
+            // block's predecessors.
+            if self.live_ins[block_index].len() != initial_live_in_len {
+                self.worklist
+                    .extend(self.predecessors[block_index].iter().copied());
+            }
+        }
+
+        // Once we've reached a fixed-point, compute the actual live set for
+        // each safepoint instruction in each block, backwards from the block's
+        // live-out set.
+        for block_index in 0..self.post_order.len() {
+            self.process_block(func, stack_map_values, block_index, RecordSafepoints::Yes);
+
+            debug_assert_eq!(
+                self.currently_live, self.live_ins[block_index],
+                "when we recompute the live-in set for a block as part of \
+                 computing live sets at each safepoint, we should get the same \
+                 result we computed in the fixed-point"
+            );
+        }
+    }
+}
+
+/// A mapping from each needs-stack-map value to its associated stack slot.
+///
+/// Internally maintains free lists for stack slots that won't be used again, so
+/// that we can reuse them and minimize the number of stack slots we need to
+/// allocate.
+#[derive(Default)]
+struct StackSlots {
+    /// A mapping from each needs-stack-map value that is live across some
+    /// safepoint to the stack slot that it resides within. Note that if a
+    /// needs-stack-map value is never live across a safepoint, then we won't
+    /// ever add it to this map, it can remain in a virtual register for the
+    /// duration of its lifetime, and we won't replace all its uses with reloads
+    /// and all that stuff.
+    stack_slots: HashMap<Value, StackSlot>,
+
+    /// A map from slot size to free stack slots that are not being used
+    /// anymore. This allows us to reuse stack slots across multiple values
+    /// helps cut down on the ultimate size of our stack frames.
+    free_stack_slots: SlotSizeMap<SmallVec<[StackSlot; 4]>>,
+}
+
+impl StackSlots {
+    fn clear(&mut self) {
+        let StackSlots {
+            stack_slots,
+            free_stack_slots,
+        } = self;
+        stack_slots.clear();
+        free_stack_slots.clear();
+    }
+
+    fn get(&self, val: Value) -> Option<StackSlot> {
+        self.stack_slots.get(&val).copied()
+    }
+
+    fn get_or_create_stack_slot(&mut self, func: &mut SsaFunc, val: Value) -> StackSlot {
+        *self.stack_slots.entry(val).or_insert_with(|| {
+            // log::trace!("rewriting:     {val:?} needs a stack slot");
+            let ty = func.value_type(val);
+            let size = ty.bytes();
+            match self.free_stack_slots[SlotSize::unwrap_new(size)].pop() {
+                Some(slot) => {
+                    // log::trace!("rewriting:       reusing free stack slot {slot:?} for {val:?}");
+                    slot
+                }
+                None => {
+                    debug_assert!(size.is_power_of_two());
+                    let log2_size = size.ilog2();
+                    let slot = func.create_stack_slot(ty, size, log2_size.try_into().unwrap());
+                    // log::trace!("rewriting:       created new stack slot {slot:?} for {val:?}");
+                    slot
+                }
+            }
+        })
+    }
+
+    fn free_stack_slot(&mut self, size: SlotSize, slot: StackSlot) {
+        // log::trace!("rewriting:     returning {slot:?} to the free list");
+        self.free_stack_slots[size].push(slot);
+    }
+}
+
+/// A pass to rewrite a function's instructions to spill and reload values that
+/// are live across safepoints.
+///
+/// A single `SafepointSpiller` instance may be reused to rewrite many
+/// functions, amortizing the cost of its internal allocations and avoiding
+/// repeated `malloc` and `free` calls.
+#[derive(Default)]
+pub(super) struct SafepointSpiller {
+    liveness: LivenessAnalysis,
+    stack_slots: StackSlots,
+}
+
+impl SafepointSpiller {
+    /// Clear and reset all internal state such that this pass is ready to run
+    /// on a new function.
+    pub fn clear(&mut self) {
+        let SafepointSpiller {
+            liveness,
+            stack_slots,
+        } = self;
+        liveness.clear();
+        stack_slots.clear();
+    }
+
+    /// Identify needs-stack-map values that are live across safepoints, and
+    /// rewrite the function's instructions to spill and reload them as
+    /// necessary.
+    pub fn run(&mut self, func: &mut SsaFunc, stack_map_values: &EntitySet<Value>) {
+        // log::trace!(
+        //     "values needing inclusion in stack maps: {:?}",
+        //     stack_map_values
+        // );
+        // log::trace!(
+        //     "before inserting safepoint spills and reloads:\n{}",
+        //     func.display()
+        // );
+
+        self.clear();
+        self.liveness.run(func, stack_map_values);
+        self.rewrite(func);
+
+        // log::trace!(
+        //     "after inserting safepoint spills and reloads:\n{}",
+        //     func.display()
+        // );
+    }
+
+    /// Spill this value to a stack slot if it has been declared that it must be
+    /// included in stack maps and is live across any safepoints.
+    ///
+    /// The given cursor must point just after this value's definition.
+    fn rewrite_def<'a>(&mut self, pos: &mut FuncCursor<'a>, val: Value) {
+        if let Some(slot) = self.stack_slots.get(val) {
+            let ty = pos.func.dfg.value_type(val);
+
+            let i = pos.ins().stack_store(slot, val);
+            // log::trace!(
+            //     "rewriting:   spilling {val:?} to {slot:?}: {}",
+            //     pos.func.dfg.display_inst(i)
+            // );
+
+            // Now that we've defined this value, there cannot be any more uses
+            // of it, and therefore this stack slot is now available for reuse.
+            let size = SlotSize::try_from(ty).unwrap();
+            self.stack_slots.free_stack_slot(size, slot);
+        }
+    }
+
+    /// Add a stack map entry for each needs-stack-map value that is live across
+    /// the given safepoint instruction.
+    ///
+    /// This will additionally assign stack slots to needs-stack-map values, if
+    /// no such assignment has already been made.
+    fn rewrite_safepoint(&mut self, func: &mut SsaFunc, inst: Inst) {
+        // log::trace!(
+        //     "rewriting:   found safepoint: {inst:?}: {}",
+        //     func.dfg.display_inst(inst)
+        // );
+
+        let live = self
+            .liveness
+            .safepoints
+            .get(&inst)
+            .expect("should only call `rewrite_safepoint` on safepoint instructions");
+
+        for val in live {
+            // Get or create the stack slot for this live needs-stack-map value.
+            let slot = self.stack_slots.get_or_create_stack_slot(func, *val);
+
+            // log::trace!(
+            //     "rewriting:     adding stack map entry for {val:?} at {slot:?}: {}",
+            //     func.dfg.display_inst(inst)
+            // );
+            let ty = func.value_type(*val);
+            func.dfg.append_user_stack_map_entry(
+                inst,
+                UserStackMapEntry {
+                    ty,
+                    slot,
+                    offset: 0,
+                },
+            );
+        }
+    }
+
+    /// If `val` is a needs-stack-map value that has been spilled to a stack
+    /// slot, then rewrite `val` to be a load from its associated stack
+    /// slot.
+    ///
+    /// Returns `true` if `val` was rewritten, `false` if not.
+    ///
+    /// The given cursor must point just before the use of the value that we are
+    /// replacing.
+    fn rewrite_use(&mut self, pos: &mut FuncCursor<'_>, val: &mut Value) -> bool {
+        if !self.liveness.live_across_any_safepoint.contains(*val) {
+            return false;
+        }
+
+        let old_val = *val;
+        // log::trace!("rewriting:     found use of {old_val:?}");
+
+        let ty = pos.func.dfg.value_type(*val);
+        let slot = self.stack_slots.get_or_create_stack_slot(pos.func, *val);
+        *val = pos.ins().stack_load(ty, slot);
+
+        // log::trace!(
+        //     "rewriting:     reloading {old_val:?}: {}",
+        //     pos.func
+        //         .dfg
+        //         .display_inst(pos.func.dfg.value_def(*val).unwrap_inst())
+        // );
+
+        true
+    }
+
+    /// Rewrite the function's instructions to spill and reload values that are
+    /// live across safepoints:
+    ///
+    /// 1. Definitions of needs-stack-map values that are live across some
+    ///    safepoint need to be spilled to their assigned stack slot.
+    ///
+    /// 2. Instructions that are themselves safepoints must have stack map
+    ///    entries added for the needs-stack-map values that are live across
+    ///    them.
+    ///
+    /// 3. Uses of needs-stack-map values that have been spilled to a stack slot
+    ///    need to be replaced with reloads from the slot.
+    fn rewrite(&mut self, func: &mut SsaFunc) {
+        // Shared temporary storage for operand and result lists.
+        let mut vals: SmallVec<[_; 8]> = Default::default();
+
+        // Rewrite the function's instructions in post-order. This ensures that
+        // we rewrite uses before defs, and therefore once we see a def we know
+        // its stack slot will never be used for that value again. Therefore,
+        // the slot can be reappropriated for a new needs-stack-map value with a
+        // non-overlapping live range. See `rewrite_def` and `free_stack_slots`
+        // for more details.
+        for block_index in 0..self.liveness.post_order.len() {
+            let block = self.liveness.post_order[block_index];
+            // log::trace!("rewriting: processing {block:?}");
+
+            let mut option_inst = func.layout.last_inst(block);
+            while let Some(inst) = option_inst {
+                // If this instruction defines a needs-stack-map value that is
+                // live across a safepoint, then spill the value to its stack
+                // slot.
+                let mut pos = FuncCursor::new(func).after_inst(inst);
+                vals.extend_from_slice(pos.func.dfg.inst_results(inst));
+                for val in vals.drain(..) {
+                    self.rewrite_def(&mut pos, val);
+                }
+
+                // If this instruction is a safepoint, then we must add stack
+                // map entries for the needs-stack-map values that are live
+                // across it.
+                if self.liveness.safepoints.contains_key(&inst) {
+                    self.rewrite_safepoint(func, inst);
+                }
+
+                // Replace all uses of needs-stack-map values with loads from
+                // the value's associated stack slot.
+                let mut pos = FuncCursor::new(func).at_inst(inst);
+                vals.extend(pos.func.dfg.inst_values(inst));
+                let mut replaced_any = false;
+                for val in &mut vals {
+                    replaced_any |= self.rewrite_use(&mut pos, val);
+                }
+                if replaced_any {
+                    pos.func.dfg.overwrite_inst_values(inst, vals.drain(..));
+                    // log::trace!(
+                    //     "rewriting:     updated {inst:?} operands with reloaded values: {}",
+                    //     pos.func.dfg.display_inst(inst)
+                    // );
+                } else {
+                    vals.clear();
+                }
+
+                option_inst = func.layout.prev_inst(inst);
+            }
+
+            // Spill needs-stack-map values defined by block parameters to their
+            // associated stack slots.
+            let mut pos = FuncCursor::new(func).at_position(CursorPosition::Before(block));
+            pos.next_inst(); // Advance to the first instruction in the block.
+            vals.clear();
+            vals.extend_from_slice(pos.func.block_params(block));
+            for val in vals.drain(..) {
+                self.rewrite_def(&mut pos, val);
+            }
+        }
+    }
+}
+
+use core::fmt::Debug;
+
+/// A low-level DFS traversal event: either entering or exiting the traversal of
+/// a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Event {
+    /// Entering traversal of a block.
+    ///
+    /// Processing a block upon this event corresponds to a pre-order,
+    /// depth-first traversal.
+    Enter,
+
+    /// Exiting traversal of a block.
+    ///
+    /// Processing a block upon this event corresponds to a post-order,
+    /// depth-first traversal.
+    Exit,
+}
+
+/// A depth-first traversal.
+///
+/// This is a fairly low-level traversal type, and is generally intended to be
+/// used as a building block for making specific pre-order or post-order
+/// traversals for whatever problem is at hand.
+///
+/// This type may be reused multiple times across different passes or functions
+/// and will internally reuse any heap allocations its already made.
+///
+/// Traversal is not recursive.
+#[derive(Debug, Default, Clone)]
+pub struct Dfs {
+    stack: Vec<(Event, Block)>,
+    seen: EntitySet<Block>,
+}
+
+impl Dfs {
+    /// Construct a new depth-first traversal.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Perform a depth-first traversal over the given function.
+    ///
+    /// Yields pairs of `(Event, ir::Block)`.
+    ///
+    /// This iterator can be used to perform either pre- or post-order
+    /// traversals, or a combination of the two.
+    pub fn iter<'a>(&'a mut self, func: &'a SsaFunc) -> DfsIter<'a> {
+        self.clear();
+        if let Some(e) = func.layout.entry_block() {
+            self.stack.push((Event::Enter, e));
+        }
+        DfsIter { dfs: self, func }
+    }
+
+    /// Perform a pre-order traversal over the given function.
+    ///
+    /// Yields `ir::Block` items.
+    pub fn pre_order_iter<'a>(&'a mut self, func: &'a SsaFunc) -> DfsPreOrderIter<'a> {
+        DfsPreOrderIter(self.iter(func))
+    }
+
+    /// Perform a post-order traversal over the given function.
+    ///
+    /// Yields `ir::Block` items.
+    pub fn post_order_iter<'a>(&'a mut self, func: &'a SsaFunc) -> DfsPostOrderIter<'a> {
+        DfsPostOrderIter(self.iter(func))
+    }
+
+    /// Clear this DFS, but keep its allocations for future reuse.
+    pub fn clear(&mut self) {
+        let Dfs { stack, seen } = self;
+        stack.clear();
+        seen.clear();
+    }
+}
+
+/// An iterator that yields pairs of `(Event, ir::Block)` items as it performs a
+/// depth-first traversal over its associated function.
+pub struct DfsIter<'a> {
+    dfs: &'a mut Dfs,
+    func: &'a SsaFunc,
+}
+
+impl Iterator for DfsIter<'_> {
+    type Item = (Event, Block);
+
+    fn next(&mut self) -> Option<(Event, Block)> {
+        let (event, block) = self.dfs.stack.pop()?;
+
+        if event == Event::Enter && self.dfs.seen.insert(block) {
+            self.dfs.stack.push((Event::Exit, block));
+            self.dfs.stack.extend(
+                self.func
+                    .block_successors(block)
+                    // Heuristic: chase the children in reverse. This puts
+                    // the first successor block first in the postorder, all
+                    // other things being equal, which tends to prioritize
+                    // loop backedges over out-edges, putting the edge-block
+                    // closer to the loop body and minimizing live-ranges in
+                    // linear instruction space. This heuristic doesn't have
+                    // any effect on the computation of dominators, and is
+                    // purely for other consumers of the postorder we cache
+                    // here.
+                    .rev()
+                    // This is purely an optimization to avoid additional
+                    // iterations of the loop, and is not required; it's
+                    // merely inlining the check from the outer conditional
+                    // of this case to avoid the extra loop iteration. This
+                    // also avoids potential excess stack growth.
+                    .filter(|block| !self.dfs.seen.contains(*block))
+                    .map(|block| (Event::Enter, block)),
+            );
+        }
+
+        Some((event, block))
+    }
+}
+
+/// An iterator that yields `ir::Block` items during a depth-first, pre-order
+/// traversal over its associated function.
+pub struct DfsPreOrderIter<'a>(DfsIter<'a>);
+
+impl Iterator for DfsPreOrderIter<'_> {
+    type Item = Block;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.0.next()? {
+                (Event::Enter, b) => return Some(b),
+                (Event::Exit, _) => continue,
+            }
+        }
+    }
+}
+
+/// An iterator that yields `ir::Block` items during a depth-first, post-order
+/// traversal over its associated function.
+pub struct DfsPostOrderIter<'a>(DfsIter<'a>);
+
+impl Iterator for DfsPostOrderIter<'_> {
+    type Item = Block;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.0.next()? {
+                (Event::Exit, b) => return Some(b),
+                (Event::Enter, _) => continue,
+            }
+        }
+    }
+}
+
+/// User-defined stack maps.
+///
+/// This module provides types allowing users to define stack maps and associate
+/// them with safepoints.
+///
+/// A **safepoint** is a program point (i.e. CLIF instruction) where it must be
+/// safe to run GC. Currently all non-tail call instructions are considered
+/// safepoints. (This does *not* allow, for example, skipping safepoints for
+/// calls that are statically known not to trigger collections, or to have a
+/// safepoint on a volatile load to a page that gets protected when it is time
+/// to GC, triggering a fault that pauses the mutator and lets the collector do
+/// its work before resuming the mutator. We can lift this restriction in the
+/// future, if necessary.)
+///
+/// A **stack map** is a description of where to find all the GC-managed values
+/// that are live at a particular safepoint. Stack maps let the collector find
+/// on-stack roots. Each stack map is logically a set of offsets into the stack
+/// frame and the type of value at that associated offset. However, because the
+/// stack layout isn't defined until much later in the compiler's pipeline, each
+/// stack map entry instead includes both an `ir::StackSlot` and an offset
+/// within that slot.
+///
+/// These stack maps are **user-defined** in that it is the CLIF producer's
+/// responsibility to identify and spill the live GC-managed values and attach
+/// the associated stack map entries to each safepoint themselves (see
+/// `cranelift_frontend::Function::declare_needs_stack_map` and
+/// `cranelift_codegen::ir::DataFlowGraph::append_user_stack_map_entry`). Cranelift
+/// will not insert spills and record these stack map entries automatically.
+///
+/// Logically, a set of stack maps for a function record a table of the form:
+///
+/// ```text
+/// +---------------------+-------------------------------------------+
+/// | Instruction Pointer | SP-Relative Offsets of Live GC References |
+/// +---------------------+-------------------------------------------+
+/// | 0x12345678          | 2, 6, 12                                  |
+/// | 0x1234abcd          | 2, 6                                      |
+/// | ...                 | ...                                       |
+/// +---------------------+-------------------------------------------+
+/// ```
+///
+/// Where "instruction pointer" is an instruction pointer within the function,
+/// and "offsets of live GC references" contains the offsets (in units of words)
+/// from the frame's stack pointer where live GC references are stored on the
+/// stack. Instruction pointers within the function that do not have an entry in
+/// this table are not GC safepoints.
+///
+/// Because
+///
+/// * offsets of live GC references are relative from the stack pointer, and
+/// * stack frames grow down from higher addresses to lower addresses,
+///
+/// to get a pointer to a live reference at offset `x` within a stack frame, you
+/// add `x` to the frame's stack pointer.
+///
+/// For example, to calculate the pointer to the live GC reference inside "frame
+/// 1" below, you would do `frame_1_sp + x`:
+///
+/// ```text
+///           Stack
+///         +-------------------+
+///         | Frame 0           |
+///         |                   |
+///    |    |                   |
+///    |    +-------------------+ <--- Frame 0's SP
+///    |    | Frame 1           |
+///  Grows  |                   |
+///  down   |                   |
+///    |    | Live GC reference | --+--
+///    |    |                   |   |
+///    |    |                   |   |
+///    V    |                   |   x = offset of live GC reference
+///         |                   |   |
+///         |                   |   |
+///         +-------------------+ --+--  <--- Frame 1's SP
+///         | Frame 2           |
+///         | ...               |
+/// ```
+///
+/// An individual `UserStackMap` is associated with just one instruction pointer
+/// within the function, contains the size of the stack frame, and represents
+/// the stack frame as a bitmap. There is one bit per word in the stack frame,
+/// and if the bit is set, then the word contains a live GC reference.
+///
+/// Note that a caller's outgoing argument stack slots (if any) and callee's
+/// incoming argument stack slots (if any) overlap, so we must choose which
+/// function's stack maps record live GC references in these slots. We record
+/// the incoming arguments in the callee's stack map. This choice plays nice
+/// with tail calls, where by the time we transfer control to the callee, the
+/// caller no longer exists.
+
+use cranelift_bitset::CompoundBitSet;
+
+pub(crate) type UserStackMapEntryVec = SmallVec<[UserStackMapEntry; 4]>;
+
+/// A stack map entry describes a single GC-managed value and its location on
+/// the stack.
+///
+/// A stack map entry is associated with a particular instruction, and that
+/// instruction must be a safepoint. The GC-managed value must be stored in the
+/// described location across this entry's instruction.
+#[derive(Clone, Debug, PartialEq, Hash)]
+pub struct UserStackMapEntry {
+    /// The type of the value stored in this stack map entry.
+    pub ty: Type,
+
+    /// The stack slot that this stack map entry is within.
+    pub slot: StackSlot,
+
+    /// The offset within the stack slot where this entry's value can be found.
+    pub offset: u32,
+}
+
+/// A compiled stack map, describing the location of many GC-managed values.
+///
+/// A stack map is associated with a particular instruction, and that
+/// instruction is a safepoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserStackMap {
+    // Offsets into the frame's sized stack slots that are GC references, by type.
+    by_type: SmallVec<[(Type, CompoundBitSet); 1]>,
+
+    // The offset of the sized stack slots, from SP, for this stack map's
+    // associated PC.
+    //
+    // This is initially `None` upon construction during lowering, but filled in
+    // after regalloc during emission when we have the precise frame layout.
+    sp_to_sized_stack_slots: Option<u32>,
+}
+
+impl UserStackMap {
+    /// Coalesce the given entries into a new `UserStackMap`.
+    pub(crate) fn new(
+        entries: &[UserStackMapEntry],
+        stack_slot_offsets: &PrimaryMap<StackSlot, u32>,
+    ) -> Self {
+        let mut by_type = SmallVec::<[(Type, CompoundBitSet); 1]>::default();
+
+        for entry in entries {
+            let offset = stack_slot_offsets[entry.slot] + entry.offset;
+            let offset = usize::try_from(offset).unwrap();
+
+            // Don't bother trying to avoid an `O(n)` search here: `n` is
+            // basically always one in practice; even if it isn't, there aren't
+            // that many different CLIF types.
+            let index = by_type
+                .iter()
+                .position(|(ty, _)| *ty == entry.ty)
+                .unwrap_or_else(|| {
+                    by_type.push((entry.ty, CompoundBitSet::with_capacity(offset + 1)));
+                    by_type.len() - 1
+                });
+
+            by_type[index].1.insert(offset);
+        }
+
+        UserStackMap {
+            by_type,
+            sp_to_sized_stack_slots: None,
+        }
+    }
+
+    /// Finalize this stack map by filling in the SP-to-stack-slots offset.
+    pub(crate) fn finalize(&mut self, sp_to_sized_stack_slots: u32) {
+        debug_assert!(self.sp_to_sized_stack_slots.is_none());
+        self.sp_to_sized_stack_slots = Some(sp_to_sized_stack_slots);
+    }
+
+    /// Iterate over the entries in this stack map.
+    ///
+    /// Yields pairs of the type of GC reference that is at the offset, and the
+    /// offset from SP. If a pair `(i64, 0x42)` is yielded, for example, then
+    /// when execution is at this stack map's associated PC, `SP + 0x42` is a
+    /// pointer to an `i64`, and that `i64` is a live GC reference.
+    pub fn entries(&self) -> impl Iterator<Item = (Type, u32)> + '_ {
+        let sp_to_sized_stack_slots = self.sp_to_sized_stack_slots.expect(
+            "`sp_to_sized_stack_slots` should have been filled in before this stack map was used",
+        );
+        self.by_type.iter().flat_map(move |(ty, bitset)| {
+            bitset.iter().map(move |slot_offset| {
+                (
+                    *ty,
+                    sp_to_sized_stack_slots + u32::try_from(slot_offset).unwrap(),
+                )
+            })
+        })
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////
 // Analysis & Pretty Printing
 //
@@ -2962,7 +5556,7 @@ impl SsaFunc {
                 "({})",
                 block_data
                     .params
-                    .as_slice(&self.values_pool)
+                    .as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|v| self.fmt_value(*v))
                     .collect::<Vec<_>>()
@@ -3035,7 +5629,7 @@ impl SsaFunc {
             InstructionData::Jump { destination, args } => s.push_str(&format!(
                 "jump {}({})",
                 destination,
-                args.as_slice(&self.values_pool)
+                args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -3050,12 +5644,12 @@ impl SsaFunc {
                 self.fmt_value(*arg),
                 destinations[0],
                 destinations[1],
-                args[0].as_slice(&self.values_pool)
+                args[0].as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
                     .join(", "),
-                args[1].as_slice(&self.values_pool)
+                args[1].as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -3064,7 +5658,7 @@ impl SsaFunc {
             InstructionData::Call { func_id, args, .. } => s.push_str(&format!(
                 "call {} ({})",
                 func_id,
-                args.as_slice(&self.values_pool)
+                args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -3073,7 +5667,7 @@ impl SsaFunc {
             InstructionData::CallHook { hook_id, args } => s.push_str(&format!(
                 "call_hook {} ({})",
                 hook_id,
-                args.as_slice(&self.values_pool)
+                args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -3082,7 +5676,7 @@ impl SsaFunc {
             InstructionData::CallExt { func_id, args } => s.push_str(&format!(
                 "call_ext {} ({})",
                 func_id,
-                args.as_slice(&self.values_pool)
+                args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -3091,7 +5685,7 @@ impl SsaFunc {
             InstructionData::CallIndirect { callee, args } => s.push_str(&format!(
                 "call_indirect {} ({})",
                 self.fmt_value(*callee),
-                args.as_slice(&self.values_pool)
+                args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
@@ -3099,7 +5693,7 @@ impl SsaFunc {
             )),
             InstructionData::Return { args } => s.push_str(&format!(
                 "return {}",
-                args.as_slice(&self.values_pool)
+                args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|v| self.fmt_value(*v))
                     .collect::<Vec<_>>()
@@ -3164,7 +5758,7 @@ impl fmt::Display for SsaFunc {
         for (slot_id, slot) in &self.stack_slots {
             writeln!(f, "  StackSlot{}: {:?}, size={}", slot_id.as_u32(), slot.ty, slot.size)?;
         }
-        if let Some(entry) = self.layout.block_entry.expand() {
+        if let Some(entry) = self.layout.entry_block() {
             let mut visited = IntSet::with_capacity_and_hasher(
                 self.cfg.blocks.len(),
                 nohash_hasher::BuildNoHashHasher::default()
