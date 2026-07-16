@@ -535,11 +535,12 @@ define_opcodes! {
     BranchIf32(cond: u32, offset: i32)
     @ IData::Branch { arg, destinations, args, .. } => |_results, chunk| {
         let [t, e] = *destinations;
+        let [t_args, e_args] = args;
 
         let cond_reg = *arg;
         chunk.append(Opcode::BranchIf32);
         chunk.append(cond_reg.as_u32());
-        self.brif_with_args(chunk, t, e, args);
+        self.brif_with_args(chunk, t, t_args, e, e_args);
     }
 
     Return()

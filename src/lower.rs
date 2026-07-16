@@ -171,11 +171,15 @@ impl<'a> LoweringContext<'a> {
         &mut self,
         chunk: &mut BytecodeFunction,
         then: Block,
+        then_args: &EntityList<Value>,
         els: Block,
-        args: &EntityList<Value>,
+        els_args: &EntityList<Value>,
     ) {
-        let args_len = args.len(&self.func.values_pool);
-        debug_assert!(args_len <= 255, "Too many arguments (max 255)");
+        let then_args_len = then_args.len(&self.func.values_pool);
+        let else_args_len = els_args.len(&self.func.values_pool);
+
+        debug_assert!(then_args_len <= 255, "Too many 'then' arguments (max 255)");
+        debug_assert!(else_args_len <= 255, "Too many 'else' arguments (max 255)");
 
         let then_offset_pos = chunk.code.len() as u32;
         chunk.append(0xDED_i32); // then placeholder
@@ -183,13 +187,29 @@ impl<'a> LoweringContext<'a> {
         let els_offset_pos = chunk.code.len() as u32;
         chunk.append(0xDED_i32); // else placeholder
 
-        chunk.append(args_len as u8);
-
-        let params = &self.func.cfg.blocks[then].params;
-        for (&param, &arg) in args
+        //
+        // Emit 'then' arguments and target parameter mapping
+        //
+        chunk.append(then_args_len as u8);
+        let then_params = &self.func.cfg.blocks[then].params;
+        for (&param, &arg) in then_args
             .as_slice(&self.func.values_pool)
             .iter()
-            .zip(params.as_slice(&self.func.values_pool))
+            .zip(then_params.as_slice(&self.func.values_pool))
+        {
+            chunk.append(arg.as_u32());
+            chunk.append(param.as_u32());
+        }
+
+        //
+        // Emit 'else' arguments and target parameter mapping
+        //
+        chunk.append(else_args_len as u8);
+        let els_params = &self.func.cfg.blocks[els].params;
+        for (&param, &arg) in els_args
+            .as_slice(&self.func.values_pool)
+            .iter()
+            .zip(els_params.as_slice(&self.func.values_pool))
         {
             chunk.append(arg.as_u32());
             chunk.append(param.as_u32());
@@ -197,6 +217,7 @@ impl<'a> LoweringContext<'a> {
 
         let instruction_end = chunk.code.len() as u32;
 
+        // Register both placeholders for patching
         self.jump_placeholders.push(JumpPlaceholder {
             offset: then_offset_pos,
             dst: then,
@@ -226,7 +247,7 @@ impl<'a> LoweringContext<'a> {
     }
 
     fn compute_block_order(&mut self) {
-        let Some(entry) = self.func.layout.block_entry else {
+        let Some(entry) = self.func.layout.block_entry.expand() else {
             return;
         };
 
