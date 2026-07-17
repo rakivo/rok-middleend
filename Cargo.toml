@@ -18,4 +18,7 @@ cfg-if.workspace = true
 nohash-hasher.workspace = true
 smallvec.workspace = true
 paste.workspace = true
+rustc-hash.workspace = true
 cranelift-bitset = "0.133.1"
+cranelift-bforest = "0.133.1"
+hashbrown = "0.17.1"

@@ -311,11 +311,9 @@ impl<'a> LoweringContext<'a> {
 
             self.block_offsets.insert(block_id, chunk.code.len() as _);
 
-            let insts = self.func.cfg.blocks[block_id]
-                .insts
-                .as_slice(&self.func.cfg.block_insts_pool);
+            let insts = self.func.layout.block_insts(block_id);
 
-            for &inst in insts {
+            for inst in insts {
                 #[cfg(debug_assertions)]
                 let pc = Pc::from_u32(chunk.code.len() as _);
 

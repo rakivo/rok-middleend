@@ -32,3 +32,5 @@ pub mod disassemble;
 pub mod lower;
 pub mod ssa;
 pub mod util;
+pub mod ctxhash;
+pub mod scoped_hash_map;

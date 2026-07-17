@@ -1,12 +1,16 @@
 #![allow(dead_code, unused)]
 
+use crate::ctxhash::{CtxHashMap, NullCtx};
+use crate::scoped_hash_map::ScopedHashMap;
 use crate::with_comment;
 
+use flow::BlockPredecessor;
 use nohash_hasher::IntSet;
 use rok_entity::packed_option::{PackedOption, ReservedValue};
 use rok_entity::{EntityList, EntityRef, EntitySet, ListPool, PrimaryMap, SecondaryMap, SparseMap, sparse_pair};
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
@@ -450,6 +454,16 @@ impl DataFlowGraph {
         self.insts[inst].inst_args(&self.values_pool)
     }
 
+    /// Construct a visitor context for the values of this instruction.
+    #[inline]
+    #[must_use]
+    pub fn inst_args_mut(
+        &mut self,
+        inst: Inst,
+    ) -> impl Iterator<Item = &mut Value> {
+        self.insts[inst].inst_args_mut(&mut self.values_pool)
+    }
+
     /// Check if a value reference is valid.
     pub fn value_is_valid(&self, v: Value) -> bool {
         self.values.is_valid(v)
@@ -508,6 +522,20 @@ impl DataFlowGraph {
     //         ValueDef::Alias { .. } => false,
     //     }
     // }
+
+    /// Resolve all aliases among inst's arguments.
+    ///
+    /// For each argument of inst which is defined by an alias, replace the
+    /// alias with the aliased value.
+    pub fn resolve_aliases_in_arguments(&mut self, inst: Inst) {
+        let inst_args_mut = self.insts[inst].inst_args_mut(&mut self.values_pool);
+        for arg in inst_args_mut {
+            let resolved = resolve_aliases(&self.values, *arg);
+            if resolved != *arg {
+                *arg = resolved;
+            }
+        }
+    }
 
     /// Resolve value aliases.
     ///
@@ -863,7 +891,11 @@ impl SsaFunc {
 
     #[inline(always)]
     pub fn instruction_count(&self) -> usize {
-        self.dfg.insts.len()
+        let mut count = 0;
+        for block in self.layout.blocks() {
+            count += self.layout.block_insts(block).count();
+        }
+        count
     }
 
     #[inline(always)]
@@ -949,12 +981,6 @@ impl SsaFunc {
     pub fn is_block_terminated(&self, block: Block) -> bool {
         let last_inst = self.cfg.blocks[block].insts.as_slice(&self.cfg.block_insts_pool).last().copied();
         last_inst.is_some_and(|inst| self.is_instruction_terminator(inst))
-    }
-
-    #[inline(always)]
-    #[must_use]
-    pub fn block_insts(&self, block: Block) -> &[Inst] {
-        self.cfg.blocks[block].insts.as_slice(&self.cfg.block_insts_pool)
     }
 
     #[inline]
@@ -1451,6 +1477,34 @@ impl Layout {
     }
 }
 
+impl Layout {
+    /// Compare the program points `a` and `b` in the same block relative to this program order.
+    ///
+    /// Return `Less` if `a` appears in the program before `b`.
+    ///
+    /// This is declared as a generic such that it can be called with `Inst` and `Block` arguments
+    /// directly. Depending on the implementation, there is a good chance performance will be
+    /// improved for those cases where the type of either argument is known statically.
+    pub fn pp_cmp<A, B>(&self, a: A, b: B) -> Ordering
+    where
+        A: Into<ProgramPoint>,
+        B: Into<ProgramPoint>,
+    {
+        let a = a.into();
+        let b = b.into();
+        debug_assert_eq!(self.pp_block(a), self.pp_block(b));
+        let a_seq = match a {
+            ProgramPoint::Block(_block) => 0,
+            ProgramPoint::Inst(inst) => self.insts[inst].seq,
+        };
+        let b_seq = match b {
+            ProgramPoint::Block(_block) => 0,
+            ProgramPoint::Inst(inst) => self.insts[inst].seq,
+        };
+        a_seq.cmp(&b_seq)
+    }
+}
+
 /// Methods for laying out blocks.
 ///
 /// An unknown block starts out as *not inserted* in the block layout. The layout is a linear order of
@@ -1461,6 +1515,11 @@ impl Layout {
 /// blocks do not affect the semantics of the program.
 ///
 impl Layout {
+    /// Returns the capacity of the `BlockData` map.
+    pub fn block_capacity(&self) -> usize {
+        self.blocks.capacity()
+    }
+
     /// Is `block` currently part of the layout?
     pub fn is_block_inserted(&self, block: Block) -> bool {
         Some(block) == self.first_block || self.blocks[block].prev.is_some()
@@ -1823,6 +1882,67 @@ impl InstructionData {
         }
     }
 
+    pub fn inst_args_mut<'a>(&'a mut self, pool: &'a mut ListPool<Value>) -> InstArgsMut<'a> {
+        match self {
+            // Instructions with 0 arguments
+            InstructionData::Unreachable
+            | InstructionData::Nop
+            | InstructionData::IConst { .. }
+            | InstructionData::FConst { .. }
+            | InstructionData::StackLoad { .. }
+            | InstructionData::StackAddr { .. }
+            | InstructionData::DataAddr { .. } => InstArgsMut::Empty,
+
+            // Instructions with 1 argument
+            InstructionData::Unary { arg, .. }
+            | InstructionData::StackStore { arg, .. }
+            | InstructionData::LoadNoOffset { addr: arg, .. } => {
+                InstArgsMut::One(Some(arg))
+            }
+
+            // Instructions with 2 arguments
+            InstructionData::Binary { args, .. }
+            | InstructionData::Icmp { args, .. }
+            | InstructionData::Fcmp { args, .. }
+            | InstructionData::StoreNoOffset { args, .. } => {
+                InstArgsMut::Slice(&mut args[..])
+            }
+
+            // Instructions with a single list of arguments
+            InstructionData::CallHook { args, .. }
+            | InstructionData::Jump { args, .. }
+            | InstructionData::Call { args, .. }
+            | InstructionData::CallExt { args, .. }
+            | InstructionData::Return { args, .. } => {
+                InstArgsMut::Slice(args.as_mut_slice(pool))
+            }
+
+            // Instruction with 1 argument + a list of arguments
+            InstructionData::CallIndirect { callee, args } => {
+                InstArgsMut::ValueAndSlice {
+                    val: Some(callee),
+                    slice: args.as_mut_slice(pool),
+                }
+            }
+
+            // Instruction with 1 argument + two separate lists of arguments
+            InstructionData::Branch { args, arg, .. } => {
+                let [then_list, else_list] = args;
+
+                // SAFETY: `then_list` and `else_list` represent disjoint allocations within
+                // the ListPool. Since the borrow checker locks the entire pool on the first
+                // call, we cast through a raw pointer to obtain both slices simultaneously.
+                let pool_ptr = pool as *mut ListPool<Value>;
+
+                InstArgsMut::Branch {
+                    cond: Some(arg),
+                    then_slice: then_list.as_mut_slice(unsafe { &mut *pool_ptr }),
+                    else_slice: else_list.as_mut_slice(unsafe { &mut *pool_ptr }),
+                }
+            }
+        }
+    }
+
     /// Rewrites all input `Value`s in this instruction using the provided mapping function.
     pub fn map_values<F>(&mut self, pool: &mut ListPool<Value>, mut map_fn: F)
     where
@@ -1945,6 +2065,67 @@ impl<'a> Iterator for InstValues<'a> {
     }
 }
 
+pub enum InstArgsMut<'a> {
+    Empty,
+    One(Option<&'a mut Value>),
+    Slice(&'a mut [Value]),
+    ValueAndSlice {
+        val: Option<&'a mut Value>,
+        slice: &'a mut [Value],
+    },
+    Branch {
+        cond: Option<&'a mut Value>,
+        then_slice: &'a mut [Value],
+        else_slice: &'a mut [Value],
+    },
+}
+
+impl<'a> Iterator for InstArgsMut<'a> {
+    type Item = &'a mut Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            InstArgsMut::Empty => None,
+
+            InstArgsMut::One(val) => val.take(),
+
+            InstArgsMut::Slice(slice) => {
+                // std::mem::take replaces the active slice with an empty one temporarily
+                let current_slice = std::mem::take(slice);
+                let (first, rest) = current_slice.split_first_mut()?;
+                *slice = rest; // Put the remaining slice back
+                Some(first)
+            }
+
+            InstArgsMut::ValueAndSlice { val, slice } => {
+                if let Some(v) = val.take() {
+                    return Some(v);
+                }
+                let current_slice = std::mem::take(slice);
+                let (first, rest) = current_slice.split_first_mut()?;
+                *slice = rest;
+                Some(first)
+            }
+
+            InstArgsMut::Branch { cond, then_slice, else_slice } => {
+                if let Some(c) = cond.take() {
+                    return Some(c);
+                }
+                if !then_slice.is_empty() {
+                    let current_slice = std::mem::take(then_slice);
+                    let (first, rest) = current_slice.split_first_mut()?;
+                    *then_slice = rest;
+                    return Some(first);
+                }
+                let current_slice = std::mem::take(else_slice);
+                let (first, rest) = current_slice.split_first_mut()?;
+                *else_slice = rest;
+                Some(first)
+            }
+        }
+    }
+}
+
 /// A zero-allocation iterator over the argument values of an instruction.
 pub enum InstArgs<'a> {
     Empty,
@@ -2040,7 +2221,7 @@ impl<'a> Iterator for InstArgs<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum IntCC {
     Equal,
     NotEqual,
@@ -2054,7 +2235,7 @@ pub enum IntCC {
     UnsignedLessThanOrEqual,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum FloatCC {
     Equal,
     NotEqual,
@@ -2064,7 +2245,7 @@ pub enum FloatCC {
     LessThanOrEqual,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum BinaryOp {
     IAdd,
     ISub,
@@ -2088,7 +2269,7 @@ pub enum BinaryOp {
     FRem,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum UnaryOp {
     Ireduce,
     Uextend,
@@ -2135,6 +2316,8 @@ pub struct Module {
     pub ext_funcs: PrimaryMap<ExtFuncId, ExtFunc>,
 
     pub _reused_func_ctx: FunctionBuilderContext,
+    pub _reused_domtree:  DominatorTree,
+    pub _reused_cfg:      flow::ControlFlowGraph,
 }
 
 impl Module {
@@ -2555,8 +2738,7 @@ impl<'a> FunctionBuilder<'a> {
             .get(var)
             .ok_or(DefVariableError::DefinedBeforeDeclared(var))?;
         let val_ty = self.func.value_type(val);
-        if var_ty != val_ty && val_ty.bits() != var_ty.bits() {  // @KindaHack @Cleanup?
-            panic!();
+        if var_ty != val_ty && val_ty.bits() != var_ty.bits() {  // @KindaHack?
             return Err(DefVariableError::TypeMismatch(var, val));
         }
 
@@ -2625,8 +2807,7 @@ impl<'a> FunctionBuilder<'a> {
         self.stack_map_values.insert(val);
     }
 
-    #[track_caller]
-    pub fn finalize(&mut self) {
+    pub fn finalize(&mut self, reused_domtree: &mut DominatorTree, reused_cfg: &mut flow::ControlFlowGraph) {
         // Check that all the `Block`s are filled and sealed.
         #[cfg(debug_assertions)]
         {
@@ -2675,6 +2856,12 @@ impl<'a> FunctionBuilder<'a> {
                 .safepoints
                 .run(&mut self.func, &self.func_ctx.stack_map_values);
         }
+
+        reused_cfg.compute(self.func);
+        reused_domtree.compute(self.func, reused_cfg);
+
+        do_simple_gvn(self.func, reused_cfg, reused_domtree);
+        do_simple_dce(self.func, reused_domtree);
 
         self.func.dfg.resolve_all_aliases();
 
@@ -2876,11 +3063,119 @@ impl<'a> FuncCursor<'a> {
         }
     }
 
+    /// Get the block corresponding to the current position.
+    fn current_block(&self) -> Option<Block> {
+        use CursorPosition::*;
+
+        match self.pos {
+            Nowhere => None,
+            At(inst) => self.func.layout.inst_block(inst),
+            Before(block) | After(block) => Some(block),
+        }
+    }
+
+    /// Get the instruction corresponding to the current position, if any.
+    fn current_inst(&self) -> Option<Inst> {
+        use CursorPosition::*;
+
+        match self.pos {
+            At(inst) => Some(inst),
+            _ => None,
+        }
+    }
+
+    /// Remove the instruction under the cursor.
+    ///
+    /// The cursor is left pointing at the position following the current instruction.
+    ///
+    /// Return the instruction that was removed.
+    fn remove_inst(&mut self) -> Inst {
+        let inst = self.current_inst().expect("No instruction to remove");
+        self.next_inst();
+        self.func.layout.remove_inst(inst);
+        inst
+    }
+
+    /// Move to the previous instruction in the same block and return it.
+    ///
+    /// - If the cursor was positioned after a block, go to the last instruction in that block.
+    /// - If there are no more instructions in the block, go to the `Before(block)` position and return
+    ///   `None`.
+    /// - If the cursor wasn't pointing anywhere, keep doing that.
+    ///
+    /// This method will never move the cursor to a different block.
+    ///
+    /// # Examples
+    ///
+    /// The `prev_inst()` method is intended for iterating backwards over the instructions in an
+    /// block like this:
+    ///
+    /// ```
+    /// # use cranelift_codegen::ir::{Function, Block};
+    /// # use cranelift_codegen::cursor::{Cursor, FuncCursor};
+    /// fn edit_block(func: &mut Function, block: Block) {
+    ///     let mut cursor = FuncCursor::new(func).at_bottom(block);
+    ///     while let Some(inst) = cursor.prev_inst() {
+    ///         // Edit instructions...
+    ///     }
+    /// }
+    /// ```
+    fn prev_inst(&mut self) -> Option<Inst> {
+        use CursorPosition::*;
+
+        match self.pos {
+            Nowhere | Before(..) => None,
+            At(inst) => {
+                if let Some(prev) = self.func.layout.prev_inst(inst) {
+                    self.pos = At(prev);
+                    Some(prev)
+                } else {
+                    let pos = Before(
+                        self.func.layout
+                            .inst_block(inst)
+                            .expect("current instruction removed?"),
+                    );
+                    self.pos = pos;
+                    None
+                }
+            }
+            After(block) => {
+                if let Some(prev) = self.func.layout.last_inst(block) {
+                    self.pos = At(prev);
+                    Some(prev)
+                } else {
+                    self.pos = Before(block);
+                    None
+                }
+            }
+        }
+    }
+
+    /// Remove the instruction under the cursor.
+    ///
+    /// The cursor is left pointing at the position preceding the current instruction.
+    ///
+    /// Return the instruction that was removed.
+    fn remove_inst_and_step_back(&mut self) -> Inst {
+        let inst = self.current_inst().expect("No instruction to remove");
+        self.prev_inst();
+        self.func.layout.remove_inst(inst);
+        inst
+    }
+
     /// Go to a specific instruction which must be inserted in the layout.
     /// New instructions will be inserted before `inst`.
     fn goto_inst(&mut self, inst: Inst) {
         debug_assert!(self.func.layout.inst_block(inst).is_some());
         self.pos = CursorPosition::At(inst);
+    }
+
+    /// Go to the top of `block` which must be inserted into the layout.
+    /// At this position, instructions cannot be inserted, but `next_inst()` will move to the first
+    /// instruction in `block`.
+    fn goto_top(&mut self, block: Block) {
+        debug_assert!(self.func.layout.is_block_inserted(block));
+        self.pos = CursorPosition::Before(block);
     }
 
     /// Go to the bottom of `block` which must be inserted into the layout.
@@ -5619,6 +5914,1058 @@ impl UserStackMap {
     }
 }
 
+/// A control flow graph represented as mappings of basic blocks to their predecessors
+/// and successors.
+///
+/// Successors are represented as basic blocks while predecessors are represented by basic
+/// blocks. Basic blocks are denoted by tuples of block and branch/jump instructions. Each
+/// predecessor tuple corresponds to the end of a basic block.
+///
+/// ```c
+///     Block0:
+///         ...          ; beginning of basic block
+///
+///         ...
+///
+///         brif vx, Block1, Block2 ; end of basic block
+///
+///     Block1:
+///         jump block3
+/// ```
+///
+/// Here `Block1` and `Block2` would each have a single predecessor denoted as `(Block0, brif)`,
+/// while `Block3` would have a single predecessor denoted as `(Block1, jump block3)`.
+
+use cranelift_bforest as bforest;
+use core::mem;
+
+mod flow {
+    use rok_entity::SecondaryMap;
+
+    use super::{Block, Inst, SsaFunc, bforest, visit_block_succs};
+
+    /// A basic block denoted by its enclosing Block and last instruction.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct BlockPredecessor {
+        /// Enclosing Block key.
+        pub block: Block,
+        /// Last instruction in the basic block.
+        pub inst: Inst,
+    }
+
+    impl BlockPredecessor {
+        /// Convenient method to construct new BlockPredecessor.
+        pub fn new(block: Block, inst: Inst) -> Self {
+            Self { block, inst }
+        }
+    }
+
+    /// A container for the successors and predecessors of some Block.
+    #[derive(Clone, Default)]
+    struct CFGNode {
+        /// Instructions that can branch or jump to this block.
+        ///
+        /// This maps branch instruction -> predecessor block which is redundant since the block containing
+        /// the branch instruction is available from the `layout.inst_block()` method. We store the
+        /// redundant information because:
+        ///
+        /// 1. Many `pred_iter()` consumers want the block anyway, so it is handily available.
+        /// 2. The `invalidate_block_successors()` may be called *after* branches have been removed from
+        ///    their block, but we still need to remove them form the old block predecessor map.
+        ///
+        /// The redundant block stored here is always consistent with the CFG successor lists, even after
+        /// the IR has been edited.
+        pub predecessors: bforest::Map<Inst, Block>,
+
+        /// Set of blocks that are the targets of branches and jumps in this block.
+        /// The set is ordered by block number, indicated by the `()` comparator type.
+        pub successors: bforest::Set<Block>,
+    }
+
+    /// The Control Flow Graph maintains a mapping of blocks to their predecessors
+    /// and successors where predecessors are basic blocks and successors are
+    /// basic blocks.
+    pub struct ControlFlowGraph {
+        data: SecondaryMap<Block, CFGNode>,
+        pred_forest: bforest::MapForest<Inst, Block>,
+        succ_forest: bforest::SetForest<Block>,
+        valid: bool,
+    }
+
+    impl Default for ControlFlowGraph {
+        fn default() -> Self {
+            Self {
+                data: SecondaryMap::default(),
+                pred_forest: bforest::MapForest::new(),
+                succ_forest: bforest::SetForest::new(),
+                valid: false
+            }
+        }
+    }
+
+    impl ControlFlowGraph {
+        /// Allocate a new blank control flow graph.
+        pub fn new() -> Self {
+            Self {
+                data: SecondaryMap::new(),
+                valid: false,
+                pred_forest: bforest::MapForest::new(),
+                succ_forest: bforest::SetForest::new(),
+            }
+        }
+
+        /// Clear all data structures in this control flow graph.
+        pub fn clear(&mut self) {
+            self.data.clear();
+            self.pred_forest.clear();
+            self.succ_forest.clear();
+            self.valid = false;
+        }
+
+        /// Allocate and compute the control flow graph for `func`.
+        pub fn with_function(func: &SsaFunc) -> Self {
+            let mut cfg = Self::new();
+            cfg.compute(func);
+            cfg
+        }
+
+        /// Compute the control flow graph of `func`.
+        ///
+        /// This will clear and overwrite any information already stored in this data structure.
+        pub fn compute(&mut self, func: &SsaFunc) {
+            self.clear();
+            self.data.resize(func.cfg.blocks.len());
+
+            for block in &func.layout {
+                self.compute_block(func, block);
+            }
+
+            self.valid = true;
+        }
+
+        fn compute_block(&mut self, func: &SsaFunc, block: Block) {
+            visit_block_succs(func, block, |inst, dest, _| {
+                self.add_edge(block, inst, dest);
+            });
+        }
+
+        fn invalidate_block_successors(&mut self, block: Block) {
+            // Temporarily take ownership because we need mutable access to self.data inside the loop.
+            // Unfortunately borrowck cannot see that our mut accesses to predecessors don't alias
+            // our iteration over successors.
+            let mut successors = core::mem::replace(&mut self.data[block].successors, Default::default());
+            for succ in successors.iter(&self.succ_forest) {
+                self.data[succ]
+                    .predecessors
+                    .retain(&mut self.pred_forest, |_, &mut e| e != block);
+            }
+            successors.clear(&mut self.succ_forest);
+        }
+
+        /// Recompute the control flow graph of `block`.
+        ///
+        /// This is for use after modifying instructions within a specific block. It recomputes all edges
+        /// from `block` while leaving edges to `block` intact. Its functionality a subset of that of the
+        /// more expensive `compute`, and should be used when we know we don't need to recompute the CFG
+        /// from scratch, but rather that our changes have been restricted to specific blocks.
+        pub fn recompute_block(&mut self, func: &SsaFunc, block: Block) {
+            debug_assert!(self.is_valid());
+            self.invalidate_block_successors(block);
+            self.compute_block(func, block);
+        }
+
+        fn add_edge(&mut self, from: Block, from_inst: Inst, to: Block) {
+            self.data[from]
+                .successors
+                .insert(to, &mut self.succ_forest, &());
+            self.data[to]
+                .predecessors
+                .insert(from_inst, from, &mut self.pred_forest, &());
+        }
+
+        /// Get an iterator over the CFG predecessors to `block`.
+        pub fn pred_iter(&self, block: Block) -> PredIter<'_> {
+            PredIter(self.data[block].predecessors.iter(&self.pred_forest))
+        }
+
+        /// Get an iterator over the CFG successors to `block`.
+        pub fn succ_iter(&self, block: Block) -> SuccIter<'_> {
+            debug_assert!(self.is_valid());
+            self.data[block].successors.iter(&self.succ_forest)
+        }
+
+        /// Check if the CFG is in a valid state.
+        ///
+        /// Note that this doesn't perform any kind of validity checks. It simply checks if the
+        /// `compute()` method has been called since the last `clear()`. It does not check that the
+        /// CFG is consistent with the function.
+        pub fn is_valid(&self) -> bool {
+            self.valid
+        }
+    }
+
+    /// An iterator over block predecessors. The iterator type is `BlockPredecessor`.
+    ///
+    /// Each predecessor is an instruction that branches to the block.
+    pub struct PredIter<'a>(bforest::MapIter<'a, Inst, Block>);
+
+    impl<'a> Iterator for PredIter<'a> {
+        type Item = BlockPredecessor;
+
+        fn next(&mut self) -> Option<BlockPredecessor> {
+            self.0.next().map(|(i, e)| BlockPredecessor::new(e, i))
+        }
+    }
+
+    /// An iterator over block successors. The iterator type is `Block`.
+    pub type SuccIter<'a> = bforest::SetIter<'a, Block>;
+}
+
+/// Instruction predicates/properties, shared by various analyses.
+
+/// Test whether the given opcode is unsafe to even consider as side-effect-free.
+#[inline(always)]
+fn trivially_has_side_effects(data: &InstructionData) -> bool {
+    matches!(
+        data,
+        InstructionData::CallHook { .. }
+            | InstructionData::Call { .. }
+            | InstructionData::CallExt { .. }
+            | InstructionData::CallIndirect { .. }
+            | InstructionData::Jump { .. }
+            | InstructionData::Branch { .. }
+            | InstructionData::Return { .. }
+            | InstructionData::StackStore { .. }
+            | InstructionData::StoreNoOffset { .. }
+    )
+}
+
+fn is_load(data: &InstructionData) -> bool {
+    matches!(data, InstructionData::StackLoad { .. } | InstructionData::LoadNoOffset { .. })
+}
+
+fn has_side_effect(func: &SsaFunc, inst: Inst) -> bool {
+    let data = &func.dfg.insts[inst];
+    // Until you have alias analysis / MemFlags, treat every load as
+    // side-effecting-enough to survive DCE if unused is uncertain.
+    // StackLoad from a non-escaping, non-aliased slot is the one
+    // exception worth carving out early, since you already compute that.
+    trivially_has_side_effects(data) || is_load(data)
+}
+
+/// Get the store data, if any, from an instruction.
+pub fn inst_store_data(func: &SsaFunc, inst: Inst) -> Option<Value> {
+    match &func.dfg.insts[inst] {
+        InstructionData::StackStore { arg, .. } => {
+            Some(*arg)
+        }
+
+        InstructionData::StoreNoOffset { args, .. } => {
+            Some(args[0])
+        }
+        _ => None,
+    }
+}
+
+/// Visit all successors of a block with a given visitor closure. The closure
+/// arguments are the branch instruction that is used to reach the successor,
+/// the successor block itself, and a flag indicating whether the block is
+/// branched to via a table entry.
+pub(crate) fn visit_block_succs<F: FnMut(Inst, Block, bool)>(
+    f: &SsaFunc,
+    block: Block,
+    mut visit: F,
+) {
+    if let Some(inst) = f.layout.last_inst(block) {
+        match &f.dfg.insts[inst] {
+            InstructionData::Jump {
+                destination: dest, ..
+            } => {
+                visit(inst, *dest, false);
+            }
+
+            InstructionData::Branch {
+                destinations: [block_then, block_else],
+                ..
+            } => {
+                visit(inst, *block_then, false);
+                visit(inst, *block_else, false);
+            }
+
+            inst => debug_assert!(!inst.is_branch()),
+        }
+    }
+}
+
+/// A Dominator Tree represented as mappings of Blocks to their immediate dominator.
+
+/// Spanning tree node, used during domtree computation.
+#[derive(Clone, Default)]
+struct SpanningTreeNode {
+    /// This node's block in function CFG.
+    block: PackedOption<Block>,
+    /// Node's ancestor in the spanning tree.
+    /// Gets invalidated during semi-dominator computation.
+    ancestor: u32,
+    /// The smallest semi value discovered on any semi-dominator path
+    /// that went through the node up till the moment.
+    /// Gets updated in the course of semi-dominator computation.
+    label: u32,
+    /// Semidominator value for the node.
+    semi: u32,
+    /// Immediate dominator value for the node.
+    /// Initialized to node's ancestor in the spanning tree.
+    idom: u32,
+}
+
+/// DFS preorder number for unvisited nodes and the virtual root in the spanning tree.
+const NOT_VISITED: u32 = 0;
+
+/// Spanning tree, in CFG preorder.
+/// Node 0 is the virtual root and doesn't have a corresponding block.
+/// It's not required because function's CFG in Cranelift always have
+/// a singular root, but helps to avoid additional checks.
+/// Numbering nodes from 0 also follows the convention in
+/// `SimpleDominatorTree` and `DominatorTreePreorder`.
+#[derive(Clone, Default)]
+struct SpanningTree {
+    nodes: Vec<SpanningTreeNode>,
+}
+
+impl SpanningTree {
+    fn new() -> Self {
+        // Include the virtual root.
+        Self {
+            nodes: vec![Default::default()],
+        }
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        // Include the virtual root.
+        let mut nodes = Vec::with_capacity(capacity + 1);
+        nodes.push(Default::default());
+        Self { nodes }
+    }
+
+    fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn reserve(&mut self, capacity: usize) {
+        // Virtual root should be already included.
+        self.nodes.reserve(capacity);
+    }
+
+    fn clear(&mut self) {
+        self.nodes.resize(1, Default::default());
+    }
+
+    /// Returns pre_number for the new node.
+    fn push(&mut self, ancestor: u32, block: Block) -> u32 {
+        // Virtual root should be already included.
+        debug_assert!(!self.nodes.is_empty());
+
+        let pre_number = self.nodes.len() as u32;
+
+        self.nodes.push(SpanningTreeNode {
+            block: block.into(),
+            ancestor: ancestor,
+            label: pre_number,
+            semi: pre_number,
+            idom: ancestor,
+        });
+
+        pre_number
+    }
+}
+
+impl std::ops::Index<u32> for SpanningTree {
+    type Output = SpanningTreeNode;
+
+    fn index(&self, idx: u32) -> &Self::Output {
+        &self.nodes[idx as usize]
+    }
+}
+
+impl std::ops::IndexMut<u32> for SpanningTree {
+    fn index_mut(&mut self, idx: u32) -> &mut Self::Output {
+        &mut self.nodes[idx as usize]
+    }
+}
+
+/// Traversal event to compute both preorder spanning tree
+/// and postorder block list. Can't use `Dfs` from traversals.rs
+/// here because of the need for parent links.
+enum TraversalEvent {
+    Enter(u32, Block),
+    Exit(Block),
+}
+
+/// Dominator tree node. We keep one of these per block.
+#[derive(Clone, Default)]
+struct DominatorTreeNode {
+    /// Immediate dominator for the block, `None` for unreachable blocks.
+    idom: PackedOption<Block>,
+    /// Preorder traversal number, zero for unreachable blocks.
+    pre_number: u32,
+}
+
+/// The dominator tree for a single function,
+/// computed using Semi-NCA algorithm.
+#[derive(Default)]
+pub struct DominatorTree {
+    /// DFS spanning tree.
+    stree: SpanningTree,
+    /// List of CFG blocks in postorder.
+    postorder: Vec<Block>,
+    /// Dominator tree nodes.
+    nodes: SecondaryMap<Block, DominatorTreeNode>,
+
+    /// Stack for building the spanning tree.
+    dfs_worklist: Vec<TraversalEvent>,
+    /// Stack used for processing semidominator paths
+    /// in link-eval procedure.
+    eval_worklist: Vec<u32>,
+
+    valid: bool,
+}
+
+/// Methods for querying the dominator tree.
+impl DominatorTree {
+    /// Is `block` reachable from the entry block?
+    pub fn is_reachable(&self, block: Block) -> bool {
+        self.nodes[block].pre_number != NOT_VISITED
+    }
+
+    /// Get the CFG post-order of blocks that was used to compute the dominator tree.
+    ///
+    /// Note that this post-order is not updated automatically when the CFG is modified. It is
+    /// computed from scratch and cached by `compute()`.
+    pub fn cfg_postorder(&self) -> &[Block] {
+        debug_assert!(self.is_valid());
+        &self.postorder
+    }
+
+    /// Get an iterator over CFG reverse post-order of blocks used to compute the dominator tree.
+    ///
+    /// Note that the post-order is not updated automatically when the CFG is modified. It is
+    /// computed from scratch and cached by `compute()`.
+    pub fn cfg_rpo(&self) -> impl Iterator<Item = &Block> {
+        debug_assert!(self.is_valid());
+        self.postorder.iter().rev()
+    }
+
+    /// Returns the immediate dominator of `block`.
+    ///
+    /// `block_a` is said to *dominate* `block_b` if all control flow paths from the function
+    /// entry to `block_b` must go through `block_a`.
+    ///
+    /// The *immediate dominator* is the dominator that is closest to `block`. All other dominators
+    /// also dominate the immediate dominator.
+    ///
+    /// This returns `None` if `block` is not reachable from the entry block, or if it is the entry block
+    /// which has no dominators.
+    pub fn idom(&self, block: Block) -> Option<Block> {
+        self.nodes[block].idom.into()
+    }
+
+    /// Returns `true` if `a` dominates `b`.
+    ///
+    /// This means that every control-flow path from the function entry to `b` must go through `a`.
+    ///
+    /// Dominance is ill defined for unreachable blocks. This function can always determine
+    /// dominance for instructions in the same block, but otherwise returns `false` if either block
+    /// is unreachable.
+    ///
+    /// An instruction is considered to dominate itself.
+    /// A block is also considered to dominate itself.
+    pub fn dominates<A, B>(&self, a: A, b: B, layout: &Layout) -> bool
+    where
+        A: Into<ProgramPoint>,
+        B: Into<ProgramPoint>,
+    {
+        let a = a.into();
+        let b = b.into();
+        match a {
+            ProgramPoint::Block(block_a) => match b {
+                ProgramPoint::Block(block_b) => self.block_dominates(block_a, block_b),
+                ProgramPoint::Inst(inst_b) => {
+                    let block_b = layout
+                        .inst_block(inst_b)
+                        .expect("Instruction not in layout.");
+                    self.block_dominates(block_a, block_b)
+                }
+            },
+            ProgramPoint::Inst(inst_a) => {
+                let block_a: Block = layout
+                    .inst_block(inst_a)
+                    .expect("Instruction not in layout.");
+                match b {
+                    ProgramPoint::Block(block_b) => {
+                        block_a != block_b && self.block_dominates(block_a, block_b)
+                    }
+                    ProgramPoint::Inst(inst_b) => {
+                        let block_b = layout
+                            .inst_block(inst_b)
+                            .expect("Instruction not in layout.");
+                        if block_a == block_b {
+                            layout.pp_cmp(a, b) != Ordering::Greater
+                        } else {
+                            self.block_dominates(block_a, block_b)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns `true` if `block_a` dominates `block_b`.
+    ///
+    /// A block is considered to dominate itself.
+    fn block_dominates(&self, block_a: Block, mut block_b: Block) -> bool {
+        let pre_a = self.nodes[block_a].pre_number;
+
+        // Run a finger up the dominator tree from b until we see a.
+        // Do nothing if b is unreachable.
+        while pre_a < self.nodes[block_b].pre_number {
+            let idom = match self.idom(block_b) {
+                Some(idom) => idom,
+                None => return false, // a is unreachable, so we climbed past the entry
+            };
+            block_b = idom;
+        }
+
+        block_a == block_b
+    }
+}
+
+impl DominatorTree {
+    /// Allocate a new blank dominator tree. Use `compute` to compute the dominator tree for a
+    /// function.
+    pub fn new() -> Self {
+        Self {
+            stree: SpanningTree::new(),
+            nodes: SecondaryMap::new(),
+            postorder: Vec::new(),
+            dfs_worklist: Vec::new(),
+            eval_worklist: Vec::new(),
+            valid: false,
+        }
+    }
+
+    /// Allocate and compute a dominator tree.
+    pub fn with_function(func: &SsaFunc, cfg: &flow::ControlFlowGraph) -> Self {
+        let block_capacity = func.layout.block_capacity();
+        let mut domtree = Self {
+            stree: SpanningTree::with_capacity(block_capacity),
+            nodes: SecondaryMap::with_capacity(block_capacity),
+            postorder: Vec::with_capacity(block_capacity),
+            dfs_worklist: Vec::new(),
+            eval_worklist: Vec::new(),
+            valid: false,
+        };
+        domtree.compute(func, cfg);
+        domtree
+    }
+
+    /// Reset and compute a CFG post-order and dominator tree,
+    /// using Semi-NCA algorithm, described in the paper:
+    ///
+    /// Linear-Time Algorithms for Dominators and Related Problems.
+    /// Loukas Georgiadis, Princeton University, November 2005.
+    ///
+    /// The same algorithm is used by Julia, SpiderMonkey and LLVM,
+    /// the implementation is heavily inspired by them.
+    pub fn compute(&mut self, func: &SsaFunc, cfg: &flow::ControlFlowGraph) {
+        debug_assert!(cfg.is_valid());
+
+        self.clear();
+        self.compute_spanning_tree(func);
+        self.compute_domtree(cfg);
+
+        self.valid = true;
+    }
+
+    /// Clear the data structures used to represent the dominator tree. This will leave the tree in
+    /// a state where `is_valid()` returns false.
+    pub fn clear(&mut self) {
+        self.stree.clear();
+        self.nodes.clear();
+        self.postorder.clear();
+        self.valid = false;
+    }
+
+    /// Check if the dominator tree is in a valid state.
+    ///
+    /// Note that this doesn't perform any kind of validity checks. It simply checks if the
+    /// `compute()` method has been called since the last `clear()`. It does not check that the
+    /// dominator tree is consistent with the CFG.
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    /// Reset all internal data structures, build spanning tree
+    /// and compute a post-order of the control flow graph.
+    fn compute_spanning_tree(&mut self, func: &SsaFunc) {
+        self.nodes.resize(func.cfg.blocks.len());
+        self.stree.reserve(func.cfg.blocks.len());
+
+        if let Some(block) = func.layout.entry_block() {
+            self.dfs_worklist.push(TraversalEvent::Enter(0, block));
+        }
+
+        loop {
+            match self.dfs_worklist.pop() {
+                Some(TraversalEvent::Enter(parent, block)) => {
+                    let node = &mut self.nodes[block];
+                    if node.pre_number != NOT_VISITED {
+                        continue;
+                    }
+
+                    self.dfs_worklist.push(TraversalEvent::Exit(block));
+
+                    let pre_number = self.stree.push(parent, block);
+                    node.pre_number = pre_number;
+
+                    // Use the same traversal heuristics as in traversals.rs.
+                    self.dfs_worklist.extend(
+                        func.block_successors(block)
+                            // Heuristic: chase the children in reverse. This puts
+                            // the first successor block first in the postorder, all
+                            // other things being equal, which tends to prioritize
+                            // loop backedges over out-edges, putting the edge-block
+                            // closer to the loop body and minimizing live-ranges in
+                            // linear instruction space. This heuristic doesn't have
+                            // any effect on the computation of dominators, and is
+                            // purely for other consumers of the postorder we cache
+                            // here.
+                            .rev()
+                            // A simple optimization: push less items to the stack.
+                            .filter(|successor| self.nodes[*successor].pre_number == NOT_VISITED)
+                            .map(|successor| TraversalEvent::Enter(pre_number, successor)),
+                    );
+                }
+                Some(TraversalEvent::Exit(block)) => self.postorder.push(block),
+                None => break,
+            }
+        }
+    }
+
+    /// Eval-link procedure from the paper.
+    /// For a predecessor V of node W returns V if V < W, otherwise the minimum of sdom(U),
+    /// where U > W and U is on a semi-dominator path for W in CFG.
+    /// Use path compression to bring complexity down to O(m*log(n)).
+    fn eval(&mut self, v: u32, last_linked: u32) -> u32 {
+        if self.stree[v].ancestor < last_linked {
+            return self.stree[v].label;
+        }
+
+        // Follow semi-dominator path.
+        let mut root = v;
+        loop {
+            self.eval_worklist.push(root);
+            root = self.stree[root].ancestor;
+
+            if self.stree[root].ancestor < last_linked {
+                break;
+            }
+        }
+
+        let mut prev = root;
+        let root = self.stree[prev].ancestor;
+
+        // Perform path compression. Point all ancestors to the root
+        // and propagate minimal sdom(U) value from ancestors to children.
+        while let Some(curr) = self.eval_worklist.pop() {
+            if self.stree[prev].label < self.stree[curr].label {
+                self.stree[curr].label = self.stree[prev].label;
+            }
+
+            self.stree[curr].ancestor = root;
+            prev = curr;
+        }
+
+        self.stree[v].label
+    }
+
+    fn compute_domtree(&mut self, cfg: &flow::ControlFlowGraph) {
+        // Compute semi-dominators.
+        for w in (1..self.stree.len() as u32).rev() {
+            let w_node = &mut self.stree[w];
+            let block = w_node.block.expect("Virtual root must have been excluded");
+            let mut semi = w_node.ancestor;
+
+            let last_linked = w + 1;
+
+            for pred in cfg
+                .pred_iter(block)
+                .map(|pred: BlockPredecessor| pred.block)
+            {
+                // Skip unreachable nodes.
+                if self.nodes[pred].pre_number == NOT_VISITED {
+                    continue;
+                }
+
+                let semi_candidate = self.eval(self.nodes[pred].pre_number, last_linked);
+                semi = std::cmp::min(semi, semi_candidate);
+            }
+
+            let w_node = &mut self.stree[w];
+            w_node.label = semi;
+            w_node.semi = semi;
+        }
+
+        // Compute immediate dominators.
+        for v in 1..self.stree.len() as u32 {
+            let semi = self.stree[v].semi;
+            let block = self.stree[v]
+                .block
+                .expect("Virtual root must have been excluded");
+            let mut idom = self.stree[v].idom;
+
+            while idom > semi {
+                idom = self.stree[idom].idom;
+            }
+
+            self.stree[v].idom = idom;
+
+            self.nodes[block].idom = self.stree[idom].block;
+        }
+    }
+}
+
+/// Optional pre-order information that can be computed for a dominator tree.
+///
+/// This data structure is computed from a `DominatorTree` and provides:
+///
+/// - A forward traversable dominator tree through the `children()` iterator.
+/// - An ordering of blocks according to a dominator tree pre-order.
+/// - Constant time dominance checks at the block granularity.
+///
+/// The information in this auxiliary data structure is not easy to update when the control flow
+/// graph changes, which is why it is kept separate.
+pub struct DominatorTreePreorder {
+    nodes: SecondaryMap<Block, ExtraNode>,
+
+    // Scratch memory used by `compute_postorder()`.
+    stack: Vec<Block>,
+}
+
+#[derive(Default, Clone)]
+struct ExtraNode {
+    /// First child node in the domtree.
+    child: PackedOption<Block>,
+
+    /// Next sibling node in the domtree. This linked list is ordered according to the CFG RPO.
+    sibling: PackedOption<Block>,
+
+    /// Sequence number for this node in a pre-order traversal of the dominator tree.
+    /// Unreachable blocks have number 0, the entry block is 1.
+    pre_number: u32,
+
+    /// Maximum `pre_number` for the sub-tree of the dominator tree that is rooted at this node.
+    /// This is always >= `pre_number`.
+    pre_max: u32,
+}
+
+/// Creating and computing the dominator tree pre-order.
+impl DominatorTreePreorder {
+    /// Create a new blank `DominatorTreePreorder`.
+    pub fn new() -> Self {
+        Self {
+            nodes: SecondaryMap::new(),
+            stack: Vec::new(),
+        }
+    }
+
+    /// Recompute this data structure to match `domtree`.
+    pub fn compute(&mut self, domtree: &DominatorTree) {
+        self.nodes.clear();
+
+        // Step 1: Populate the child and sibling links.
+        //
+        // By following the CFG post-order and pushing to the front of the lists, we make sure that
+        // sibling lists are ordered according to the CFG reverse post-order.
+        for &block in domtree.cfg_postorder() {
+            if let Some(idom) = domtree.idom(block) {
+                let sib = mem::replace(&mut self.nodes[idom].child, block.into());
+                self.nodes[block].sibling = sib;
+            } else {
+                // The only block without an immediate dominator is the entry.
+                self.stack.push(block);
+            }
+        }
+
+        // Step 2. Assign pre-order numbers from a DFS of the dominator tree.
+        debug_assert!(self.stack.len() <= 1);
+        let mut n = 0;
+        while let Some(block) = self.stack.pop() {
+            n += 1;
+            let node = &mut self.nodes[block];
+            node.pre_number = n;
+            node.pre_max = n;
+            if let Some(n) = node.sibling.expand() {
+                self.stack.push(n);
+            }
+            if let Some(n) = node.child.expand() {
+                self.stack.push(n);
+            }
+        }
+
+        // Step 3. Propagate the `pre_max` numbers up the tree.
+        // The CFG post-order is topologically ordered w.r.t. dominance so a node comes after all
+        // its dominator tree children.
+        for &block in domtree.cfg_postorder() {
+            if let Some(idom) = domtree.idom(block) {
+                let pre_max = core::cmp::max(self.nodes[block].pre_max, self.nodes[idom].pre_max);
+                self.nodes[idom].pre_max = pre_max;
+            }
+        }
+    }
+}
+
+/// An iterator that enumerates the direct children of a block in the dominator tree.
+pub struct ChildIter<'a> {
+    dtpo: &'a DominatorTreePreorder,
+    next: PackedOption<Block>,
+}
+
+impl<'a> Iterator for ChildIter<'a> {
+    type Item = Block;
+
+    fn next(&mut self) -> Option<Block> {
+        let n = self.next.expand();
+        if let Some(block) = n {
+            self.next = self.dtpo.nodes[block].sibling;
+        }
+        n
+    }
+}
+
+/// Query interface for the dominator tree pre-order.
+impl DominatorTreePreorder {
+    /// Get an iterator over the direct children of `block` in the dominator tree.
+    ///
+    /// These are the block's whose immediate dominator is an instruction in `block`, ordered according
+    /// to the CFG reverse post-order.
+    pub fn children(&self, block: Block) -> ChildIter<'_> {
+        ChildIter {
+            dtpo: self,
+            next: self.nodes[block].child,
+        }
+    }
+
+    /// Fast, constant time dominance check with block granularity.
+    ///
+    /// This computes the same result as `domtree.dominates(a, b)`, but in guaranteed fast constant
+    /// time. This is less general than the `DominatorTree` method because it only works with block
+    /// program points.
+    ///
+    /// A block is considered to dominate itself.
+    pub fn dominates(&self, a: Block, b: Block) -> bool {
+        let na = &self.nodes[a];
+        let nb = &self.nodes[b];
+        na.pre_number <= nb.pre_number && na.pre_max >= nb.pre_max
+    }
+
+    /// Compare two blocks according to the dominator pre-order.
+    pub fn pre_cmp_block(&self, a: Block, b: Block) -> Ordering {
+        self.nodes[a].pre_number.cmp(&self.nodes[b].pre_number)
+    }
+
+    /// Compare two program points according to the dominator tree pre-order.
+    ///
+    /// This ordering of program points have the property that given a program point, pp, all the
+    /// program points dominated by pp follow immediately and contiguously after pp in the order.
+    pub fn pre_cmp<A, B>(&self, a: A, b: B, layout: &Layout) -> Ordering
+    where
+        A: Into<ProgramPoint>,
+        B: Into<ProgramPoint>,
+    {
+        let a = a.into();
+        let b = b.into();
+        self.pre_cmp_block(layout.pp_block(a), layout.pp_block(b))
+            .then_with(|| layout.pp_cmp(a, b))
+    }
+}
+
+/// A simple GVN pass.
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+enum GvnKey {
+    Binary { binop: BinaryOp, args: [Value; 2] },
+    Unary { unop: UnaryOp, arg: Value },
+    Icmp { code: IntCC, args: [Value; 2] },
+    Fcmp { code: FloatCC, args: [Value; 2] },
+    IConst { value: i64 },
+    FConst { bits: u64 },
+    StackLoad { slot: StackSlot },
+    StackAddr { slot: StackSlot },
+    LoadNoOffset { ty: Type, addr: Value },
+    DataAddr { data_id: DataId },
+    // Deliberately omit: Call.*, Jump, Branch, Return, StackStore,
+    // StoreNoOffset, CallHook, Unreachable, Nop because they're never CSEd
+}
+
+fn gvn_key(func: &SsaFunc, inst: Inst) -> Option<GvnKey> {
+    let resolved = |v: Value| func.dfg.resolve_aliases(v);
+    match &func.dfg.insts[inst] {
+        InstructionData::Binary { binop, args } =>
+            Some(GvnKey::Binary { binop: *binop, args: [resolved(args[0]), resolved(args[1])] }),
+        InstructionData::Unary { unop, arg } =>
+            Some(GvnKey::Unary { unop: *unop, arg: resolved(*arg) }),
+        InstructionData::Icmp { code, args } =>
+            Some(GvnKey::Icmp { code: *code, args: [resolved(args[0]), resolved(args[1])] }),
+        InstructionData::Fcmp { code, args } =>
+            Some(GvnKey::Fcmp { code: *code, args: [resolved(args[0]), resolved(args[1])] }),
+        InstructionData::IConst { value } => Some(GvnKey::IConst { value: *value }),
+        InstructionData::FConst { value } => Some(GvnKey::FConst { bits: value.to_bits() }),
+        InstructionData::StackAddr { slot } => Some(GvnKey::StackAddr { slot: *slot }),
+        InstructionData::DataAddr { data_id } => Some(GvnKey::DataAddr { data_id: *data_id }),
+
+
+        //
+        // @Optimization: Can't include StackLoad / LoadNoOffset because no
+        // aliasing analysis exists yet!
+        //
+        _ => None, // Call, CallExt, CallIndirect, CallHook, Jump, Branch,
+                   // Return, StackStore, StoreNoOffset, Unreachable, Nop
+    }
+}
+
+pub fn do_simple_dce(func: &mut SsaFunc, domtree: &DominatorTree) {
+    let mut used_values = BTreeSet::new();
+
+    let mut pos = FuncCursor::new(func);
+
+    for &block in domtree.cfg_postorder().iter() {
+        pos.goto_bottom(block);
+
+        while let Some(inst) = pos.prev_inst() {
+            let inst_data = &pos.func.dfg.insts[inst];
+
+            // Keep Nops (for debugging) and Unreachable
+            if matches!(inst_data, InstructionData::Nop | InstructionData::Unreachable) {
+                continue;
+            }
+
+            let results = pos.func.dfg.inst_results(inst);
+            let has_side_effects = trivially_has_side_effects(inst_data);
+
+            // An instruction is dead if it has NO side effects AND
+            // It has no results OR none of its results are in the `used_values` set.
+            let is_dead = !has_side_effects &&
+                (results.is_empty() || results.iter().all(|res| !used_values.contains(res)));
+
+            if is_dead {
+                // When iterating backward, `remove_inst()` removes the current instruction
+                // and leaves the cursor on the *following* instruction. The next call to
+                // `prev_inst()` naturally steps to the correct preceding instruction.
+                pos.remove_inst();
+            } else {
+                //
+                // If it's live, ensure arguments point to their latest aliases
+                // and mark them as used so preceding instructions know they are needed.
+                //
+                pos.func.dfg.resolve_aliases_in_arguments(inst);
+                for arg in pos.func.dfg.inst_args(inst) {
+                    used_values.insert(arg);
+                }
+            }
+        }
+    }
+}
+
+// A quick helper just to make the logs readable
+fn stringify_inst(data: &InstructionData) -> &'static str {
+    match data {
+        InstructionData::IConst { .. } => "IConst",
+        InstructionData::StackAddr { .. } => "StackAddr",
+        InstructionData::DataAddr { .. } => "DataAddr",
+        InstructionData::LoadNoOffset { .. } => "LoadNoOffset",
+        _ => "Other",
+    }
+}
+
+pub fn do_simple_gvn(func: &mut SsaFunc, cfg: &mut flow::ControlFlowGraph, domtree: &DominatorTree) {
+    debug_assert!(cfg.is_valid());
+    debug_assert!(domtree.is_valid());
+
+    type ValueKey = (GvnKey, SmallVec<[Type; 4]>);
+
+    let mut visible_values: ScopedHashMap<ValueKey, Inst> = ScopedHashMap::new();
+    let mut scope_stack: Vec<Inst> = Vec::new();
+
+    // Visit blocks in a reverse post-order.
+    let mut pos = FuncCursor::new(func);
+
+    for &block in domtree.cfg_postorder().iter().rev() {
+        {
+            // Pop any scopes that we just exited.
+            let layout = &pos.func.layout;
+            loop {
+                if let Some(current) = scope_stack.last() {
+                    if domtree.dominates(*current, block, layout) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+                scope_stack.pop();
+                visible_values.decrement_depth();
+            }
+
+            // Push a scope for the current block.
+            scope_stack.push(layout.first_inst(block).unwrap());
+            visible_values.increment_depth();
+        }
+
+        pos.goto_top(block);
+
+        while let Some(inst) = pos.next_inst() {
+            // Resolve aliases, particularly aliases we created earlier.
+            pos.func.dfg.resolve_aliases_in_arguments(inst);
+
+            let inst_data = &pos.func.dfg.insts[inst];
+
+            if trivially_has_side_effects(inst_data) {
+                continue;
+            }
+
+            let Some(gvn) = gvn_key(pos.func, inst) else {
+                continue;
+            };
+
+            let results: SmallVec<[_; 4]> = pos.func.dfg.inst_results(inst).iter().map(|value| pos.func.value_type(*value)).collect();
+            let key = (gvn, results);
+
+            use crate::scoped_hash_map::Entry::*;
+
+            match visible_values.entry(&NullCtx, key) {
+                Occupied(entry) => {
+                    #[allow(clippy::debug_assert_with_mut_call)]
+                    {
+                        debug_assert!(domtree.dominates(*entry.get(), inst, &pos.func.layout));
+                    }
+
+                    // If the redundant instruction is representing the current
+                    // scope, pick a new representative.
+                    let old = scope_stack.last_mut().unwrap();
+                    if *old == inst {
+                        *old = pos.func.layout.next_inst(inst).unwrap();
+                    }
+
+                    pos.func.dfg.replace_with_aliases(inst, *entry.get());
+                    pos.remove_inst_and_step_back();
+                }
+                Vacant(entry) => {
+                    entry.insert(inst);
+                }
+            }
+        }
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////
 // Analysis & Pretty Printing
 //
@@ -5653,10 +7000,12 @@ impl SsaFunc {
             )?;
         }
         writeln!(f)?;
-        for &inst_id in block_data.insts.as_slice(&self.cfg.block_insts_pool) {
-            self.fmt_inst(f, inst_id)?;
+
+        for inst in self.layout.block_insts(block_id) {
+            self.fmt_inst(f, inst)?;
             writeln!(f)?;
         }
+
         Ok(())
     }
 
