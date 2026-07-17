@@ -491,7 +491,7 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             };
 
             // Read arguments
-            let num_args = reader.read_u8();
+            let num_args = 3;
             let mut args = Vec::new();
             for _ in 0..num_args {
                 args.push(reader.read_u32());

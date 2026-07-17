@@ -135,6 +135,19 @@ impl<'a> LoweringContext<'a> {
     }
 
     #[inline]
+    pub fn append_args_no_count(&self, chunk: &mut BytecodeFunction, args: &EntityList<Value>) {
+        let args_slice = args.as_slice(&self.func.dfg.values_pool);
+        let args_len = args_slice.len();
+        assert!(args_len <= 255, "Too many arguments (max 255)");
+
+        chunk.code.reserve(args_len * core::mem::size_of::<u32>());
+
+        for &arg in args_slice {
+            chunk.append(arg.as_u32());
+        }
+    }
+
+    #[inline]
     pub fn jump_with_args(
         &mut self,
         chunk: &mut BytecodeFunction,

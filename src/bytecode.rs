@@ -593,20 +593,20 @@ define_opcodes! {
     CallMemcpy()
     @ IData::CallIntrinsic { args, callee: Intrinsic::Memcpy } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallMemcpy);
-        self.append_args(chunk, args);
+        self.append_args_no_count(chunk, args);
     }
 
     CallMemset()
     @ IData::CallIntrinsic { args, callee: Intrinsic::Memset } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallMemset);
-        self.append_args(chunk, args);
+        self.append_args_no_count(chunk, args);
     }
 
     CallMemcmp()
     @ IData::CallIntrinsic { args, callee: Intrinsic::Memcmp } => |results, chunk, inst_id| {
         chunk.append(Opcode::CallMemcmp);
         chunk.append(results.unwrap()[0].as_u32());
-        self.append_args(chunk, args);
+        self.append_args_no_count(chunk, args);
     }
 
     Call(func_id: u32)

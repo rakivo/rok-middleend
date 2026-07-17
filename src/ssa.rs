@@ -2054,6 +2054,7 @@ impl InstructionData {
             self,
             Self::Call { .. }   |
             Self::CallIndirect { .. }   |
+            Self::CallIntrinsic { .. }   |
             Self::CallHook { .. }   |
             Self::CallExt { .. }   |
             Self::Return { .. }
@@ -6119,6 +6120,7 @@ fn trivially_has_side_effects(data: &InstructionData) -> bool {
         data,
         InstructionData::CallHook { .. }
             | InstructionData::Call { .. }
+            | InstructionData::CallIntrinsic { .. }
             | InstructionData::CallExt { .. }
             | InstructionData::CallIndirect { .. }
             | InstructionData::Jump { .. }
