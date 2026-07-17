@@ -1,15 +1,6 @@
 use crate::util::{self, IntoBytes};
 use crate::ssa::{
-    BinaryOp,
-    DataId,
-    FloatCC,
-    Inst,
-    InstructionData as IData,
-    IntCC,
-    SsaFunc,
-    StackSlot,
-    Type,
-    UnaryOp,
+    BinaryOp, DataId, FloatCC, Inst, InstructionData as IData, IntCC, Intrinsic, SsaFunc, StackSlot, Type, UnaryOp
 };
 
 use core::mem;
@@ -596,6 +587,25 @@ define_opcodes! {
 
         // Emit return instruction with arguments
         chunk.append(Opcode::Return);
+        self.append_args(chunk, args);
+    }
+
+    CallMemcpy()
+    @ IData::CallIntrinsic { args, callee: Intrinsic::Memcpy } => |results, chunk, inst_id| {
+        chunk.append(Opcode::CallMemcpy);
+        self.append_args(chunk, args);
+    }
+
+    CallMemset()
+    @ IData::CallIntrinsic { args, callee: Intrinsic::Memset } => |results, chunk, inst_id| {
+        chunk.append(Opcode::CallMemset);
+        self.append_args(chunk, args);
+    }
+
+    CallMemcmp()
+    @ IData::CallIntrinsic { args, callee: Intrinsic::Memcmp } => |results, chunk, inst_id| {
+        chunk.append(Opcode::CallMemcmp);
+        chunk.append(results.unwrap()[0].as_u32());
         self.append_args(chunk, args);
     }
 

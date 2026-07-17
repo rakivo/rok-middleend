@@ -1739,6 +1739,13 @@ pub struct StackSlotData {
 // Instructions & Values
 //
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Intrinsic {
+    Memcmp,
+    Memcpy,
+    Memset,
+}
+
 #[derive(Debug, Clone)]
 pub enum InstructionData {
     CallHook { hook_id: HookId, args: EntityList<Value> },
@@ -1753,6 +1760,7 @@ pub enum InstructionData {
     Call { func_id: FuncId, args: EntityList<Value> },
     CallExt { func_id: ExtFuncId, args: EntityList<Value> },
     CallIndirect { callee: Value, args: EntityList<Value> },
+    CallIntrinsic { callee: Intrinsic, args: EntityList<Value>, },
     Return { args: EntityList<Value> },
     StackLoad { slot: StackSlot },
     StackAddr { slot: StackSlot },
@@ -1768,6 +1776,8 @@ impl InstructionData {
     #[inline]
     #[must_use]
     pub fn bits(&self, inst: Inst, context: &SsaFunc) -> u32 {
+        use Intrinsic::*;
+
         let vbits = |v: Value| context.dfg.values[v].ty.bits();
         let rbits = |idx: usize| {
             let r = unsafe { &context.dfg.inst_results.get(inst).unwrap_unchecked() };
@@ -1807,6 +1817,8 @@ impl InstructionData {
             Self::CallExt { .. } => 32,
             Self::CallIndirect { .. } => 32,
             Self::Return { .. } => 32,
+
+            Self::CallIntrinsic { callee: Memcmp | Memcpy | Memset, .. } => 8,
 
             Self::CallHook { .. } | Self::Unreachable | Self::Nop => 0,
         }
@@ -1853,6 +1865,7 @@ impl InstructionData {
             InstructionData::CallHook { args, .. }
             | InstructionData::Jump { args, .. }
             | InstructionData::Call { args, .. }
+            | InstructionData::CallIntrinsic { args, .. }
             | InstructionData::CallExt { args, .. }
             | InstructionData::Return { args, .. } => {
                 InstArgs::Slice { slice: args.as_slice(pool), index: 0 }
@@ -1912,6 +1925,7 @@ impl InstructionData {
             InstructionData::CallHook { args, .. }
             | InstructionData::Jump { args, .. }
             | InstructionData::Call { args, .. }
+            | InstructionData::CallIntrinsic { args, .. }
             | InstructionData::CallExt { args, .. }
             | InstructionData::Return { args, .. } => {
                 InstArgsMut::Slice(args.as_mut_slice(pool))
@@ -1978,6 +1992,7 @@ impl InstructionData {
             InstructionData::CallHook { args, .. }
             | InstructionData::Jump { args, .. }
             | InstructionData::Call { args, .. }
+            | InstructionData::CallIntrinsic { args, .. }
             | InstructionData::CallExt { args, .. }
             | InstructionData::Return { args, .. } => {
                 // Mutate the values directly inside the pool
@@ -2399,54 +2414,6 @@ impl Module {
             let func = &self.funcs[func_id];
             let result_tys = &func.signature.returns;
             ir_builder.call(result_tys, func_id, args)
-        }
-    }
-
-    with_comment! {
-        ir_builder,
-        call_memcpy_with_comment,
-        #[inline]
-        pub fn call_memcpy<T>(
-            &mut self,
-            dest: Value,
-            src: Value,
-            size: Value,
-            ir_builder: &mut InstBuilder<'_, T>
-        ) where T: InstInserter {
-            let libc_memcpy = self.import_function(ExtFunc {
-                extra: u64::MAX,
-                name: "memcpy".into(),
-                signature: Signature {
-                    params: vec![Type::Ptr, Type::Ptr, Type::I64],
-                    ..Default::default()
-                },
-            });
-
-            ir_builder.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size]);
-        }
-    }
-
-    with_comment! {
-        ir_builder,
-        call_memset_with_comment,
-        #[inline]
-        pub fn call_memset<T>(
-            &mut self,
-            dest: Value,
-            c: Value,
-            n: Value,
-            ir_builder: &mut InstBuilder<'_, T>
-        ) where T: InstInserter {
-            let libc_memset = self.import_function(ExtFunc {
-                extra: u64::MAX,
-                name: "memset".into(),
-                signature: Signature {
-                    params: vec![Type::Ptr, Type::I32, Type::I64],
-                    ..Default::default()
-                }
-            });
-
-            ir_builder.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n]);
         }
     }
 
@@ -4050,6 +4017,36 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
     }
 
     with_comment! {
+        call_intrinsic_with_comment,
+        #[inline]
+        pub fn call_intrinsic(
+            &mut self,
+            intrinsic: Intrinsic,
+            args: &[Value],
+        ) -> Inst {
+            let result_tys: &[Type] = match intrinsic {
+                Intrinsic::Memcmp => &[Type::I32],
+                Intrinsic::Memcpy => &[],
+                Intrinsic::Memset => &[],
+            };
+
+            let args = EntityList::from_slice(
+                args,
+                &mut self.func_mut().dfg.values_pool
+            );
+
+            let inst = self.insert_inst(InstructionData::CallIntrinsic {
+                callee: intrinsic,
+                args
+            });
+            for (i, ty) in result_tys.iter().enumerate() {
+                self.make_inst_result(inst, *ty, i as _);
+            }
+            inst
+        }
+    }
+
+    with_comment! {
         call_hook_with_comment,
         #[inline]
         pub fn call_hook(
@@ -4126,21 +4123,24 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
         #[inline]
         pub fn call_memcpy(
             &mut self,
-            parent: &mut Module,
             dest: Value,
             src: Value,
             size: Value,
-        ) -> Value {
-            let libc_memcpy = parent.import_function(ExtFunc {
-                extra: u64::MAX,
-                name: "memcpy".into(),
-                signature: Signature {
-                    params: vec![Type::Ptr, Type::Ptr, Type::I64],
-                    ..Default::default()
-                }
-            });
+        ) {
+            self.call_intrinsic(Intrinsic::Memcpy, &[dest, src, size]);
+        }
+    }
 
-            let inst = self.call_ext(&[Type::Ptr], libc_memcpy, &[dest, src, size]);
+    with_comment! {
+        call_memcmp_with_comment,
+        #[inline]
+        pub fn call_memcmp(
+            &mut self,
+            src1: Value,
+            src2: Value,
+            size: Value,
+        ) -> Value {
+            let inst = self.call_intrinsic(Intrinsic::Memcmp, &[src1, src2, size]);
             self.func().inst_results(inst)[0]
         }
     }
@@ -4150,22 +4150,11 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
         #[inline]
         pub fn call_memset(
             &mut self,
-            parent: &mut Module,
             dest: Value,
             c: Value,
             n: Value,
-        ) -> Value {
-            let libc_memset = parent.import_function(ExtFunc {
-                extra: u64::MAX,
-                name: "memset".into(),
-                signature: Signature {
-                    params: vec![Type::Ptr, Type::I32, Type::I64],
-                    ..Default::default()
-                }
-            });
-
-            let inst = self.call_ext(&[Type::Ptr], libc_memset, &[dest, c, n]);
-            self.func().inst_results(inst)[0]
+        ) {
+            self.call_intrinsic(Intrinsic::Memset, &[dest, c, n]);
         }
     }
 
@@ -6876,22 +6865,11 @@ pub fn do_simple_dce(func: &mut SsaFunc, domtree: &DominatorTree) {
     }
 }
 
-// A quick helper just to make the logs readable
-fn stringify_inst(data: &InstructionData) -> &'static str {
-    match data {
-        InstructionData::IConst { .. } => "IConst",
-        InstructionData::StackAddr { .. } => "StackAddr",
-        InstructionData::DataAddr { .. } => "DataAddr",
-        InstructionData::LoadNoOffset { .. } => "LoadNoOffset",
-        _ => "Other",
-    }
-}
-
 pub fn do_simple_gvn(func: &mut SsaFunc, cfg: &mut flow::ControlFlowGraph, domtree: &DominatorTree) {
     debug_assert!(cfg.is_valid());
     debug_assert!(domtree.is_valid());
 
-    type ValueKey = (GvnKey, SmallVec<[Type; 4]>);
+    type ValueKey = (GvnKey, SmallVec<[Type; 2]>);
 
     let mut visible_values: ScopedHashMap<ValueKey, Inst> = ScopedHashMap::new();
     let mut scope_stack: Vec<Inst> = Vec::new();
@@ -6936,7 +6914,7 @@ pub fn do_simple_gvn(func: &mut SsaFunc, cfg: &mut flow::ControlFlowGraph, domtr
                 continue;
             };
 
-            let results: SmallVec<[_; 4]> = pos.func.dfg.inst_results(inst).iter().map(|value| pos.func.value_type(*value)).collect();
+            let results = pos.func.dfg.inst_results(inst).iter().map(|value| pos.func.value_type(*value)).collect();
             let key = (gvn, results);
 
             use crate::scoped_hash_map::Entry::*;
@@ -7090,6 +7068,15 @@ impl SsaFunc {
             InstructionData::Call { func_id, args, .. } => s.push_str(&format!(
                 "call {} ({})",
                 func_id,
+                args.as_slice(&self.dfg.values_pool)
+                    .iter()
+                    .map(|a| self.fmt_value(*a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            InstructionData::CallIntrinsic { callee, args, .. } => s.push_str(&format!(
+                "call {:?} ({})",
+                callee,
                 args.as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))

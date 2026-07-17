@@ -483,6 +483,46 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             }
         }
 
+        Opcode::CallMemcpy | Opcode::CallMemset | Opcode::CallMemcmp => {
+            let result = if opcode == Opcode::CallMemcmp {
+                Some(reader.read_u32())
+            } else {
+                None
+            };
+
+            // Read arguments
+            let num_args = reader.read_u8();
+            let mut args = Vec::new();
+            for _ in 0..num_args {
+                args.push(reader.read_u32());
+            }
+
+            // Format output
+            let args_str = if args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "({})",
+                    args.iter()
+                        .map(|a| format!("r{a}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+
+            let intrinsic = format!("{opcode:?}");
+
+            if let Some(result) = result {
+                write!(
+                    f,
+                    "{:<16} r{} = {}{}",
+                    "call", result, intrinsic, args_str
+                )
+            } else {
+                write!(f, "{:<16} {}{}", "call", intrinsic, args_str)
+            }
+        }
+
         Opcode::CallHook => {
             let result = reader.read_u32();
             let hook_id = reader.read_u32();
