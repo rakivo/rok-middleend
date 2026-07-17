@@ -16,6 +16,52 @@ use core::mem;
 
 use rok_entity::PrimaryMap;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Loc<T> {
+    Slot(T),
+    Scratch,
+}
+
+// moves: (src, dst) pairs, meaning "dst := src". All dst values must be
+// distinct (one write per destination, which block params always are).
+//
+// Returns a sequence of (src, dst) steps safe to execute in order, with
+// Scratch used to break any cycles (e.g. a, b = b, a).
+pub fn sequentialize_moves<T: Copy + Eq>(moves: &[(T, T)]) -> Vec<(Loc<T>, Loc<T>)> {
+    let mut pending: Vec<(Loc<T>, T)> =
+        moves.iter().map(|&(src, dst)| (Loc::Slot(src), dst)).collect();
+    let mut result: Vec<(Loc<T>, Loc<T>)> = Vec::with_capacity(pending.len());
+
+    while !pending.is_empty() {
+        // A move is safe to do now if nothing still pending needs to read
+        // its destination first.
+        let ready = pending.iter().position(|&(_, dst)| {
+            !pending.iter().any(|&(src, _)| src == Loc::Slot(dst))
+        });
+
+        if let Some(idx) = ready {
+            let (src, dst) = pending.remove(idx);
+            result.push((src, Loc::Slot(dst)));
+            continue;
+        }
+
+        // Every remaining move is part of a cycle. Save the destination's
+        // current value in scratch before it gets overwritten, perform the
+        // move, then redirect anyone still waiting to read that old
+        // destination value so they read scratch instead.
+        let (src, dst) = pending.remove(0);
+        result.push((Loc::Slot(dst), Loc::Scratch));
+        result.push((src, Loc::Slot(dst)));
+        for m in pending.iter_mut() {
+            if m.0 == Loc::Slot(dst) {
+                m.0 = Loc::Scratch;
+            }
+        }
+    }
+
+    result
+}
+
 define_opcodes! {
     self,
 

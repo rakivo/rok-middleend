@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), allow(unused_imports))]
 
-use crate::bytecode::{BytecodeFunction, Opcode, StackFrameInfo};
+use crate::bytecode::{BytecodeFunction, Loc, Opcode, StackFrameInfo, sequentialize_moves};
 use crate::ssa::{Block, Inst, InstructionData, SsaFunc, Value};
 
 use nohash_hasher::IntSet;
@@ -8,6 +8,8 @@ use rok_entity::{EntityList, SecondaryMap, SparseMap, SparseMapValue};
 use smallvec::SmallVec;
 
 rok_entity::entity_ref!(Pc);
+
+pub const SCRATCH_SENTINEL: u32 = u32::MAX;
 
 #[must_use]
 #[inline]
@@ -139,26 +141,20 @@ impl<'a> LoweringContext<'a> {
         target: Block,
         args: &EntityList<Value>,
     ) {
-        let params = &self.func.cfg.blocks[target].params;
-        let args_len = args.len(&self.func.dfg.values_pool);
-        debug_assert_eq!(params.len(&self.func.dfg.values_pool), args_len);
-        debug_assert!(args_len <= 255, "Too many arguments (max 255)");
+        let moves = self.build_moves(target, args);
+        let seq = sequentialize_moves(&moves);
+        debug_assert!(seq.len() <= 255, "too many jump args (max 255)");
 
         let offset_pos = chunk.code.len() as u32;
         chunk.append(0xDED_i32); // placeholder
 
-        chunk.append(args_len as u8);
-        for (&param, &arg) in args
-            .as_slice(&self.func.dfg.values_pool)
-            .iter()
-            .zip(params.as_slice(&self.func.dfg.values_pool))
-        {
-            chunk.append(arg.as_u32());
-            chunk.append(param.as_u32());
+        chunk.append(seq.len() as u8);
+        for (src, dst) in &seq {
+            chunk.append(Self::loc_reg(*src));
+            chunk.append(Self::loc_reg(*dst));
         }
 
         let instruction_end = chunk.code.len() as u32;
-
         self.jump_placeholders.push(JumpPlaceholder {
             offset: offset_pos,
             dst: target,
@@ -175,60 +171,50 @@ impl<'a> LoweringContext<'a> {
         els: Block,
         els_args: &EntityList<Value>,
     ) {
-        let then_args_len = then_args.len(&self.func.dfg.values_pool);
-        let else_args_len = els_args.len(&self.func.dfg.values_pool);
+        let then_moves = self.build_moves(then, then_args);
+        let else_moves = self.build_moves(els, els_args);
 
-        debug_assert!(then_args_len <= 255, "Too many 'then' arguments (max 255)");
-        debug_assert!(else_args_len <= 255, "Too many 'else' arguments (max 255)");
+        let then_seq = sequentialize_moves(&then_moves);
+        let else_seq = sequentialize_moves(&else_moves);
+
+        debug_assert!(then_seq.len() <= 255, "too many 'then' moves (max 255)");
+        debug_assert!(else_seq.len() <= 255, "too many 'else' moves (max 255)");
 
         let then_offset_pos = chunk.code.len() as u32;
-        chunk.append(0xDED_i32); // then placeholder
-
+        chunk.append(0xDED_i32);
         let els_offset_pos = chunk.code.len() as u32;
-        chunk.append(0xDED_i32); // else placeholder
+        chunk.append(0xDED_i32);
 
-        //
-        // Emit 'then' arguments and target parameter mapping
-        //
-        chunk.append(then_args_len as u8);
-        let then_params = &self.func.cfg.blocks[then].params;
-        for (&param, &arg) in then_args
-            .as_slice(&self.func.dfg.values_pool)
-            .iter()
-            .zip(then_params.as_slice(&self.func.dfg.values_pool))
-        {
-            chunk.append(arg.as_u32());
-            chunk.append(param.as_u32());
+        chunk.append(then_seq.len() as u8);
+        for (src, dst) in &then_seq {
+            chunk.append(Self::loc_reg(*src));
+            chunk.append(Self::loc_reg(*dst));
         }
 
-        //
-        // Emit 'else' arguments and target parameter mapping
-        //
-        chunk.append(else_args_len as u8);
-        let els_params = &self.func.cfg.blocks[els].params;
-        for (&param, &arg) in els_args
-            .as_slice(&self.func.dfg.values_pool)
-            .iter()
-            .zip(els_params.as_slice(&self.func.dfg.values_pool))
-        {
-            chunk.append(arg.as_u32());
-            chunk.append(param.as_u32());
+        chunk.append(else_seq.len() as u8);
+        for (src, dst) in &else_seq {
+            chunk.append(Self::loc_reg(*src));
+            chunk.append(Self::loc_reg(*dst));
         }
 
         let instruction_end = chunk.code.len() as u32;
+        self.jump_placeholders.push(JumpPlaceholder { offset: then_offset_pos, dst: then, instruction_end });
+        self.jump_placeholders.push(JumpPlaceholder { offset: els_offset_pos, dst: els, instruction_end });
+    }
 
-        // Register both placeholders for patching
-        self.jump_placeholders.push(JumpPlaceholder {
-            offset: then_offset_pos,
-            dst: then,
-            instruction_end,
-        });
+    fn build_moves(&self, block: Block, args: &EntityList<Value>) -> Vec<(u32, u32)> {
+        let params = &self.func.cfg.blocks[block].params;
+        let args_slice = args.as_slice(&self.func.dfg.values_pool);
+        let params_slice = params.as_slice(&self.func.dfg.values_pool);
+        debug_assert_eq!(args_slice.len(), params_slice.len(), "param/arg count mismatch for block");
+        args_slice.iter().zip(params_slice.iter()).map(|(&a, &p)| (a.as_u32(), p.as_u32())).collect()
+    }
 
-        self.jump_placeholders.push(JumpPlaceholder {
-            offset: els_offset_pos,
-            dst: els,
-            instruction_end,
-        });
+    fn loc_reg(loc: Loc<u32>) -> u32 {
+        match loc {
+            Loc::Slot(r) => r,
+            Loc::Scratch => SCRATCH_SENTINEL,
+        }
     }
 
     #[inline(always)]

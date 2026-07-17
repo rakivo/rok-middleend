@@ -1,3 +1,5 @@
+#![allow(dead_code, unused)]
+
 use crate::with_comment;
 
 use nohash_hasher::IntSet;
@@ -2117,6 +2119,16 @@ pub enum ValueDef {
     Alias { original: Value },
 }
 
+impl ValueDef {
+    fn unwrap_inst(&self) -> Inst {
+        if let Self::Inst { inst, .. } = self {
+            *inst
+        } else {
+            unreachable!()
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Module {
     pub funcs: PrimaryMap<FuncId, SsaFunc>,
@@ -2365,6 +2377,7 @@ impl<'a> FunctionBuilder<'a> {
     pub fn create_block(&mut self) -> Block {
         let block = self.func.cfg.blocks.push(BasicBlockData::default());
         self.func.layout.append_block(block);
+        self.ssa.declare_block(block);
         block
     }
 
@@ -2501,6 +2514,7 @@ impl<'a> FunctionBuilder<'a> {
 
             self.func_ctx.ssa.use_var(self.func, var, ty, self.current_block())
         };
+        // println!("try_use_var: {var:?} = {val:?}");
         self.handle_ssa_side_effects(side_effects);
 
         Ok(val)
@@ -2534,11 +2548,15 @@ impl<'a> FunctionBuilder<'a> {
     /// an error if the value supplied does not match the type the variable was
     /// declared to have.
     pub fn try_def_var(&mut self, var: Variable, val: Value) -> Result<(), DefVariableError> {
+        // println!("try_def_var: {var:?} = {val:?}");
+
         let var_ty = *self
             .variables
             .get(var)
             .ok_or(DefVariableError::DefinedBeforeDeclared(var))?;
-        if var_ty != self.func.value_type(val) {
+        let val_ty = self.func.value_type(val);
+        if var_ty != val_ty && val_ty.bits() != var_ty.bits() {  // @KindaHack @Cleanup?
+            panic!();
             return Err(DefVariableError::TypeMismatch(var, val));
         }
 
@@ -2607,7 +2625,6 @@ impl<'a> FunctionBuilder<'a> {
         self.stack_map_values.insert(val);
     }
 
-    #[inline(always)]
     #[track_caller]
     pub fn finalize(&mut self) {
         // Check that all the `Block`s are filled and sealed.
@@ -2644,7 +2661,7 @@ impl<'a> FunctionBuilder<'a> {
         // associated values.
         for var in self.func_ctx.stack_map_vars.iter() {
             for val in self.func_ctx.ssa.values_for_var(var) {
-                // log::trace!("propagating needs-stack-map from {var:?} to {val:?}");
+                // println!("propagating needs-stack-map from {var:?} to {val:?}");
                 debug_assert_eq!(self.func.dfg.value_type(val), self.func_ctx.variables[var]);
                 self.func_ctx.stack_map_values.insert(val);
             }
@@ -2658,6 +2675,8 @@ impl<'a> FunctionBuilder<'a> {
                 .safepoints
                 .run(&mut self.func, &self.func_ctx.stack_map_values);
         }
+
+        self.func.dfg.resolve_all_aliases();
 
         // Clear the state (but preserve the allocated buffers) in preparation
         // for translation another function.
@@ -2724,9 +2743,15 @@ pub trait InstInserter {
     /// Get a mutable reference to the underlying function.
     fn func_mut(&mut self) -> &mut SsaFunc;
 
+    fn add_pred(&mut self, _block: Block, _inst: Inst) {}
+
+    fn is_sealed(&self, _block: Block) -> bool { false }
+
     /// Create the instruction in the DFG, insert it into the Layout and CFG
     /// at the cursor's current location, and return its ID.
     fn insert_inst_data(&mut self, data: InstructionData) -> Inst;
+
+    fn fill_current_block(&mut self);
 
     /// Get the block we are currently inserting into.
     fn current_block(&self) -> Block;
@@ -2738,6 +2763,21 @@ impl InstInserter for FunctionBuilder<'_> {
 
     #[inline]
     fn func_mut(&mut self) -> &mut SsaFunc { self.func }
+
+    #[inline]
+    fn add_pred(&mut self, block: Block, inst: Inst) {
+        self.ssa.declare_block_predecessor(block, inst);
+    }
+
+    #[inline]
+    fn is_sealed(&self, block: Block) -> bool {
+        self.ssa.is_sealed(block)
+    }
+
+    #[inline]
+    fn fill_current_block(&mut self) {
+        self.fill_current_block();
+    }
 
     #[inline]
     fn insert_inst_data(&mut self, data: InstructionData) -> Inst {
@@ -2802,7 +2842,7 @@ impl<'a> FuncCursor<'a> {
             let block = self.func.layout.inst_block(inst)
                 .expect("Instruction not in layout");
             self.pos = CursorPosition::After(block);
-        }
+       }
         self
     }
 
@@ -2836,6 +2876,42 @@ impl<'a> FuncCursor<'a> {
         }
     }
 
+    /// Go to a specific instruction which must be inserted in the layout.
+    /// New instructions will be inserted before `inst`.
+    fn goto_inst(&mut self, inst: Inst) {
+        debug_assert!(self.func.layout.inst_block(inst).is_some());
+        self.pos = CursorPosition::At(inst);
+    }
+
+    /// Go to the bottom of `block` which must be inserted into the layout.
+    /// At this position, inserted instructions will be appended to `block`.
+    fn goto_bottom(&mut self, block: Block) {
+        debug_assert!(self.func.layout.is_block_inserted(block));
+        self.pos = CursorPosition::After(block);
+    }
+
+    /// Rebuild this cursor positioned at the first insertion point for `block`.
+    /// This differs from `at_first_inst` in that it doesn't assume that any
+    /// instructions have been inserted into `block` yet.
+    fn at_first_insertion_point(mut self, block: Block) -> Self
+    where
+        Self: Sized,
+    {
+        self.goto_first_insertion_point(block);
+        self
+    }
+
+    /// Go to the position for inserting instructions at the beginning of `block`,
+    /// which unlike `goto_first_inst` doesn't assume that any instructions have
+    /// been inserted into `block` yet.
+    fn goto_first_insertion_point(&mut self, block: Block) {
+        if let Some(inst) = self.func.layout.first_inst(block) {
+            self.goto_inst(inst);
+        } else {
+            self.goto_bottom(block);
+        }
+    }
+
     pub fn at_position(mut self, pos: CursorPosition) -> Self {
         self.pos = pos;
         self
@@ -2848,6 +2924,8 @@ impl InstInserter for FuncCursor<'_> {
 
     #[inline]
     fn func_mut(&mut self) -> &mut SsaFunc { self.func }
+
+    fn fill_current_block(&mut self) {}
 
     fn insert_inst_data(&mut self, data: InstructionData) -> Inst {
         use CursorPosition::*;
@@ -2909,7 +2987,13 @@ impl<T: InstInserter> DerefMut for InstBuilder<'_, T> {
 impl<T> InstBuilder<'_, T> where T: InstInserter {
     #[inline]
     fn insert_inst(&mut self, data: InstructionData) -> Inst {
-        self.inserter.insert_inst_data(data) // Delegated to the trait!
+        let inst = self.inserter.insert_inst_data(data);
+
+        if self.func().dfg.insts[inst].is_terminator() {
+            self.fill_current_block();
+        }
+
+        inst
     }
 
     #[inline(always)]
@@ -3547,8 +3631,8 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
     with_comment! {
         stack_store_with_comment,
         #[inline]
-        pub fn stack_store(&mut self, slot: StackSlot, val: Value) {
-            self.insert_inst(InstructionData::StackStore { slot, arg: val });
+        pub fn stack_store(&mut self, slot: StackSlot, val: Value) -> Inst {
+            self.insert_inst(InstructionData::StackStore { slot, arg: val })
         }
     }
 
@@ -3582,12 +3666,7 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
         jump_with_comment,
         #[inline]
         pub fn jump(&mut self, dest: Block) {
-            self.insert_inst(InstructionData::Jump {
-                destination: dest,
-                args: EntityList::new()
-            });
-            let from = self.current_block();
-            self.func_mut().cfg.add_pred(from, dest);
+            self.jump_params(dest, &[]);
         }
     }
 
@@ -3599,12 +3678,16 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
                 params,
                 &mut self.func_mut().dfg.values_pool
             );
-            self.insert_inst(InstructionData::Jump {
+            let inst = self.insert_inst(InstructionData::Jump {
                 destination: dest,
                 args,
             });
             let from = self.current_block();
+
             self.func_mut().cfg.add_pred(from, dest);
+            self.add_pred(dest, inst);
+
+            assert!(!self.is_sealed(dest));
         }
     }
 
@@ -3620,7 +3703,7 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
                 false_args,
                 &mut self.func_mut().dfg.values_pool
             );
-            self.insert_inst(InstructionData::Branch {
+            let inst = self.insert_inst(InstructionData::Branch {
                 destinations: [true_dest, false_dest],
                 arg: cond,
                 args: [true_args, false_args]
@@ -3629,6 +3712,12 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
             let from = self.current_block();
             self.func_mut().cfg.add_pred(from, true_dest);
             self.func_mut().cfg.add_pred(from, false_dest);
+
+            self.add_pred(true_dest, inst);
+            self.add_pred(false_dest, inst);
+
+            assert!(!self.is_sealed(true_dest));
+            assert!(!self.is_sealed(false_dest));
         }
     }
 
@@ -3636,14 +3725,7 @@ impl<T> InstBuilder<'_, T> where T: InstInserter {
         brif_with_comment,
         #[inline]
         pub fn brif(&mut self, cond: Value, true_dest: Block, false_dest: Block) {
-            self.insert_inst(InstructionData::Branch {
-                destinations: [true_dest, false_dest],
-                arg: cond,
-                args: [EntityList::new(), EntityList::new()]
-            });
-            let from = self.current_block();
-            self.func_mut().cfg.add_pred(from, true_dest);
-            self.func_mut().cfg.add_pred(from, false_dest);
+            self.brif_params(cond, true_dest, false_dest, &[], &[]);
         }
     }
 
@@ -3949,7 +4031,7 @@ enum Call {
 }
 
 /// Emit instructions to produce a zero value in the given type.
-fn emit_zero(ty: Type, cur: &mut FunctionBuilder) -> Value {
+fn emit_zero(ty: Type, cur: &mut FuncCursor) -> Value {
     match ty {
         ty if ty.is_int() => cur.ins().iconst(ty, 0),
         ty if ty.is_float() => cur.ins().fconst(ty, 0.0),
@@ -4319,11 +4401,8 @@ impl SSABuilder {
 
                 // @Cleanup
                 let ty = func.value_type(sentinel);
-                let zero = if ty.is_int() {
-                    FuncCursor::new(func).ins().iconst(ty, 0)
-                } else {
-                    FuncCursor::new(func).ins().fconst(ty, 0.0)
-                };
+                let mut cur = FuncCursor::new(func).at_first_insertion_point(dest_block);
+                let zero = emit_zero(ty, &mut cur);
 
                 Some(zero)
             }
@@ -4778,17 +4857,17 @@ impl LivenessAnalysis {
     /// Process a value's definition, removing it from the currently-live set.
     fn process_def(&mut self, val: Value) {
         if self.currently_live.remove(&val) {
-            // log::trace!("liveness:   defining {val:?}, removing it from the live set");
+            // println!("liveness:   defining {val:?}, removing it from the live set");
         }
     }
 
     /// Record the live set of needs-stack-map values at the given safepoint.
     fn record_safepoint(&mut self, func: &SsaFunc, inst: Inst) {
-        // log::trace!(
+        // println!(
         //     "liveness:   found safepoint: {inst:?}: {}",
-        //     func.dfg.display_inst(inst)
+        //     func.inst_to_string(inst)
         // );
-        // log::trace!("liveness:     live set = {:?}", self.currently_live);
+        // println!("liveness:     live set = {:?}", self.currently_live);
 
         let mut live = self.currently_live.iter().copied().collect::<SmallVec<_>>();
         // Keep order deterministic since we add stack map entries in this
@@ -4803,9 +4882,9 @@ impl LivenessAnalysis {
     /// currently-live set.
     fn process_use(&mut self, func: &SsaFunc, inst: Inst, val: Value) {
         if self.currently_live.insert(val) {
-            // log::trace!(
+            // println!(
             //     "liveness:   found use of {val:?}, marking it live: {inst:?}: {}",
-            //     func.dfg.display_inst(inst)
+            //     func.inst_to_string(inst)
             // );
         }
     }
@@ -4819,7 +4898,7 @@ impl LivenessAnalysis {
         record_safepoints: RecordSafepoints,
     ) {
         let block = self.post_order[block_index];
-        // log::trace!("liveness: traversing {block:?}");
+        // println!("liveness: traversing {block:?}");
 
         // Reset the currently-live set to this block's live-out set.
         self.currently_live.clear();
@@ -4962,19 +5041,19 @@ impl StackSlots {
 
     fn get_or_create_stack_slot(&mut self, func: &mut SsaFunc, val: Value) -> StackSlot {
         *self.stack_slots.entry(val).or_insert_with(|| {
-            // log::trace!("rewriting:     {val:?} needs a stack slot");
+            // println!("rewriting:     {val:?} needs a stack slot");
             let ty = func.value_type(val);
             let size = ty.bytes();
             match self.free_stack_slots[SlotSize::unwrap_new(size)].pop() {
                 Some(slot) => {
-                    // log::trace!("rewriting:       reusing free stack slot {slot:?} for {val:?}");
+                    // println!("rewriting:       reusing free stack slot {slot:?} for {val:?}");
                     slot
                 }
                 None => {
                     debug_assert!(size.is_power_of_two());
                     let log2_size = size.ilog2();
                     let slot = func.create_stack_slot(ty, size, log2_size.try_into().unwrap());
-                    // log::trace!("rewriting:       created new stack slot {slot:?} for {val:?}");
+                    // println!("rewriting:       created new stack slot {slot:?} for {val:?}");
                     slot
                 }
             }
@@ -4982,7 +5061,7 @@ impl StackSlots {
     }
 
     fn free_stack_slot(&mut self, size: SlotSize, slot: StackSlot) {
-        // log::trace!("rewriting:     returning {slot:?} to the free list");
+        // println!("rewriting:     returning {slot:?} to the free list");
         self.free_stack_slots[size].push(slot);
     }
 }
@@ -5015,22 +5094,22 @@ impl SafepointSpiller {
     /// rewrite the function's instructions to spill and reload them as
     /// necessary.
     pub fn run(&mut self, func: &mut SsaFunc, stack_map_values: &EntitySet<Value>) {
-        // log::trace!(
+        // println!(
         //     "values needing inclusion in stack maps: {:?}",
         //     stack_map_values
         // );
-        // log::trace!(
+        // println!(
         //     "before inserting safepoint spills and reloads:\n{}",
-        //     func.display()
+        //     func
         // );
 
         self.clear();
         self.liveness.run(func, stack_map_values);
         self.rewrite(func);
 
-        // log::trace!(
+        // println!(
         //     "after inserting safepoint spills and reloads:\n{}",
-        //     func.display()
+        //     func
         // );
     }
 
@@ -5043,9 +5122,9 @@ impl SafepointSpiller {
             let ty = pos.func.dfg.value_type(val);
 
             let i = pos.ins().stack_store(slot, val);
-            // log::trace!(
+            // println!(
             //     "rewriting:   spilling {val:?} to {slot:?}: {}",
-            //     pos.func.dfg.display_inst(i)
+            //     pos.func.inst_to_string(i)
             // );
 
             // Now that we've defined this value, there cannot be any more uses
@@ -5061,9 +5140,9 @@ impl SafepointSpiller {
     /// This will additionally assign stack slots to needs-stack-map values, if
     /// no such assignment has already been made.
     fn rewrite_safepoint(&mut self, func: &mut SsaFunc, inst: Inst) {
-        // log::trace!(
+        // println!(
         //     "rewriting:   found safepoint: {inst:?}: {}",
-        //     func.dfg.display_inst(inst)
+        //     func.inst_to_string(inst)
         // );
 
         let live = self
@@ -5076,10 +5155,10 @@ impl SafepointSpiller {
             // Get or create the stack slot for this live needs-stack-map value.
             let slot = self.stack_slots.get_or_create_stack_slot(func, *val);
 
-            // log::trace!(
-            //     "rewriting:     adding stack map entry for {val:?} at {slot:?}: {}",
-            //     func.dfg.display_inst(inst)
-            // );
+            println!(
+                "rewriting:     adding stack map entry for {val:?} at {slot:?}: {}",
+                func.inst_to_string(inst)
+            );
             let ty = func.value_type(*val);
             func.dfg.append_user_stack_map_entry(
                 inst,
@@ -5106,17 +5185,15 @@ impl SafepointSpiller {
         }
 
         let old_val = *val;
-        // log::trace!("rewriting:     found use of {old_val:?}");
+        // println!("rewriting:     found use of {old_val:?}");
 
         let ty = pos.func.dfg.value_type(*val);
         let slot = self.stack_slots.get_or_create_stack_slot(pos.func, *val);
         *val = pos.ins().stack_load(ty, slot);
 
-        // log::trace!(
+        // println!(
         //     "rewriting:     reloading {old_val:?}: {}",
-        //     pos.func
-        //         .dfg
-        //         .display_inst(pos.func.dfg.value_def(*val).unwrap_inst())
+        //     pos.func.inst_to_string(pos.func.dfg.value_def(*val).unwrap_inst())
         // );
 
         true
@@ -5146,7 +5223,7 @@ impl SafepointSpiller {
         // for more details.
         for block_index in 0..self.liveness.post_order.len() {
             let block = self.liveness.post_order[block_index];
-            // log::trace!("rewriting: processing {block:?}");
+            // println!("rewriting: processing {block:?}");
 
             let mut option_inst = func.layout.last_inst(block);
             while let Some(inst) = option_inst {
@@ -5176,9 +5253,9 @@ impl SafepointSpiller {
                 }
                 if replaced_any {
                     pos.func.dfg.overwrite_inst_values(inst, vals.drain(..));
-                    // log::trace!(
+                    // println!(
                     //     "rewriting:     updated {inst:?} operands with reloaded values: {}",
-                    //     pos.func.dfg.display_inst(inst)
+                    //     pos.func.inst_to_string(inst)
                     // );
                 } else {
                     vals.clear();
@@ -5583,6 +5660,12 @@ impl SsaFunc {
         Ok(())
     }
 
+    pub fn inst_to_string(&self, inst_id: Inst) -> String {
+        let mut s = String::new();
+        self.fmt_inst(&mut s, inst_id).unwrap();
+        s
+    }
+
     pub fn fmt_inst(&self, f: &mut dyn fmt::Write, inst_id: Inst) -> fmt::Result {
         let inst = &self.dfg.insts[inst_id];
         let mut s = String::new();
@@ -5643,12 +5726,12 @@ impl SsaFunc {
                 "brif {}, {}({}), {}({})",
                 self.fmt_value(*arg),
                 destinations[0],
-                destinations[1],
                 args[0].as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))
                     .collect::<Vec<_>>()
                     .join(", "),
+                destinations[1],
                 args[1].as_slice(&self.dfg.values_pool)
                     .iter()
                     .map(|a| self.fmt_value(*a))

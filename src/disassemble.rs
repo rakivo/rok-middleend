@@ -338,22 +338,19 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
         // Control Flow
         Opcode::Jump32 => {
             let offset = reader.read_i32();
-
-            // jump_with_args writes: count (u8) followed by pairs of (arg, param) as u32
             let num_args = reader.read_u8();
             let mut moves = Vec::new();
             for _ in 0..num_args {
-                let arg = reader.read_u32();
-                let param = reader.read_u32();
-                moves.push((arg, param));
+                let src = reader.read_u32();
+                let dst = reader.read_u32();
+                moves.push((src, dst));
             }
-
             if moves.is_empty() {
                 write!(f, "{:<16} {:05X}", "jump", offset)
             } else {
                 let moves_str = moves
                     .iter()
-                    .map(|(arg, param)| format!("r{arg} -> r{param}"))
+                    .map(|(src, dst)| format!("r{} -> r{}", src, dst))
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "{:<16} {:05X} ({})", "jump", offset, moves_str)
@@ -365,23 +362,45 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
             let true_offset = reader.read_i32();
             let else_offset = reader.read_i32();
 
-            // jump_with_args for true branch
+            // Read true branch moves
             let num_args_true = reader.read_u8();
             let mut moves_true = Vec::new();
             for _ in 0..num_args_true {
-                let arg = reader.read_u32();
-                let param = reader.read_u32();
-                moves_true.push((arg, param));
+                let src = reader.read_u32();
+                let dst = reader.read_u32();
+                moves_true.push((src, dst));
             }
 
-            let moves_str = if moves_true.is_empty() {
+            // Read else branch moves (Crucial: to advance the reader position!)
+            let num_args_else = reader.read_u8();
+            let mut moves_else = Vec::new();
+            for _ in 0..num_args_else {
+                let src = reader.read_u32();
+                let dst = reader.read_u32();
+                moves_else.push((src, dst));
+            }
+
+            let true_moves_str = if moves_true.is_empty() {
                 String::new()
             } else {
                 format!(
-                    " ({})",
+                    " then:({})",
                     moves_true
                         .iter()
-                        .map(|(arg, param)| format!("r{arg} -> r{param}"))
+                        .map(|(src, dst)| format!("r{src} -> r{dst}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+
+            let else_moves_str = if moves_else.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " else:({})",
+                    moves_else
+                        .iter()
+                        .map(|(src, dst)| format!("r{src} -> r{dst}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -389,8 +408,8 @@ pub fn print_instruction(reader: &mut BytecodeReader, f: &mut impl Write) -> fmt
 
             write!(
                 f,
-                "{:<16} r{}, then:{:05X}, else:{:05X}{}",
-                "branchif", cond, true_offset, else_offset, moves_str
+                "{:<16} r{}, then:{:05X}, else:{:05X}{}{}",
+                "branchif", cond, true_offset, else_offset, true_moves_str, else_moves_str
             )
         }
 
