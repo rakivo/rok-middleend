@@ -691,13 +691,19 @@ define_opcodes! {
         chunk.append(from_bits);
         chunk.append(to_bits);
     }
-    Sextend(dst: u32, src: u32)
+    Sextend(dst: u32, src: u32, from_bits: u32, to_bits: u32)
     @ IData::Unary { unop: UnaryOp::Sextend, arg } => |results, chunk| {
+        let src_ty = self.func.dfg.values[*arg].ty;
+        let dst_ty = self.func.dfg.values[results.unwrap()[0]].ty;
+        let from_bits = src_ty.bits() as u8;
+        let to_bits = dst_ty.bits() as u8;
         let dst = results.unwrap()[0];
         let src = *arg;
         chunk.append(Opcode::Sextend);
         chunk.append(dst.as_u32());
         chunk.append(src.as_u32());
+        chunk.append(from_bits);
+        chunk.append(to_bits);
     }
     FPromote(dst: u32, src: u32)
     @ IData::Unary { unop: UnaryOp::FPromote, arg } => |results, chunk| {
